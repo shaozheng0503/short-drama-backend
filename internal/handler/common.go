@@ -1,125 +1,52 @@
 package handler
 
 import (
-	"fmt"
-	"net/http"
-	"time"
+	"errors"
 
-	"ai-drama-platform/internal/middleware"
-	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/response"
+	"ai-drama-platform/internal/sms"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
-	"golang.org/x/crypto/bcrypt"
-	"gorm.io/gorm"
 )
 
 func (s *Server) health(c *gin.Context) {
 	response.OK(c, gin.H{"status": "ok"})
 }
 
-type authRequest struct {
-	Phone    string     `json:"phone" binding:"required"`
-	Password string     `json:"password" binding:"required,min=6"`
-	Nickname string     `json:"nickname"`
-	Role     model.Role `json:"role"`
+type smsSendRequest struct {
+	Phone string `json:"phone" binding:"required"`
+	Scene string `json:"scene" binding:"required"`
 }
 
-func (s *Server) register(c *gin.Context) {
-	var req authRequest
+func (s *Server) sendSMS(c *gin.Context) {
+	var req smsSendRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, err.Error())
+		response.InvalidParam(c, "phone 与 scene 必填")
 		return
 	}
-	if req.Role == "" {
-		req.Role = model.RoleUser
-	}
-	if req.Role != model.RoleUser && req.Role != model.RoleCreator && req.Role != model.RoleAdmin {
-		response.Error(c, http.StatusBadRequest, "invalid role")
-		return
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	code, err := s.sms.Send(req.Phone, req.Scene)
 	if err != nil {
-		response.Error(c, http.StatusInternalServerError, "failed to hash password")
-		return
-	}
-
-	user := model.User{Phone: req.Phone, PasswordHash: string(hash), Nickname: req.Nickname, Role: req.Role}
-	if user.Nickname == "" {
-		user.Nickname = req.Phone
-	}
-	if err := s.db.Create(&user).Error; err != nil {
-		response.Error(c, http.StatusConflict, "phone already registered")
-		return
-	}
-	response.Created(c, s.authPayload(user))
-}
-
-func (s *Server) login(c *gin.Context) {
-	var req authRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	var user model.User
-	if err := s.db.Where("phone = ?", req.Phone).First(&user).Error; err != nil {
-		response.Error(c, http.StatusUnauthorized, "invalid credentials")
-		return
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
-		response.Error(c, http.StatusUnauthorized, "invalid credentials")
-		return
-	}
-	response.OK(c, s.authPayload(user))
-}
-
-func (s *Server) me(c *gin.Context) {
-	var user model.User
-	if err := s.db.First(&user, middleware.UserID(c)).Error; err != nil {
-		response.Error(c, http.StatusNotFound, "user not found")
-		return
-	}
-	response.OK(c, user)
-}
-
-func (s *Server) authPayload(user model.User) gin.H {
-	expiresAt := time.Now().Add(s.cfg.JWTExpires)
-	claims := middleware.Claims{
-		UserID: user.ID,
-		Role:   user.Role,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(expiresAt),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, _ := token.SignedString([]byte(s.cfg.JWTSecret))
-	return gin.H{"token": tokenString, "expires_at": expiresAt, "user": user}
-}
-
-func paginate(c *gin.Context) (int, int) {
-	page := 1
-	pageSize := 20
-	if v := c.Query("page"); v != "" {
-		if _, err := fmtSscanf(v, &page); err != nil || page < 1 {
-			page = 1
+		switch {
+		case errors.Is(err, sms.ErrInvalidPhone):
+			response.InvalidParam(c, "手机号格式不正确")
+		case errors.Is(err, sms.ErrInvalidScene):
+			response.InvalidParam(c, "scene 必须是 login 或 creator_login")
+		case errors.Is(err, sms.ErrTooFrequent):
+			response.Conflict(c, "发送过于频繁，请 60 秒后重试")
+		case errors.Is(err, sms.ErrProviderFail):
+			response.Fail(c, response.CodeThirdPartyError, "短信网关下发失败，请稍后重试")
+		default:
+			response.ServerError(c, "短信发送失败")
 		}
+		return
 	}
-	if v := c.Query("page_size"); v != "" {
-		if _, err := fmtSscanf(v, &pageSize); err != nil || pageSize < 1 || pageSize > 100 {
-			pageSize = 20
-		}
+
+	data := gin.H{
+		"expire_seconds": int(s.cfg.SMSCodeTTL.Seconds()),
 	}
-	return page, pageSize
-}
-
-func fmtSscanf(value string, target *int) (int, error) {
-	return fmt.Sscanf(value, "%d", target)
-}
-
-func isNotFound(err error) bool {
-	return err == gorm.ErrRecordNotFound
+	if s.cfg.SMSDevMode {
+		// dev 模式下回显验证码，便于 Apifox 自测；生产模式禁用。
+		data["dev_code"] = code
+	}
+	response.OK(c, data)
 }

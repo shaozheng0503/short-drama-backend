@@ -16,6 +16,7 @@ func main() {
 	}
 
 	server := handler.New(db, cfg)
+	server.StartBackground()
 	if err := server.Router().Run(cfg.Addr); err != nil {
 		log.Fatalf("run api server: %v", err)
 	}

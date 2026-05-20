@@ -1,0 +1,22 @@
+# 本地凭证 / 密钥（永远不要提交）
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
+
+# 编辑器 / OS
+.idea/
+.vscode/
+.DS_Store
+
+# 编译产物
+/bin/
+/dist/
+*.exe
+*.out
+
+# 日志 / 临时文件
+*.log
+/tmp/

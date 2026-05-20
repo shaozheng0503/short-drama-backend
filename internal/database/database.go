@@ -1,9 +1,13 @@
 package database
 
 import (
+	"errors"
+	"log"
+
 	"ai-drama-platform/internal/config"
 	"ai-drama-platform/internal/model"
 
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -15,20 +19,78 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 	}
 	if err := db.AutoMigrate(
 		&model.User{},
-		&model.CreatorProfile{},
+		&model.SMSCode{},
+		&model.Admin{},
+		&model.Creator{},
+		&model.Category{},
 		&model.Drama{},
 		&model.Episode{},
-		&model.UserDramaAction{},
-		&model.Comment{},
-		&model.WatchHistory{},
-		&model.CheckIn{},
+		&model.PlayHistory{},
+		&model.UserAction{},
+		&model.Product{},
 		&model.Order{},
-		&model.Notification{},
+		&model.EpisodeUnlock{},
 		&model.Contract{},
 		&model.Withdrawal{},
-		&model.RevenueDaily{},
+		&model.CreatorStatsDaily{},
 	); err != nil {
 		return nil, err
 	}
+	if err := ensureInitialAdmin(db, cfg); err != nil {
+		return nil, err
+	}
+	if err := ensureDefaultProduct(db); err != nil {
+		return nil, err
+	}
 	return db, nil
+}
+
+func ensureInitialAdmin(db *gorm.DB, cfg config.Config) error {
+	if cfg.AdminInitUsername == "" || cfg.AdminInitPassword == "" {
+		return nil
+	}
+	var existing model.Admin
+	err := db.Where("username = ?", cfg.AdminInitUsername).First(&existing).Error
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(cfg.AdminInitPassword), cfg.BcryptCost)
+	if err != nil {
+		return err
+	}
+	admin := model.Admin{
+		Username:     cfg.AdminInitUsername,
+		PasswordHash: string(hash),
+		Role:         model.AdminRoleAdmin,
+		Status:       model.StatusActive,
+	}
+	if err := db.Create(&admin).Error; err != nil {
+		return err
+	}
+	log.Printf("seeded initial admin: username=%s", cfg.AdminInitUsername)
+	return nil
+}
+
+func ensureDefaultProduct(db *gorm.DB) error {
+	var cnt int64
+	if err := db.Model(&model.Product{}).Count(&cnt).Error; err != nil {
+		return err
+	}
+	if cnt > 0 {
+		return nil
+	}
+	defaultProduct := model.Product{
+		Name:       "单集解锁",
+		Type:       model.ProductTypeEpisodeUnlock,
+		PriceCents: 0, // 实际价格以 dramas.price_cents 为准；本商品仅为占位
+		Status:     model.StatusActive,
+	}
+	if err := db.Create(&defaultProduct).Error; err != nil {
+		return err
+	}
+	log.Printf("seeded default product: id=%d", defaultProduct.ID)
+	return nil
 }

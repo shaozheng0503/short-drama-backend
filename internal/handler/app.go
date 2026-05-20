@@ -1,200 +1,158 @@
 package handler
 
 import (
-	"net/http"
+	"errors"
 	"time"
 
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/response"
+	"ai-drama-platform/internal/sms"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm/clause"
+	"gorm.io/gorm"
 )
 
-func (s *Server) listDramas(c *gin.Context) {
-	page, pageSize := paginate(c)
-	q := s.db.Model(&model.Drama{}).Where("status = ?", "published")
-	if category := c.Query("category"); category != "" {
-		q = q.Where("category = ?", category)
-	}
-	if region := c.Query("region"); region != "" {
-		q = q.Where("region = ?", region)
-	}
-	var total int64
-	q.Count(&total)
-	var dramas []model.Drama
-	q.Order("updated_at desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&dramas)
-	response.OK(c, gin.H{"items": dramas, "total": total, "page": page, "page_size": pageSize})
+type appLoginRequest struct {
+	Phone string `json:"phone" binding:"required"`
+	Code  string `json:"code" binding:"required"`
 }
 
-func (s *Server) getDrama(c *gin.Context) {
-	var drama model.Drama
-	if err := s.db.First(&drama, c.Param("id")).Error; err != nil || drama.Status != "published" {
-		response.Error(c, http.StatusNotFound, "drama not found")
-		return
-	}
-	s.db.Model(&drama).UpdateColumn("view_count", gormExpr("view_count + ?", 1))
-	response.OK(c, drama)
-}
-
-func (s *Server) listEpisodes(c *gin.Context) {
-	var episodes []model.Episode
-	s.db.Where("drama_id = ?", c.Param("id")).Order("episode_no asc").Find(&episodes)
-	response.OK(c, episodes)
-}
-
-func (s *Server) search(c *gin.Context) {
-	page, pageSize := paginate(c)
-	keyword := "%" + c.Query("q") + "%"
-	var dramas []model.Drama
-	q := s.db.Where("status = ? AND (title ILIKE ? OR description ILIKE ? OR tags ILIKE ?)", "published", keyword, keyword, keyword)
-	var total int64
-	q.Model(&model.Drama{}).Count(&total)
-	q.Offset((page - 1) * pageSize).Limit(pageSize).Order("view_count desc").Find(&dramas)
-	response.OK(c, gin.H{"items": dramas, "total": total})
-}
-
-func (s *Server) likeDrama(c *gin.Context) {
-	s.toggleAction(c, "like", "like_count")
-}
-
-func (s *Server) favoriteDrama(c *gin.Context) {
-	s.toggleAction(c, "favorite", "fav_count")
-}
-
-func (s *Server) shareDrama(c *gin.Context) {
-	id := c.Param("id")
-	s.db.Model(&model.Drama{}).Where("id = ?", id).UpdateColumn("share_count", gormExpr("share_count + ?", 1))
-	response.OK(c, gin.H{"shared": true})
-}
-
-func (s *Server) toggleAction(c *gin.Context, action, counter string) {
-	var req struct {
-		Enabled bool `json:"enabled"`
-	}
+func (s *Server) appLogin(c *gin.Context) {
+	var req appLoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, err.Error())
+		response.InvalidParam(c, "phone 与 code 必填")
 		return
 	}
-	userID := middleware.UserID(c)
-	var drama model.Drama
-	if err := s.db.First(&drama, c.Param("id")).Error; err != nil {
-		response.Error(c, http.StatusNotFound, "drama not found")
+	if !sms.ValidPhone(req.Phone) {
+		response.InvalidParam(c, "手机号格式不正确")
 		return
 	}
 
-	var existing model.UserDramaAction
-	err := s.db.Where("user_id = ? AND drama_id = ? AND action = ?", userID, drama.ID, action).First(&existing).Error
-	if req.Enabled && err != nil {
-		s.db.Create(&model.UserDramaAction{UserID: userID, DramaID: drama.ID, Action: action})
-		s.db.Model(&drama).UpdateColumn(counter, gormExpr(counter+" + ?", 1))
+	if err := s.sms.Verify(req.Phone, model.SMSScenAppLogin, req.Code); err != nil {
+		if errors.Is(err, sms.ErrCodeMismatch) {
+			response.InvalidParam(c, "验证码错误或已过期")
+			return
+		}
+		response.ServerError(c, "校验验证码失败")
+		return
 	}
-	if !req.Enabled && err == nil {
-		s.db.Delete(&existing)
-		s.db.Model(&drama).UpdateColumn(counter, gormExpr("GREATEST("+counter+" - ?, 0)", 1))
+
+	user, isNew, err := s.findOrCreateAppUser(req.Phone)
+	if err != nil {
+		response.ServerError(c, "登录失败")
+		return
 	}
-	response.OK(c, gin.H{"enabled": req.Enabled})
+	if user.Status == model.StatusBanned {
+		response.Forbidden(c, "账号已被封禁")
+		return
+	}
+
+	token, _, err := middleware.IssueToken(s.cfg, middleware.SubjectApp, user.ID)
+	if err != nil {
+		response.ServerError(c, "签发 token 失败")
+		return
+	}
+
+	response.OK(c, gin.H{
+		"token":       token,
+		"user":        appUserView(user),
+		"is_new_user": isNew,
+	})
 }
 
-func (s *Server) createComment(c *gin.Context) {
-	var req struct {
-		Content string `json:"content" binding:"required"`
+func (s *Server) appMe(c *gin.Context) {
+	uid := middleware.CurrentID(c)
+	var user model.User
+	if err := s.db.First(&user, uid).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "用户不存在")
+			return
+		}
+		response.ServerError(c, "获取用户失败")
+		return
 	}
+	response.OK(c, appUserView(user))
+}
+
+type appUpdateMeRequest struct {
+	Nickname *string `json:"nickname"`
+	Avatar   *string `json:"avatar"`
+}
+
+func (s *Server) appUpdateMe(c *gin.Context) {
+	uid := middleware.CurrentID(c)
+	var req appUpdateMeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, err.Error())
+		response.InvalidParam(c, "请求体不合法")
 		return
 	}
-	comment := model.Comment{UserID: middleware.UserID(c), DramaID: parseUintParam(c.Param("id")), Content: req.Content}
-	if err := s.db.Create(&comment).Error; err != nil {
-		response.Error(c, http.StatusBadRequest, "failed to create comment")
+
+	updates := map[string]interface{}{}
+	if req.Nickname != nil {
+		if len(*req.Nickname) == 0 || len(*req.Nickname) > 64 {
+			response.InvalidParam(c, "昵称长度需在 1~64 之间")
+			return
+		}
+		updates["nickname"] = *req.Nickname
+	}
+	if req.Avatar != nil {
+		if len(*req.Avatar) > 512 {
+			response.InvalidParam(c, "头像 URL 过长")
+			return
+		}
+		updates["avatar"] = *req.Avatar
+	}
+
+	if len(updates) > 0 {
+		updates["updated_at"] = time.Now()
+		if err := s.db.Model(&model.User{}).Where("id = ?", uid).Updates(updates).Error; err != nil {
+			response.ServerError(c, "更新失败")
+			return
+		}
+	}
+
+	var user model.User
+	if err := s.db.First(&user, uid).Error; err != nil {
+		response.ServerError(c, "获取用户失败")
 		return
 	}
-	response.Created(c, comment)
+	response.OK(c, appUserView(user))
 }
 
-func (s *Server) listComments(c *gin.Context) {
-	var comments []model.Comment
-	s.db.Preload("User").Where("drama_id = ?", c.Param("id")).Order("created_at desc").Find(&comments)
-	response.OK(c, comments)
+func (s *Server) findOrCreateAppUser(phone string) (model.User, bool, error) {
+	var user model.User
+	err := s.db.Where("phone = ?", phone).First(&user).Error
+	if err == nil {
+		return user, false, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return user, false, err
+	}
+	user = model.User{
+		Phone:    phone,
+		Nickname: defaultNickname(phone),
+		Status:   model.StatusActive,
+	}
+	if err := s.db.Create(&user).Error; err != nil {
+		return user, false, err
+	}
+	return user, true, nil
 }
 
-func (s *Server) upsertWatchHistory(c *gin.Context) {
-	var req struct {
-		DramaID     uint `json:"drama_id" binding:"required"`
-		EpisodeID   uint `json:"episode_id" binding:"required"`
-		ProgressSec int  `json:"progress_sec"`
+func defaultNickname(phone string) string {
+	if len(phone) >= 4 {
+		return "用户" + phone[len(phone)-4:]
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	history := model.WatchHistory{UserID: middleware.UserID(c), DramaID: req.DramaID, EpisodeID: req.EpisodeID, ProgressSec: req.ProgressSec}
-	if err := s.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "user_id"}, {Name: "episode_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"drama_id", "progress_sec", "updated_at"}),
-	}).Create(&history).Error; err != nil {
-		response.Error(c, http.StatusBadRequest, "failed to save history")
-		return
-	}
-	response.OK(c, history)
+	return "用户"
 }
 
-func (s *Server) listWatchHistory(c *gin.Context) {
-	var histories []model.WatchHistory
-	s.db.Where("user_id = ?", middleware.UserID(c)).Order("updated_at desc").Find(&histories)
-	response.OK(c, histories)
-}
-
-func (s *Server) checkIn(c *gin.Context) {
-	day := time.Now().Format("2006-01-02")
-	checkin := model.CheckIn{UserID: middleware.UserID(c), Day: day, Points: 10}
-	if err := s.db.Create(&checkin).Error; err != nil {
-		response.Error(c, http.StatusConflict, "already checked in today")
-		return
+func appUserView(u model.User) gin.H {
+	return gin.H{
+		"id":       u.ID,
+		"phone":    sms.MaskPhone(u.Phone),
+		"nickname": u.Nickname,
+		"avatar":   u.Avatar,
+		"status":   u.Status,
 	}
-	s.db.Model(&model.User{}).Where("id = ?", checkin.UserID).UpdateColumn("points", gormExpr("points + ?", checkin.Points))
-	response.Created(c, checkin)
-}
-
-func (s *Server) createOrder(c *gin.Context) {
-	var req struct {
-		DramaID     *uint  `json:"drama_id"`
-		Channel     string `json:"channel" binding:"required"`
-		AmountCents int64  `json:"amount_cents" binding:"required,min=1"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	order := model.Order{UserID: middleware.UserID(c), DramaID: req.DramaID, Channel: req.Channel, AmountCents: req.AmountCents, Status: "pending"}
-	if err := s.db.Create(&order).Error; err != nil {
-		response.Error(c, http.StatusBadRequest, "failed to create order")
-		return
-	}
-	response.Created(c, gin.H{"order": order, "pay_status": "mock_pending"})
-}
-
-func (s *Server) markOrderPaid(c *gin.Context) {
-	var order model.Order
-	if err := s.db.Where("id = ? AND user_id = ?", c.Param("id"), middleware.UserID(c)).First(&order).Error; err != nil {
-		response.Error(c, http.StatusNotFound, "order not found")
-		return
-	}
-	order.Status = "paid"
-	order.TradeNo = "mock-" + time.Now().Format("20060102150405")
-	s.db.Save(&order)
-	response.OK(c, order)
-}
-
-func (s *Server) listNotifications(c *gin.Context) {
-	var items []model.Notification
-	s.db.Where("user_id = ?", middleware.UserID(c)).Order("created_at desc").Find(&items)
-	response.OK(c, items)
-}
-
-func (s *Server) readNotification(c *gin.Context) {
-	now := time.Now()
-	s.db.Model(&model.Notification{}).Where("id = ? AND user_id = ?", c.Param("id"), middleware.UserID(c)).Update("read_at", &now)
-	response.OK(c, gin.H{"read": true})
 }
