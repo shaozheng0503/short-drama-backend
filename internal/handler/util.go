@@ -1,17 +1,133 @@
 package handler
 
 import (
+	"errors"
 	"strconv"
 
+	"ai-drama-platform/internal/model"
+
+	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
-func parseUintParam(value string) uint {
-	n, _ := strconv.ParseUint(value, 10, 64)
-	return uint(n)
+const (
+	defaultPageSize = 20
+	maxPageSize     = 100
+)
+
+func isNotFound(err error) bool {
+	return errors.Is(err, gorm.ErrRecordNotFound)
 }
 
-func gormExpr(sql string, values ...interface{}) clause.Expr {
-	return gorm.Expr(sql, values...)
+func paginate(c *gin.Context) (page, pageSize int) {
+	page, _ = strconv.Atoi(c.Query("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ = strconv.Atoi(c.Query("page_size"))
+	if pageSize < 1 {
+		pageSize = defaultPageSize
+	}
+	if pageSize > maxPageSize {
+		pageSize = maxPageSize
+	}
+	return page, pageSize
+}
+
+func parseUint(s string) uint64 {
+	n, _ := strconv.ParseUint(s, 10, 64)
+	return n
+}
+
+// dramaIDFromPath 兼容 :drama_id / :id 两种命名（路由分组里都可能用）。
+func dramaIDFromPath(c *gin.Context) uint64 {
+	if v := c.Param("drama_id"); v != "" {
+		return parseUint(v)
+	}
+	return parseUint(c.Param("id"))
+}
+
+func pageResp(list interface{}, page, pageSize int, total int64) gin.H {
+	hasMore := int64(page*pageSize) < total
+	return gin.H{
+		"list":      list,
+		"page":      page,
+		"page_size": pageSize,
+		"total":     total,
+		"has_more":  hasMore,
+	}
+}
+
+func dramaCardView(d model.Drama) gin.H {
+	return gin.H{
+		"id":             d.ID,
+		"title":          d.Title,
+		"description":    d.Description,
+		"cover_url":      d.CoverURL,
+		"total_episodes": d.TotalEpisodes,
+		"free_episodes":  d.FreeEpisodes,
+		"play_count":     d.PlayCount,
+		"like_count":     d.LikeCount,
+	}
+}
+
+func dramaAdminView(d model.Drama, categoryName, creatorName string) gin.H {
+	view := gin.H{
+		"id":             d.ID,
+		"title":          d.Title,
+		"description":    d.Description,
+		"cover_url":      d.CoverURL,
+		"category_id":    d.CategoryID,
+		"category_name":  categoryName,
+		"creator_id":     d.CreatorID,
+		"creator_name":   creatorName,
+		"total_episodes": d.TotalEpisodes,
+		"free_episodes":  d.FreeEpisodes,
+		"price_cents":    d.PriceCents,
+		"sort_order":     d.SortOrder,
+		"status":         d.Status,
+		"play_count":     d.PlayCount,
+		"like_count":     d.LikeCount,
+		"favorite_count": d.FavoriteCount,
+		"published_at":   d.PublishedAt,
+		"created_at":     d.CreatedAt,
+		"updated_at":     d.UpdatedAt,
+	}
+	return view
+}
+
+func episodeAdminView(e model.Episode) gin.H {
+	return gin.H{
+		"id":               e.ID,
+		"drama_id":         e.DramaID,
+		"episode_no":       e.EpisodeNo,
+		"title":            e.Title,
+		"vod_file_id":      e.VODFileID,
+		"video_url":        e.VideoURL,
+		"duration_seconds": e.DurationSeconds,
+		"status":           e.Status,
+		"created_at":       e.CreatedAt,
+		"updated_at":       e.UpdatedAt,
+	}
+}
+
+func episodeAppView(e model.Episode, freeEpisodes int, unlocked bool) gin.H {
+	isFree := e.EpisodeNo <= freeEpisodes
+	return gin.H{
+		"id":               e.ID,
+		"episode_no":       e.EpisodeNo,
+		"title":            e.Title,
+		"duration_seconds": e.DurationSeconds,
+		"is_free":          isFree,
+		"is_locked":        !isFree && !unlocked,
+	}
+}
+
+func categoryView(c model.Category) gin.H {
+	return gin.H{
+		"id":         c.ID,
+		"name":       c.Name,
+		"sort_order": c.SortOrder,
+		"status":     c.Status,
+	}
 }

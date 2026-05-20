@@ -1,154 +1,74 @@
 package handler
 
 import (
-	"net/http"
-
+	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/response"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
 )
 
-func (s *Server) adminDashboard(c *gin.Context) {
-	var users, creators, dramas, orders int64
-	var income int64
-	s.db.Model(&model.User{}).Count(&users)
-	s.db.Model(&model.User{}).Where("role = ?", model.RoleCreator).Count(&creators)
-	s.db.Model(&model.Drama{}).Count(&dramas)
-	s.db.Model(&model.Order{}).Where("status = ?", "paid").Count(&orders)
-	s.db.Model(&model.Order{}).Where("status = ?", "paid").Select("COALESCE(SUM(amount_cents),0)").Scan(&income)
-	response.OK(c, gin.H{"users": users, "creators": creators, "dramas": dramas, "paid_orders": orders, "income_cents": income})
+type adminLoginRequest struct {
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"`
 }
 
-func (s *Server) adminUsers(c *gin.Context) {
-	var users []model.User
-	q := s.db.Model(&model.User{})
-	if role := c.Query("role"); role != "" {
-		q = q.Where("role = ?", role)
-	}
-	q.Order("created_at desc").Limit(100).Find(&users)
-	response.OK(c, users)
-}
-
-func (s *Server) verifyCreator(c *gin.Context) {
-	var req struct {
-		Status string `json:"status" binding:"required"`
-	}
+func (s *Server) adminLogin(c *gin.Context) {
+	var req adminLoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, err.Error())
+		response.InvalidParam(c, "username 与 password 必填")
 		return
 	}
-	if err := s.db.Model(&model.CreatorProfile{}).Where("user_id = ?", c.Param("id")).Update("verified_status", req.Status).Error; err != nil {
-		response.Error(c, http.StatusBadRequest, "failed to update creator")
+
+	var admin model.Admin
+	if err := s.db.Where("username = ?", req.Username).First(&admin).Error; err != nil {
+		if isNotFound(err) {
+			response.InvalidParam(c, "账号或密码错误")
+			return
+		}
+		response.ServerError(c, "登录失败")
 		return
 	}
-	response.OK(c, gin.H{"status": req.Status})
+	if admin.Status != model.StatusActive {
+		response.Forbidden(c, "账号已被禁用")
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(admin.PasswordHash), []byte(req.Password)); err != nil {
+		response.InvalidParam(c, "账号或密码错误")
+		return
+	}
+
+	token, _, err := middleware.IssueToken(s.cfg, middleware.SubjectAdmin, admin.ID)
+	if err != nil {
+		response.ServerError(c, "签发 token 失败")
+		return
+	}
+	response.OK(c, gin.H{
+		"token": token,
+		"admin": adminView(admin),
+	})
 }
 
-func (s *Server) adminCreateDrama(c *gin.Context) {
-	var req model.Drama
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, err.Error())
+func (s *Server) adminMe(c *gin.Context) {
+	aid := middleware.CurrentID(c)
+	var admin model.Admin
+	if err := s.db.First(&admin, aid).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "管理员不存在")
+			return
+		}
+		response.ServerError(c, "获取管理员失败")
 		return
 	}
-	req.ID = 0
-	if req.Status == "" {
-		req.Status = "published"
-	}
-	if err := s.db.Create(&req).Error; err != nil {
-		response.Error(c, http.StatusBadRequest, "failed to create drama")
-		return
-	}
-	response.Created(c, req)
+	response.OK(c, adminView(admin))
 }
 
-func (s *Server) adminUpdateDrama(c *gin.Context) {
-	var drama model.Drama
-	if err := s.db.First(&drama, c.Param("id")).Error; err != nil {
-		response.Error(c, http.StatusNotFound, "drama not found")
-		return
+func adminView(a model.Admin) gin.H {
+	return gin.H{
+		"id":       a.ID,
+		"username": a.Username,
+		"role":     a.Role,
+		"status":   a.Status,
 	}
-	var req model.Drama
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	req.ID = drama.ID
-	s.db.Model(&drama).Updates(req)
-	response.OK(c, drama)
-}
-
-func (s *Server) updateDramaStatus(c *gin.Context) {
-	var req struct {
-		Status string `json:"status" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	s.db.Model(&model.Drama{}).Where("id = ?", c.Param("id")).Update("status", req.Status)
-	response.OK(c, gin.H{"status": req.Status})
-}
-
-func (s *Server) adminOrders(c *gin.Context) {
-	var items []model.Order
-	q := s.db.Model(&model.Order{})
-	if status := c.Query("status"); status != "" {
-		q = q.Where("status = ?", status)
-	}
-	q.Order("created_at desc").Limit(100).Find(&items)
-	response.OK(c, items)
-}
-
-func (s *Server) adminWithdrawals(c *gin.Context) {
-	var items []model.Withdrawal
-	q := s.db.Model(&model.Withdrawal{})
-	if status := c.Query("status"); status != "" {
-		q = q.Where("status = ?", status)
-	}
-	q.Order("created_at desc").Limit(100).Find(&items)
-	response.OK(c, items)
-}
-
-func (s *Server) updateWithdrawalStatus(c *gin.Context) {
-	var req struct {
-		Status string `json:"status" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	s.db.Model(&model.Withdrawal{}).Where("id = ?", c.Param("id")).Update("status", req.Status)
-	response.OK(c, gin.H{"status": req.Status})
-}
-
-func (s *Server) adminContracts(c *gin.Context) {
-	var items []model.Contract
-	q := s.db.Model(&model.Contract{})
-	if status := c.Query("status"); status != "" {
-		q = q.Where("status = ?", status)
-	}
-	q.Order("created_at desc").Limit(100).Find(&items)
-	response.OK(c, items)
-}
-
-func (s *Server) updateContractStatus(c *gin.Context) {
-	var req struct {
-		Status      string `json:"status" binding:"required"`
-		ExternalID  string `json:"external_id"`
-		DownloadURL string `json:"download_url"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	updates := map[string]interface{}{"status": req.Status}
-	if req.ExternalID != "" {
-		updates["external_id"] = req.ExternalID
-	}
-	if req.DownloadURL != "" {
-		updates["download_url"] = req.DownloadURL
-	}
-	s.db.Model(&model.Contract{}).Where("id = ?", c.Param("id")).Updates(updates)
-	response.OK(c, updates)
 }
