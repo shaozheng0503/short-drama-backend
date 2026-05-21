@@ -21,6 +21,7 @@ import (
 // 触发条件（见 SelectProvider）：
 //   - SMS_DEV_MODE=false
 //   - TENCENTCLOUD_SECRET_ID / _SECRET_KEY / SMS_SDK_APP_ID / SMS_SIGN_NAME / SMS_TEMPLATE_LOGIN 全部非空
+//
 // 任何一项缺失都会退回 DevProvider，不会走到这里。
 //
 // 上线前控制台前置条件：
@@ -45,6 +46,7 @@ func (*TencentProvider) Name() string { return "tencent" }
 //   - "code"            → [验证码]
 //   - "code,ttl_minutes" → [验证码, 分钟数]
 //   - "ttl_minutes,code" → [分钟数, 验证码]
+//
 // 占位符顺序必须与腾讯云控制台审核通过的模板内容里 {1}/{2} 一致。
 func (p *TencentProvider) templateParams(code string) []string {
 	format := strings.TrimSpace(p.cfg.SMSTemplateLoginParams)

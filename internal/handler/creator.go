@@ -28,11 +28,14 @@ func (s *Server) creatorLogin(c *gin.Context) {
 		return
 	}
 	if err := s.sms.Verify(req.Phone, model.SMSSceneCreatorLogin, req.Code); err != nil {
-		if errors.Is(err, sms.ErrCodeMismatch) {
+		switch {
+		case errors.Is(err, sms.ErrCodeMismatch):
 			response.InvalidParam(c, "验证码错误或已过期")
-			return
+		case errors.Is(err, sms.ErrTooManyAttempts):
+			response.Fail(c, response.CodeRateLimited, "验证码尝试次数过多，请稍后再试")
+		default:
+			response.ServerError(c, "校验验证码失败")
 		}
-		response.ServerError(c, "校验验证码失败")
 		return
 	}
 
@@ -102,14 +105,14 @@ func creatorBriefView(cr model.Creator) gin.H {
 
 func creatorDetailView(cr model.Creator) gin.H {
 	return gin.H{
-		"id":                  cr.ID,
-		"phone":               sms.MaskPhone(cr.Phone),
-		"name":                cr.Name,
-		"bank_name":           cr.BankName,
-		"verify_status":       cr.VerifyStatus,
-		"total_income_cents":  cr.TotalIncomeCents,
-		"balance_cents":       cr.BalanceCents,
-		"frozen_cents":        cr.FrozenCents,
-		"status":              cr.Status,
+		"id":                 cr.ID,
+		"phone":              sms.MaskPhone(cr.Phone),
+		"name":               cr.Name,
+		"bank_name":          cr.BankName,
+		"verify_status":      cr.VerifyStatus,
+		"total_income_cents": cr.TotalIncomeCents,
+		"balance_cents":      cr.BalanceCents,
+		"frozen_cents":       cr.FrozenCents,
+		"status":             cr.Status,
 	}
 }

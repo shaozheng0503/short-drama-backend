@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"time"
+
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/response"
@@ -13,6 +15,11 @@ type adminLoginRequest struct {
 	Username string `json:"username" binding:"required"`
 	Password string `json:"password" binding:"required"`
 }
+
+const (
+	adminMaxFailedAttempts = 5
+	adminLockoutDuration   = 15 * time.Minute
+)
 
 func (s *Server) adminLogin(c *gin.Context) {
 	var req adminLoginRequest
@@ -34,9 +41,27 @@ func (s *Server) adminLogin(c *gin.Context) {
 		response.Forbidden(c, "账号已被禁用")
 		return
 	}
+	now := time.Now()
+	if admin.LockedUntil != nil && admin.LockedUntil.After(now) {
+		response.Forbidden(c, "账号已临时锁定，请稍后再试")
+		return
+	}
 	if err := bcrypt.CompareHashAndPassword([]byte(admin.PasswordHash), []byte(req.Password)); err != nil {
+		attempts := admin.FailedLoginAttempts + 1
+		updates := map[string]interface{}{"failed_login_attempts": attempts}
+		if attempts >= adminMaxFailedAttempts {
+			lockUntil := now.Add(adminLockoutDuration)
+			updates["locked_until"] = lockUntil
+		}
+		s.db.Model(&model.Admin{}).Where("id = ?", admin.ID).Updates(updates)
 		response.InvalidParam(c, "账号或密码错误")
 		return
+	}
+
+	// 成功登录：清空失败计数与锁
+	if admin.FailedLoginAttempts > 0 || admin.LockedUntil != nil {
+		s.db.Model(&model.Admin{}).Where("id = ?", admin.ID).
+			Updates(map[string]interface{}{"failed_login_attempts": 0, "locked_until": nil})
 	}
 
 	token, _, err := middleware.IssueToken(s.cfg, middleware.SubjectAdmin, admin.ID)

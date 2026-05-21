@@ -2,7 +2,9 @@ package handler
 
 import (
 	"errors"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
@@ -30,11 +32,14 @@ func (s *Server) appLogin(c *gin.Context) {
 	}
 
 	if err := s.sms.Verify(req.Phone, model.SMSScenAppLogin, req.Code); err != nil {
-		if errors.Is(err, sms.ErrCodeMismatch) {
+		switch {
+		case errors.Is(err, sms.ErrCodeMismatch):
 			response.InvalidParam(c, "验证码错误或已过期")
-			return
+		case errors.Is(err, sms.ErrTooManyAttempts):
+			response.Fail(c, response.CodeRateLimited, "验证码尝试次数过多，请稍后再试")
+		default:
+			response.ServerError(c, "校验验证码失败")
 		}
-		response.ServerError(c, "校验验证码失败")
 		return
 	}
 
@@ -90,11 +95,13 @@ func (s *Server) appUpdateMe(c *gin.Context) {
 
 	updates := map[string]interface{}{}
 	if req.Nickname != nil {
-		if len(*req.Nickname) == 0 || len(*req.Nickname) > 64 {
-			response.InvalidParam(c, "昵称长度需在 1~64 之间")
+		nickname := strings.TrimSpace(*req.Nickname)
+		runeCount := utf8.RuneCountInString(nickname)
+		if runeCount == 0 || runeCount > 32 {
+			response.InvalidParam(c, "昵称长度需在 1~32 个字符之间")
 			return
 		}
-		updates["nickname"] = *req.Nickname
+		updates["nickname"] = nickname
 	}
 	if req.Avatar != nil {
 		if len(*req.Avatar) > 512 {

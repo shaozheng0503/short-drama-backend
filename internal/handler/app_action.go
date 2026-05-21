@@ -43,6 +43,10 @@ func (s *Server) appShareDrama(c *gin.Context) {
 		response.ServerError(c, "查询短剧失败")
 		return
 	}
+	if drama.Status != model.DramaStatusPublished {
+		response.NotFound(c, "短剧未上架")
+		return
+	}
 	// MVP：分享只做埋点，不落表。channel 字段读出但不持久化。
 	_ = c.ShouldBindJSON(&struct {
 		Channel string `json:"channel"`
@@ -90,6 +94,10 @@ func (s *Server) appToggleAction(c *gin.Context, action, counter string, enable 
 			return
 		}
 		response.ServerError(c, "查询短剧失败")
+		return
+	}
+	if drama.Status != model.DramaStatusPublished {
+		response.NotFound(c, "短剧未上架")
 		return
 	}
 

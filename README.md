@@ -166,7 +166,7 @@ internal/handler/
 
 ## 六、腾讯云短信切换路径
 
-短信模块默认走 `DevProvider`（仅写库 + 日志），生产前需要切换到 `TencentProvider`。**代码里只留了接入位**，真实发短信还差两件事：
+短信模块默认走 `DevProvider`（仅写库 + 日志），生产前需要切换到 `TencentProvider`。当前代码已经接入腾讯云 SMS SDK；真实发短信前还需要确认控制台配置和模板审核状态。
 
 ### 6.1 腾讯云控制台准备
 
@@ -182,12 +182,13 @@ internal/handler/
 把 `.env` 里这些字段填齐，**然后再** `SMS_DEV_MODE=false`：
 
 ```bash
-TENCENT_SECRET_ID=...
-TENCENT_SECRET_KEY=...
-TENCENT_REGION=ap-guangzhou
-TENCENT_SMS_SDK_APP_ID=...
-TENCENT_SMS_SIGN_NAME=...
-TENCENT_SMS_TEMPLATE_LOGIN=...
+TENCENTCLOUD_SECRET_ID=...
+TENCENTCLOUD_SECRET_KEY=...
+SMS_REGION=ap-guangzhou
+SMS_SDK_APP_ID=...
+SMS_SIGN_NAME=...
+SMS_TEMPLATE_LOGIN=...
+SMS_TEMPLATE_LOGIN_PARAMS=code,ttl_minutes
 SMS_DEV_MODE=false
 ```
 
@@ -196,10 +197,11 @@ SMS_DEV_MODE=false
 
 ### 6.3 代码接入位
 
-`internal/sms/tencent_provider.go` 的 `Send()` 当前是 stub，注释里已经写了完整的 SDK 调用模板。真接入只需两步：
+`internal/sms/tencent_provider.go` 的 `Send()` 已经使用腾讯云 SMS SDK 调用 `SendSms`。真联调只需：
 
-1. `go get github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/sms/v20210111`
-2. 把 `Send()` 里的 `log.Printf + return ErrProviderUnavailable` 替换成注释里那段调用代码。
+1. 确认 `.env` 按 6.2 填齐。
+2. 确认腾讯云签名和验证码模板已审核通过。
+3. 重启服务并观察日志输出 `[sms] provider=tencent dev_mode=false`。
 
 ---
 

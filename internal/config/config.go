@@ -3,18 +3,38 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type Config struct {
-	Addr       string
-	DSN        string
-	JWTSecret  string
-	JWTExpires time.Duration
+	Addr               string
+	DSN                string
+	JWTSecret          string
+	JWTExpires         time.Duration
+	ShutdownTimeout    time.Duration
+	CORSAllowedOrigins []string
 
-	SMSDevMode      bool
-	SMSCodeTTL      time.Duration
-	SMSResendWindow time.Duration
+	RedisAddr      string
+	RedisPassword  string
+	RedisDB        int
+	IdempotencyTTL time.Duration
+
+	RateLimitEnabled bool
+	RateLimitRPS     float64
+	RateLimitBurst   int
+
+	AlertEnabled    bool
+	AlertWebhookURL string
+	AlertTimeout    time.Duration
+
+	SMSDevMode           bool
+	SMSCodeTTL           time.Duration
+	SMSResendWindow      time.Duration
+	SMSMaxVerifyAttempts int
+	SMSVerifyLockWindow  time.Duration
+	SMSSendIPRPS         float64
+	SMSSendIPBurst       int
 
 	AdminInitUsername string
 	AdminInitPassword string
@@ -33,9 +53,9 @@ type Config struct {
 	SMSRegion              string
 
 	// 钱相关（执行文档第七节）
-	CreatorShareRate       float64
-	MinWithdrawalCents     int64
-	OrderPendingTTL        time.Duration
+	CreatorShareRate   float64
+	MinWithdrawalCents int64
+	OrderPendingTTL    time.Duration
 
 	// 敏感字段加密（AES-GCM）；32 字节 base64 编码（aes-256）
 	DataEncryptionKeyB64 string
@@ -48,21 +68,42 @@ type Config struct {
 	WechatMchID    string
 	WechatAPIKeyV3 string
 
-	AlipayAppID         string
-	AlipayPrivateKey    string
-	AlipayPublicKey     string
+	AlipayAppID      string
+	AlipayPrivateKey string
+	AlipayPublicKey  string
 }
 
 func Load() Config {
 	return Config{
-		Addr:       getEnv("APP_ADDR", ":8080"),
-		DSN:        getEnv("DATABASE_DSN", "host=localhost user=postgres password=postgres dbname=ai_drama port=5432 sslmode=disable TimeZone=Asia/Shanghai"),
-		JWTSecret:  getEnv("JWT_SECRET", "dev-secret-change-me"),
-		JWTExpires: time.Duration(getEnvInt("JWT_EXPIRES_HOURS", 168)) * time.Hour,
+		Addr:            getEnv("APP_ADDR", ":8080"),
+		DSN:             getEnv("DATABASE_DSN", "host=localhost user=postgres password=postgres dbname=ai_drama port=5432 sslmode=disable TimeZone=Asia/Shanghai"),
+		JWTSecret:       getEnv("JWT_SECRET", "dev-secret-change-me"),
+		JWTExpires:      time.Duration(getEnvInt("JWT_EXPIRES_HOURS", 168)) * time.Hour,
+		ShutdownTimeout: time.Duration(getEnvInt("APP_SHUTDOWN_TIMEOUT_SECONDS", 10)) * time.Second,
+		CORSAllowedOrigins: getEnvList("CORS_ALLOWED_ORIGINS", []string{
+			"http://localhost:3000",
+			"http://localhost:5173",
+			"http://127.0.0.1:3000",
+			"http://127.0.0.1:5173",
+		}),
+		RedisAddr:        getEnv("REDIS_ADDR", ""),
+		RedisPassword:    getEnv("REDIS_PASSWORD", ""),
+		RedisDB:          getEnvInt("REDIS_DB", 0),
+		IdempotencyTTL:   time.Duration(getEnvInt("IDEMPOTENCY_TTL_SECONDS", 1800)) * time.Second,
+		RateLimitEnabled: getEnvBool("RATE_LIMIT_ENABLED", false),
+		RateLimitRPS:     getEnvFloat("RATE_LIMIT_RPS", 20),
+		RateLimitBurst:   getEnvInt("RATE_LIMIT_BURST", 40),
+		AlertEnabled:     getEnvBool("ALERT_ENABLED", false),
+		AlertWebhookURL:  getEnv("ALERT_WEBHOOK_URL", ""),
+		AlertTimeout:     time.Duration(getEnvInt("ALERT_TIMEOUT_SECONDS", 3)) * time.Second,
 
-		SMSDevMode:      getEnvBool("SMS_DEV_MODE", true),
-		SMSCodeTTL:      time.Duration(getEnvInt("SMS_CODE_TTL_SECONDS", 300)) * time.Second,
-		SMSResendWindow: time.Duration(getEnvInt("SMS_RESEND_WINDOW_SECONDS", 60)) * time.Second,
+		SMSDevMode:           getEnvBool("SMS_DEV_MODE", true),
+		SMSCodeTTL:           time.Duration(getEnvInt("SMS_CODE_TTL_SECONDS", 300)) * time.Second,
+		SMSResendWindow:      time.Duration(getEnvInt("SMS_RESEND_WINDOW_SECONDS", 60)) * time.Second,
+		SMSMaxVerifyAttempts: getEnvInt("SMS_MAX_VERIFY_ATTEMPTS", 5),
+		SMSVerifyLockWindow:  time.Duration(getEnvInt("SMS_VERIFY_LOCK_SECONDS", 900)) * time.Second,
+		SMSSendIPRPS:         getEnvFloat("SMS_SEND_IP_RPS", 0.2),
+		SMSSendIPBurst:       getEnvInt("SMS_SEND_IP_BURST", 3),
 
 		AdminInitUsername: getEnv("ADMIN_INIT_USERNAME", "admin"),
 		AdminInitPassword: getEnv("ADMIN_INIT_PASSWORD", "admin123"),
@@ -136,4 +177,20 @@ func getEnvFloat(key string, fallback float64) float64 {
 		return fallback
 	}
 	return f
+}
+
+func getEnvList(key string, fallback []string) []string {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parts := strings.Split(value, ",")
+	list := make([]string, 0, len(parts))
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item != "" {
+			list = append(list, item)
+		}
+	}
+	return list
 }

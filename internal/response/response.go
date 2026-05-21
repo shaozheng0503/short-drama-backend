@@ -15,6 +15,7 @@ const (
 	CodeConflict        = 40901
 	CodeEpisodeLocked   = 42001
 	CodeOrderUnusable   = 42002
+	CodeRateLimited     = 42901
 	CodeServerError     = 50001
 	CodeThirdPartyError = 60001
 )
@@ -75,6 +76,22 @@ func Conflict(c *gin.Context, message string) {
 func ServerError(c *gin.Context, message string) {
 	if message == "" {
 		message = "服务端错误"
+	}
+	c.JSON(http.StatusInternalServerError, Body{Code: CodeServerError, Message: message, Data: nil})
+}
+
+// WebhookUnauthorized 支付回调验签失败：返回 HTTP 401，让平台区分非法请求。
+func WebhookUnauthorized(c *gin.Context, message string) {
+	if message == "" {
+		message = "验签失败"
+	}
+	c.JSON(http.StatusUnauthorized, Body{Code: CodeThirdPartyError, Message: message, Data: nil})
+}
+
+// WebhookRetry 支付回调业务处理失败：返回 HTTP 500，让平台重试。
+func WebhookRetry(c *gin.Context, message string) {
+	if message == "" {
+		message = "处理失败"
 	}
 	c.JSON(http.StatusInternalServerError, Body{Code: CodeServerError, Message: message, Data: nil})
 }

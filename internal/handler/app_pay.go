@@ -55,8 +55,12 @@ func (s *Server) appCreateOrder(c *gin.Context) {
 		switch {
 		case errors.Is(err, billing.ErrEpisodeNotFound):
 			response.NotFound(c, "剧集不存在")
+		case errors.Is(err, billing.ErrEpisodeNotReady):
+			response.InvalidParam(c, "剧集尚未就绪，不能下单")
 		case errors.Is(err, billing.ErrDramaNotFound):
 			response.NotFound(c, "短剧不存在")
+		case errors.Is(err, billing.ErrDramaNotAvailable):
+			response.InvalidParam(c, "短剧未上架或已下架，不能下单")
 		case errors.Is(err, billing.ErrOrderEpisodeMatch):
 			response.InvalidParam(c, "drama_id 与 episode_id 不匹配")
 		case errors.Is(err, billing.ErrEpisodeFree):
@@ -143,6 +147,8 @@ func (s *Server) appUnlockEpisode(c *gin.Context) {
 		switch {
 		case errors.Is(err, billing.ErrOrderNotFound):
 			response.NotFound(c, "订单不存在")
+		case errors.Is(err, billing.ErrOrderNotOwned):
+			response.Forbidden(c, "订单不属于当前用户")
 		case errors.Is(err, billing.ErrOrderEpisodeMatch):
 			response.Fail(c, response.CodeOrderUnusable, "订单与剧集不匹配")
 		case errors.Is(err, billing.ErrOrderNotPaid):

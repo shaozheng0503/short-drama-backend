@@ -10,9 +10,9 @@ import (
 )
 
 var (
-	ErrKeyMissing   = errors.New("DATA_ENCRYPTION_KEY 未设置")
-	ErrKeyInvalid   = errors.New("DATA_ENCRYPTION_KEY 长度非法（需要 base64 解码后 32 字节）")
-	ErrCipherShort  = errors.New("密文格式非法")
+	ErrKeyMissing  = errors.New("DATA_ENCRYPTION_KEY 未设置")
+	ErrKeyInvalid  = errors.New("DATA_ENCRYPTION_KEY 长度非法（需要 base64 解码后 32 字节）")
+	ErrCipherShort = errors.New("密文格式非法")
 )
 
 // Cryptor 用对称密钥做 AES-GCM 加密。

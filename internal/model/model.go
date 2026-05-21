@@ -102,13 +102,15 @@ func (SMSCode) TableName() string { return "sms_codes" }
 
 // Admin —— 管理员表（MVP 数据库设计 3.3）
 type Admin struct {
-	ID           uint64    `gorm:"primaryKey;column:id" json:"id"`
-	Username     string    `gorm:"column:username;size:64;uniqueIndex" json:"username"`
-	PasswordHash string    `gorm:"column:password_hash;size:255" json:"-"`
-	Role         string    `gorm:"column:role;size:32;default:admin" json:"role"`
-	Status       string    `gorm:"column:status;size:20;default:active" json:"status"`
-	CreatedAt    time.Time `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt    time.Time `gorm:"column:updated_at" json:"updated_at"`
+	ID                  uint64     `gorm:"primaryKey;column:id" json:"id"`
+	Username            string     `gorm:"column:username;size:64;uniqueIndex" json:"username"`
+	PasswordHash        string     `gorm:"column:password_hash;size:255" json:"-"`
+	Role                string     `gorm:"column:role;size:32;default:admin" json:"role"`
+	Status              string     `gorm:"column:status;size:20;default:active" json:"status"`
+	FailedLoginAttempts int        `gorm:"column:failed_login_attempts;default:0" json:"-"`
+	LockedUntil         *time.Time `gorm:"column:locked_until" json:"-"`
+	CreatedAt           time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt           time.Time  `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (Admin) TableName() string { return "admins" }
@@ -224,20 +226,20 @@ func (Product) TableName() string { return "products" }
 
 // Order —— 订单（MVP 数据库设计 3.12）
 type Order struct {
-	ID               uint64     `gorm:"primaryKey;column:id" json:"id"`
-	OrderNo          string     `gorm:"column:order_no;size:64;uniqueIndex" json:"order_no"`
-	UserID           uint64     `gorm:"column:user_id;index" json:"user_id"`
-	ProductID        *uint64    `gorm:"column:product_id" json:"product_id"`
-	DramaID          uint64     `gorm:"column:drama_id;index" json:"drama_id"`
-	EpisodeID        uint64     `gorm:"column:episode_id;index" json:"episode_id"`
-	AmountCents      int64      `gorm:"column:amount_cents" json:"amount_cents"`
-	PaymentMethod    string     `gorm:"column:payment_method;size:20" json:"payment_method"`
-	PlatformTradeNo  string     `gorm:"column:platform_trade_no;size:128;index" json:"platform_trade_no"`
-	Status           string     `gorm:"column:status;size:20;default:pending;index" json:"status"`
-	PaidAt           *time.Time `gorm:"column:paid_at" json:"paid_at"`
-	ExpiredAt        *time.Time `gorm:"column:expired_at" json:"expired_at"`
-	CreatedAt        time.Time  `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt        time.Time  `gorm:"column:updated_at" json:"updated_at"`
+	ID              uint64     `gorm:"primaryKey;column:id" json:"id"`
+	OrderNo         string     `gorm:"column:order_no;size:64;uniqueIndex" json:"order_no"`
+	UserID          uint64     `gorm:"column:user_id;index" json:"user_id"`
+	ProductID       *uint64    `gorm:"column:product_id" json:"product_id"`
+	DramaID         uint64     `gorm:"column:drama_id;index" json:"drama_id"`
+	EpisodeID       uint64     `gorm:"column:episode_id;index" json:"episode_id"`
+	AmountCents     int64      `gorm:"column:amount_cents" json:"amount_cents"`
+	PaymentMethod   string     `gorm:"column:payment_method;size:20" json:"payment_method"`
+	PlatformTradeNo string     `gorm:"column:platform_trade_no;size:128;index" json:"platform_trade_no"`
+	Status          string     `gorm:"column:status;size:20;default:pending;index" json:"status"`
+	PaidAt          *time.Time `gorm:"column:paid_at" json:"paid_at"`
+	ExpiredAt       *time.Time `gorm:"column:expired_at" json:"expired_at"`
+	CreatedAt       time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt       time.Time  `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (Order) TableName() string { return "orders" }
@@ -301,3 +303,24 @@ type CreatorStatsDaily struct {
 }
 
 func (CreatorStatsDaily) TableName() string { return "creator_stats_daily" }
+
+// OperationLog —— 后台操作审计日志；不记录请求体，避免敏感信息落库。
+type OperationLog struct {
+	ID              uint64    `gorm:"primaryKey;column:id" json:"id"`
+	ActorSubject    string    `gorm:"column:actor_subject;size:32;index" json:"actor_subject"`
+	ActorID         uint64    `gorm:"column:actor_id;index" json:"actor_id"`
+	Method          string    `gorm:"column:method;size:10" json:"method"`
+	Path            string    `gorm:"column:path;size:255;index" json:"path"`
+	FullPath        string    `gorm:"column:full_path;size:255;index" json:"full_path"`
+	Action          string    `gorm:"column:action;size:64;index" json:"action"`
+	ResourceType    string    `gorm:"column:resource_type;size:64;index" json:"resource_type"`
+	ResourceID      string    `gorm:"column:resource_id;size:64;index" json:"resource_id"`
+	StatusCode      int       `gorm:"column:status_code" json:"status_code"`
+	ResponseCode    int       `gorm:"column:response_code" json:"response_code"`
+	ResponseMessage string    `gorm:"column:response_message;size:255" json:"response_message"`
+	ClientIP        string    `gorm:"column:client_ip;size:64" json:"client_ip"`
+	UserAgent       string    `gorm:"column:user_agent;size:255" json:"user_agent"`
+	CreatedAt       time.Time `gorm:"column:created_at;index" json:"created_at"`
+}
+
+func (OperationLog) TableName() string { return "operation_logs" }

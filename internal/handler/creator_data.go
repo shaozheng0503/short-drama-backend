@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"errors"
 	"time"
 
 	"ai-drama-platform/internal/middleware"
@@ -212,11 +211,22 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 		return
 	}
 
+	// 资料齐全且当前是 pending：MVP 直接置为 verified（真实人脸 / 银行卡四要素接入后改逻辑）
+	var creator model.Creator
+	if err := s.db.First(&creator, cid).Error; err != nil {
+		response.ServerError(c, "查询创作者失败")
+		return
+	}
+
 	updates := map[string]interface{}{}
 	if req.Name != nil && *req.Name != "" {
 		updates["name"] = *req.Name
 	}
 	if req.BankName != nil {
+		if *req.BankName == "" && creator.VerifyStatus == model.CreatorVerifyVerified {
+			response.InvalidParam(c, "已实名的创作者不能清空 bank_name；如需修改请填新值")
+			return
+		}
 		updates["bank_name"] = *req.BankName
 	}
 	if req.IDCardNo != nil && *req.IDCardNo != "" {
@@ -237,12 +247,6 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 		updates["bank_card_last4"] = secure.Last4(*req.BankCardNo)
 	}
 
-	// 资料齐全且当前是 pending：MVP 直接置为 verified（真实人脸 / 银行卡四要素接入后改逻辑）
-	var creator model.Creator
-	if err := s.db.First(&creator, cid).Error; err != nil {
-		response.ServerError(c, "查询创作者失败")
-		return
-	}
 	willName := creator.Name
 	if v, ok := updates["name"].(string); ok {
 		willName = v
@@ -266,7 +270,7 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 
 	if len(updates) > 0 {
 		if err := s.db.Model(&creator).Updates(updates).Error; err != nil {
-			if errors.Is(err, errUniqueViolation) || isUniqueViolation(err) {
+			if isUniqueViolation(err) {
 				response.Conflict(c, "资料冲突")
 				return
 			}
@@ -296,6 +300,3 @@ func creatorFullView(cr model.Creator) gin.H {
 		"status":              cr.Status,
 	}
 }
-
-// errUniqueViolation 占位 sentinel，真实重复键判定走 isUniqueViolation。
-var errUniqueViolation = errors.New("unique violation")
