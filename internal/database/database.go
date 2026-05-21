@@ -33,6 +33,7 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		&model.Contract{},
 		&model.Withdrawal{},
 		&model.CreatorStatsDaily{},
+		&model.OperationLog{},
 	); err != nil {
 		return nil, err
 	}
@@ -42,7 +43,21 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 	if err := ensureDefaultProduct(db); err != nil {
 		return nil, err
 	}
+	if err := ensureIndexes(db); err != nil {
+		return nil, err
+	}
 	return db, nil
+}
+
+func ensureIndexes(db *gorm.DB) error {
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_user_episode_pending
+		ON orders (user_id, episode_id)
+		WHERE status = 'pending'
+	`).Error; err != nil {
+		return err
+	}
+	return nil
 }
 
 func ensureInitialAdmin(db *gorm.DB, cfg config.Config) error {

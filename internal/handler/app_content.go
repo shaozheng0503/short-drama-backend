@@ -35,9 +35,9 @@ func (s *Server) appHome(c *gin.Context) {
 		Find(&hot)
 
 	response.OK(c, gin.H{
-		"categories":        categoryViews,
-		"recommend_dramas":  dramaCardList(recommend),
-		"hot_dramas":        dramaCardList(hot),
+		"categories":       categoryViews,
+		"recommend_dramas": dramaCardList(recommend),
+		"hot_dramas":       dramaCardList(hot),
 	})
 }
 

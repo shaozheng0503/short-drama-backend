@@ -216,9 +216,14 @@ func (s *Server) adminBanCreator(c *gin.Context) {
 		response.InvalidParam(c, "id 不合法")
 		return
 	}
-	if err := s.db.Model(&model.Creator{}).Where("id = ?", id).
-		Update("status", model.StatusBanned).Error; err != nil {
+	res := s.db.Model(&model.Creator{}).Where("id = ?", id).
+		Update("status", model.StatusBanned)
+	if res.Error != nil {
 		response.ServerError(c, "封禁失败")
+		return
+	}
+	if res.RowsAffected == 0 {
+		response.NotFound(c, "创作者不存在")
 		return
 	}
 	response.OK(c, gin.H{"id": id, "status": model.StatusBanned})
@@ -369,9 +374,13 @@ func (s *Server) adminRejectWithdrawal(c *gin.Context) {
 			return errWithdrawalStatus
 		}
 		// frozen → balance 回退
+		var creator model.Creator
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			First(&model.Creator{}, w.CreatorID).Error; err != nil {
+			First(&creator, w.CreatorID).Error; err != nil {
 			return err
+		}
+		if creator.FrozenCents < w.AmountCents {
+			return errFrozenInsufficient
 		}
 		if err := tx.Model(&model.Creator{}).Where("id = ?", w.CreatorID).
 			Updates(map[string]interface{}{
@@ -411,9 +420,13 @@ func (s *Server) adminMarkWithdrawalPaid(c *gin.Context) {
 		if w.Status != model.WithdrawalStatusApproved {
 			return errWithdrawalStatus
 		}
+		var creator model.Creator
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			First(&model.Creator{}, w.CreatorID).Error; err != nil {
+			First(&creator, w.CreatorID).Error; err != nil {
 			return err
+		}
+		if creator.FrozenCents < w.AmountCents {
+			return errFrozenInsufficient
 		}
 		if err := tx.Model(&model.Creator{}).Where("id = ?", w.CreatorID).
 			Update("frozen_cents", gorm.Expr("frozen_cents - ?", w.AmountCents)).Error; err != nil {
@@ -435,6 +448,8 @@ func (s *Server) respondWithdrawalResult(c *gin.Context, id uint64, err error) {
 		switch {
 		case errors.Is(err, errWithdrawalStatus):
 			response.Conflict(c, "当前状态不允许该操作")
+		case errors.Is(err, errFrozenInsufficient):
+			response.Conflict(c, "创作者冻结余额不足，账目异常，请先对账")
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			response.NotFound(c, "提现申请不存在")
 		default:
@@ -449,4 +464,7 @@ func (s *Server) respondWithdrawalResult(c *gin.Context, id uint64, err error) {
 	response.OK(c, view)
 }
 
-var errWithdrawalStatus = errors.New("withdrawal status invalid")
+var (
+	errWithdrawalStatus   = errors.New("withdrawal status invalid")
+	errFrozenInsufficient = errors.New("frozen balance insufficient")
+)

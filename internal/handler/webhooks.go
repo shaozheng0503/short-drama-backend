@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"ai-drama-platform/internal/alert"
 	"ai-drama-platform/internal/billing"
 	"ai-drama-platform/internal/payment"
 	"ai-drama-platform/internal/response"
@@ -24,7 +25,7 @@ func (s *Server) webhookAlipayPay(c *gin.Context) {
 func (s *Server) handlePayWebhook(c *gin.Context, method string) {
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		response.ServerError(c, "读取请求体失败")
+		response.WebhookRetry(c, "读取请求体失败")
 		return
 	}
 	headers := map[string]string{}
@@ -36,45 +37,116 @@ func (s *Server) handlePayWebhook(c *gin.Context, method string) {
 
 	provider, err := s.payments.Get(method)
 	if err != nil {
-		response.InvalidParam(c, "method 非法")
+		response.WebhookRetry(c, "支付渠道不可用")
 		return
 	}
 	event, err := provider.VerifyAndParse(headers, body)
 	if err != nil {
 		if errors.Is(err, payment.ErrVerifyFailed) {
-			// 微信 / 支付宝在验签失败时希望返回非 success
 			log.Printf("[webhook] %s verify failed", method)
-			response.Fail(c, response.CodeThirdPartyError, "验签失败")
+			response.WebhookUnauthorized(c, "验签失败")
 			return
 		}
 		log.Printf("[webhook] %s parse err=%v", method, err)
-		response.InvalidParam(c, "回调解析失败")
+		response.WebhookRetry(c, "回调解析失败")
 		return
 	}
 
 	if event == nil || event.OrderNo == "" {
-		response.InvalidParam(c, "order_no 缺失")
+		response.WebhookRetry(c, "order_no 缺失")
 		return
 	}
 
 	if !event.Paid {
-		// 支付失败 / 关闭 / 待确认：MVP 不处理，仅回 ack
 		log.Printf("[webhook] %s order=%s non-paid event ignored", method, event.OrderNo)
 		response.OK(c, gin.H{"ack": true})
 		return
 	}
 
 	paidAt := time.Now()
-	if err := s.billing.MarkOrderPaid(event.OrderNo, event.PlatformTradeNo, paidAt); err != nil {
+	if err := s.billing.MarkOrderPaid(event.OrderNo, event.PlatformTradeNo, method, event.AmountCents, paidAt); err != nil {
 		switch {
 		case errors.Is(err, billing.ErrOrderNotFound):
-			response.NotFound(c, "订单不存在")
+			log.Printf("[webhook] %s order=%s not found", method, event.OrderNo)
+			s.alerts.SendAsync(alert.Event{
+				Level:   "error",
+				Type:    "payment_webhook_failed",
+				Message: "支付回调订单不存在",
+				Fields: map[string]interface{}{
+					"method":   method,
+					"order_no": event.OrderNo,
+					"error":    err.Error(),
+				},
+			})
+			response.WebhookRetry(c, "订单不存在")
 		case errors.Is(err, billing.ErrOrderNotPaid):
-			response.Fail(c, response.CodeConflict, "订单状态非法，无法标记已支付")
+			log.Printf("[webhook] %s order=%s invalid status", method, event.OrderNo)
+			s.alerts.SendAsync(alert.Event{
+				Level:   "error",
+				Type:    "payment_webhook_failed",
+				Message: "支付回调订单状态非法",
+				Fields: map[string]interface{}{
+					"method":   method,
+					"order_no": event.OrderNo,
+					"error":    err.Error(),
+				},
+			})
+			response.WebhookRetry(c, "订单状态非法，无法标记已支付")
+		case errors.Is(err, billing.ErrOrderAmountMismatch):
+			log.Printf("[webhook] %s order=%s amount mismatch", method, event.OrderNo)
+			s.alerts.SendAsync(alert.Event{
+				Level:   "error",
+				Type:    "payment_webhook_failed",
+				Message: "支付回调金额不一致",
+				Fields: map[string]interface{}{
+					"method":   method,
+					"order_no": event.OrderNo,
+					"error":    err.Error(),
+				},
+			})
+			response.WebhookRetry(c, "支付金额与订单金额不一致")
+		case errors.Is(err, billing.ErrOrderExpired):
+			log.Printf("[webhook] %s order=%s expired, refused to mark paid", method, event.OrderNo)
+			s.alerts.SendAsync(alert.Event{
+				Level:   "error",
+				Type:    "payment_webhook_late",
+				Message: "支付回调到达时订单已过期，已拒绝并 ack；需人工核对是否退款",
+				Fields: map[string]interface{}{
+					"method":            method,
+					"order_no":          event.OrderNo,
+					"platform_trade_no": event.PlatformTradeNo,
+					"amount_cents":      event.AmountCents,
+				},
+			})
+			// ack 200：渠道无需重试，但 ops 必须人工跟进退款
+			response.OK(c, gin.H{"ack": true, "ignored": "order_expired"})
+			return
+		case errors.Is(err, billing.ErrPaymentMethodMismatch):
+			log.Printf("[webhook] %s order=%s method mismatch", method, event.OrderNo)
+			s.alerts.SendAsync(alert.Event{
+				Level:   "error",
+				Type:    "payment_webhook_failed",
+				Message: "支付回调渠道不一致",
+				Fields: map[string]interface{}{
+					"method":   method,
+					"order_no": event.OrderNo,
+					"error":    err.Error(),
+				},
+			})
+			response.WebhookRetry(c, "支付渠道与订单不一致")
 		default:
 			log.Printf("[webhook] %s mark paid err=%v", method, err)
-			// 让支付平台重试
-			response.ServerError(c, "处理失败")
+			s.alerts.SendAsync(alert.Event{
+				Level:   "error",
+				Type:    "payment_webhook_failed",
+				Message: "支付回调处理失败",
+				Fields: map[string]interface{}{
+					"method":   method,
+					"order_no": event.OrderNo,
+					"error":    err.Error(),
+				},
+			})
+			response.WebhookRetry(c, "处理失败")
 		}
 		return
 	}

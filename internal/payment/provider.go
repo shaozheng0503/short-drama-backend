@@ -47,22 +47,22 @@ type Registry struct {
 func NewRegistry(cfg config.Config) *Registry {
 	reg := &Registry{providers: map[string]Provider{}}
 
-	// 微信：dev 模式或缺配置时走 stub
-	if cfg.PaymentDevMode || cfg.WechatAppID == "" || cfg.WechatMchID == "" || cfg.WechatAPIKeyV3 == "" {
+	// 微信：dev 模式走 stub；生产缺配置时拒绝，避免无验签回调被伪造。
+	if cfg.PaymentDevMode {
 		reg.providers["wechat"] = &DevProvider{method: "wechat"}
-		if !cfg.PaymentDevMode {
-			log.Printf("[payment] PAYMENT_DEV_MODE=false 但微信支付配置不全，wechat 退回 DevProvider")
-		}
+	} else if cfg.WechatAppID == "" || cfg.WechatMchID == "" || cfg.WechatAPIKeyV3 == "" {
+		reg.providers["wechat"] = &UnavailableProvider{method: "wechat"}
+		log.Printf("[payment] PAYMENT_DEV_MODE=false 但微信支付配置不全，wechat 已禁用")
 	} else {
 		reg.providers["wechat"] = &WechatProvider{cfg: cfg}
 	}
 
 	// 支付宝：同上
-	if cfg.PaymentDevMode || cfg.AlipayAppID == "" || cfg.AlipayPrivateKey == "" || cfg.AlipayPublicKey == "" {
+	if cfg.PaymentDevMode {
 		reg.providers["alipay"] = &DevProvider{method: "alipay"}
-		if !cfg.PaymentDevMode {
-			log.Printf("[payment] PAYMENT_DEV_MODE=false 但支付宝配置不全，alipay 退回 DevProvider")
-		}
+	} else if cfg.AlipayAppID == "" || cfg.AlipayPrivateKey == "" || cfg.AlipayPublicKey == "" {
+		reg.providers["alipay"] = &UnavailableProvider{method: "alipay"}
+		log.Printf("[payment] PAYMENT_DEV_MODE=false 但支付宝配置不全，alipay 已禁用")
 	} else {
 		reg.providers["alipay"] = &AlipayProvider{cfg: cfg}
 	}

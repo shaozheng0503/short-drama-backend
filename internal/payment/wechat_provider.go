@@ -14,8 +14,8 @@ import (
 //  3. VerifyAndParse：用平台证书校验 Wechatpay-Signature，AEAD_AES_256_GCM 解密 resource.ciphertext。
 //
 // 上线前还要：
-//  - 商户证书 + 商户号 + APP_ID + V3 APIv3 key 全部齐
-//  - 在微信商户后台配置回调域名为 https 的 /v1/webhooks/wechat/pay
+//   - 商户证书 + 商户号 + APP_ID + V3 APIv3 key 全部齐
+//   - 在微信商户后台配置回调域名为 https 的 /v1/webhooks/wechat/pay
 type WechatProvider struct {
 	cfg config.Config
 }

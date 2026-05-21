@@ -42,6 +42,34 @@ func (s *Server) appUpsertPlayHistory(c *gin.Context) {
 		response.InvalidParam(c, "drama_id 与 episode_id 不匹配")
 		return
 	}
+	if ep.Status != model.EpisodeStatusReady {
+		response.InvalidParam(c, "剧集尚未就绪，不能记录观看历史")
+		return
+	}
+	var drama model.Drama
+	if err := s.db.First(&drama, req.DramaID).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "短剧不存在")
+			return
+		}
+		response.ServerError(c, "查询短剧失败")
+		return
+	}
+	if drama.Status != model.DramaStatusPublished {
+		response.NotFound(c, "短剧未上架")
+		return
+	}
+	if ep.EpisodeNo > drama.FreeEpisodes {
+		var unlock model.EpisodeUnlock
+		if err := s.db.Where("user_id = ? AND episode_id = ?", uid, ep.ID).First(&unlock).Error; err != nil {
+			if isNotFound(err) {
+				response.Forbidden(c, "未解锁剧集不能记录观看历史")
+				return
+			}
+			response.ServerError(c, "查询解锁状态失败")
+			return
+		}
+	}
 
 	now := time.Now()
 	history := model.PlayHistory{

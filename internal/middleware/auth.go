@@ -21,7 +21,7 @@ const (
 )
 
 type Claims struct {
-	Subject  string `json:"subject"`
+	Subject   string `json:"subject"`
 	SubjectID uint64 `json:"subject_id"`
 	jwt.RegisteredClaims
 }
@@ -29,7 +29,7 @@ type Claims struct {
 func IssueToken(cfg config.Config, subject string, id uint64) (string, time.Time, error) {
 	expiresAt := time.Now().Add(cfg.JWTExpires)
 	claims := Claims{
-		Subject:  subject,
+		Subject:   subject,
 		SubjectID: id,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expiresAt),

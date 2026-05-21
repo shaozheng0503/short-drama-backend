@@ -1,18 +1,25 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"log"
+	"net/http"
 	"time"
 
+	"ai-drama-platform/internal/alert"
 	"ai-drama-platform/internal/billing"
 	"ai-drama-platform/internal/config"
+	"ai-drama-platform/internal/idempotency"
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/payment"
+	"ai-drama-platform/internal/ratelimit"
+	"ai-drama-platform/internal/redisclient"
 	"ai-drama-platform/internal/secure"
 	"ai-drama-platform/internal/sms"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
@@ -23,6 +30,10 @@ type Server struct {
 	payments *payment.Registry
 	billing  *billing.Service
 	cryptor  *secure.Cryptor
+	idem     *idempotency.Service
+	alerts   *alert.Client
+	redis    *redis.Client
+	started  time.Time
 }
 
 func New(db *gorm.DB, cfg config.Config) *Server {
@@ -35,6 +46,7 @@ func New(db *gorm.DB, cfg config.Config) *Server {
 		}
 	}
 	payments := payment.NewRegistry(cfg)
+	rdb := redisclient.New(cfg)
 	return &Server{
 		db:       db,
 		cfg:      cfg,
@@ -42,27 +54,65 @@ func New(db *gorm.DB, cfg config.Config) *Server {
 		payments: payments,
 		billing:  billing.New(db, cfg, payments),
 		cryptor:  cryptor,
+		idem:     idempotency.New(rdb, cfg.IdempotencyTTL),
+		alerts:   alert.New(cfg),
+		redis:    rdb,
+		started:  time.Now(),
 	}
 }
 
-// StartBackground 启动后台任务：当前只有「过期订单关闭」一个 ticker。
-func (s *Server) StartBackground() {
+// StartBackground 启动后台任务；ctx 取消时主动停止所有后台 ticker。
+func (s *Server) StartBackground(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
-		for now := range ticker.C {
-			if n, err := s.billing.CloseExpiredOrders(now); err != nil {
-				log.Printf("[bg] close expired orders err=%v", err)
-			} else if n > 0 {
-				log.Printf("[bg] closed %d expired orders", n)
+		log.Printf("[bg] background tasks started")
+		for {
+			select {
+			case <-ctx.Done():
+				log.Printf("[bg] background tasks stopped")
+				return
+			case now := <-ticker.C:
+				s.closeExpiredOrders(now)
 			}
 		}
 	}()
 }
 
+func (s *Server) closeExpiredOrders(now time.Time) {
+	result, err := s.billing.CloseExpiredOrders(now)
+	if err != nil {
+		log.Printf("[bg] close expired orders err=%v", err)
+		s.alerts.SendAsync(alert.Event{
+			Level:   "error",
+			Type:    "close_expired_orders_failed",
+			Message: "关闭过期订单失败",
+			Fields: map[string]interface{}{
+				"error": err.Error(),
+			},
+		})
+	} else if result.ClosedCount > 0 {
+		log.Printf("[bg] closed %d expired orders oldest_expired_at=%v samples=%v",
+			result.ClosedCount, result.OldestExpiredAt, result.SampleOrderNos)
+		s.alerts.SendAsync(alert.Event{
+			Level:   "warn",
+			Type:    "expired_orders_closed",
+			Message: "过期订单已关闭",
+			Fields: map[string]interface{}{
+				"closed_count":      result.ClosedCount,
+				"oldest_expired_at": result.OldestExpiredAt,
+				"sample_order_nos":  result.SampleOrderNos,
+			},
+		})
+	}
+}
+
 func (s *Server) Router() *gin.Engine {
 	r := gin.Default()
+	r.Use(s.corsMiddleware())
+	r.Use(ratelimit.New(s.cfg).Handler())
 	r.GET("/health", s.health)
+	r.GET("/ready", s.ready)
 
 	v1 := r.Group("/v1")
 
@@ -81,6 +131,7 @@ func (s *Server) Router() *gin.Engine {
 
 	appAuth := app.Group("")
 	appAuth.Use(middleware.RequireApp(s.cfg))
+	appAuth.Use(s.requireActiveApp())
 	appAuth.GET("/me", s.appMe)
 	appAuth.PUT("/me", s.appUpdateMe)
 	appAuth.GET("/me/favorites", s.appListFavorites)
@@ -92,7 +143,7 @@ func (s *Server) Router() *gin.Engine {
 	appAuth.POST("/dramas/:id/favorite", s.appFavoriteDrama)
 	appAuth.DELETE("/dramas/:id/favorite", s.appUnfavoriteDrama)
 	appAuth.POST("/dramas/:id/share", s.appShareDrama)
-	appAuth.POST("/orders", s.appCreateOrder)
+	appAuth.POST("/orders", s.idempotencyMiddleware("app"), s.appCreateOrder)
 	appAuth.GET("/orders/:order_no", s.appGetOrder)
 	appAuth.POST("/episodes/:id/unlock", s.appUnlockEpisode)
 
@@ -101,13 +152,14 @@ func (s *Server) Router() *gin.Engine {
 	creator.POST("/auth/login", s.creatorLogin)
 	creatorAuth := creator.Group("")
 	creatorAuth.Use(middleware.RequireCreator(s.cfg))
+	creatorAuth.Use(s.requireActiveCreator())
 	creatorAuth.GET("/me", s.creatorMe)
 	creatorAuth.PUT("/me/profile", s.creatorUpdateProfile)
 	creatorAuth.GET("/dashboard", s.creatorDashboard)
 	creatorAuth.GET("/dramas", s.creatorListDramas)
 	creatorAuth.GET("/dramas/:id/stats", s.creatorDramaStats)
 	creatorAuth.GET("/income", s.creatorIncome)
-	creatorAuth.POST("/withdrawals", s.creatorCreateWithdrawal)
+	creatorAuth.POST("/withdrawals", s.idempotencyMiddleware("creator"), s.creatorCreateWithdrawal)
 	creatorAuth.GET("/withdrawals", s.creatorListWithdrawals)
 	creatorAuth.GET("/contracts", s.creatorListContracts)
 	creatorAuth.GET("/contracts/:id", s.creatorGetContract)
@@ -117,6 +169,8 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/auth/login", s.adminLogin)
 	adminAuth := admin.Group("")
 	adminAuth.Use(middleware.RequireAdmin(s.cfg))
+	adminAuth.Use(s.requireActiveAdmin())
+	adminAuth.Use(s.auditMiddleware())
 	adminAuth.GET("/me", s.adminMe)
 	adminAuth.GET("/dashboard", s.adminDashboard)
 
@@ -159,5 +213,55 @@ func (s *Server) Router() *gin.Engine {
 	webhooks.POST("/wechat/pay", s.webhookWechatPay)
 	webhooks.POST("/alipay/pay", s.webhookAlipayPay)
 
+	// === Dev-only：一键模拟支付成功，PAYMENT_DEV_MODE=true 才挂载 ===
+	if s.cfg.PaymentDevMode {
+		dev := v1.Group("/dev")
+		dev.POST("/orders/:order_no/pay", s.devMockPayOrder)
+		log.Printf("[dev] PAYMENT_DEV_MODE=true，已挂载 POST /v1/dev/orders/:order_no/pay")
+	}
+
 	return r
+}
+
+func (s *Server) idempotencyMiddleware(subject string) gin.HandlerFunc {
+	return s.idem.Middleware(subject, func(c *gin.Context) uint64 {
+		return middleware.CurrentID(c)
+	})
+}
+
+func (s *Server) corsMiddleware() gin.HandlerFunc {
+	allowed := map[string]bool{}
+	allowAny := false
+	for _, origin := range s.cfg.CORSAllowedOrigins {
+		if origin == "*" {
+			allowAny = true
+			continue
+		}
+		allowed[origin] = true
+	}
+
+	return func(c *gin.Context) {
+		origin := c.GetHeader("Origin")
+		// 不论 origin 是否命中白名单，只要存在白名单就声明 Vary: Origin，
+		// 防止反向代理 / CDN 把非白名单 origin 的响应缓存给白名单 origin。
+		if !allowAny && len(allowed) > 0 {
+			c.Header("Vary", "Origin")
+		}
+		if origin != "" && (allowAny || allowed[origin]) {
+			if allowAny {
+				c.Header("Access-Control-Allow-Origin", "*")
+			} else {
+				c.Header("Access-Control-Allow-Origin", origin)
+				c.Header("Access-Control-Allow-Credentials", "true")
+			}
+			c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
+			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			c.Header("Access-Control-Max-Age", "600")
+		}
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	}
 }

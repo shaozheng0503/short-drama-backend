@@ -75,6 +75,10 @@ func (s *Server) adminCreateEpisode(c *gin.Context) {
 	if req.VideoURL != "" && req.Status == "" {
 		status = model.EpisodeStatusReady
 	}
+	if status == model.EpisodeStatusReady && req.VideoURL == "" && req.VODFileID == "" {
+		response.InvalidParam(c, "ready 状态剧集必须提供 video_url 或 vod_file_id")
+		return
+	}
 
 	ep := model.Episode{
 		DramaID:         dramaID,
@@ -156,6 +160,23 @@ func (s *Server) adminUpdateEpisode(c *gin.Context) {
 			response.InvalidParam(c, "status 非法")
 			return
 		}
+	}
+
+	nextStatus := ep.Status
+	if req.Status != nil && *req.Status != "" {
+		nextStatus = *req.Status
+	}
+	nextVideoURL := ep.VideoURL
+	if req.VideoURL != nil {
+		nextVideoURL = *req.VideoURL
+	}
+	nextVODFileID := ep.VODFileID
+	if req.VODFileID != nil {
+		nextVODFileID = *req.VODFileID
+	}
+	if nextStatus == model.EpisodeStatusReady && nextVideoURL == "" && nextVODFileID == "" {
+		response.InvalidParam(c, "ready 状态剧集必须提供 video_url 或 vod_file_id")
+		return
 	}
 
 	if len(updates) > 0 {

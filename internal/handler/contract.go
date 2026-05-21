@@ -145,10 +145,17 @@ func (s *Server) adminCreateContract(c *gin.Context) {
 		return
 	}
 	if req.DramaID != nil && *req.DramaID > 0 {
-		var dc int64
-		s.db.Model(&model.Drama{}).Where("id = ?", *req.DramaID).Count(&dc)
-		if dc == 0 {
-			response.NotFound(c, "短剧不存在")
+		var drama model.Drama
+		if err := s.db.First(&drama, *req.DramaID).Error; err != nil {
+			if isNotFound(err) {
+				response.NotFound(c, "短剧不存在")
+				return
+			}
+			response.ServerError(c, "查询短剧失败")
+			return
+		}
+		if drama.CreatorID == nil || *drama.CreatorID != req.CreatorID {
+			response.InvalidParam(c, "短剧不属于该创作者")
 			return
 		}
 	}

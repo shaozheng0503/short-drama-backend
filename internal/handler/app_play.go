@@ -78,8 +78,8 @@ func (s *Server) appPlayEpisode(c *gin.Context) {
 			"episode_no": ep.EpisodeNo,
 			"title":      ep.Title,
 		},
-		"play_url":       ep.VideoURL,
-		"expire_seconds": 3600,
+		"play_url":        ep.VideoURL,
+		"expire_seconds":  3600,
 		"next_episode_id": nextID,
 	})
 }

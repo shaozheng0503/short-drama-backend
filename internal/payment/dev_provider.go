@@ -18,16 +18,16 @@ func (p *DevProvider) Method() string { return p.method }
 
 func (p *DevProvider) Prepay(input PrepayInput) (PrepayParams, error) {
 	return PrepayParams{
-		"method":         p.method,
-		"order_no":       input.OrderNo,
-		"amount_cents":   itoa(input.AmountCents),
-		"dev":            "true",
-		"dev_callback":   "POST /v1/webhooks/" + p.method + "/pay  body: {\"order_no\":\"" + input.OrderNo + "\",\"amount_cents\":" + itoa(input.AmountCents) + ",\"platform_trade_no\":\"DEV-...\",\"paid\":true}",
-		"app_id":         "DEV-APP-ID",
-		"prepay_id":      "DEV-PREPAY-" + input.OrderNo,
-		"timestamp":      "0",
-		"nonce_str":      "dev",
-		"sign":           "dev",
+		"method":       p.method,
+		"order_no":     input.OrderNo,
+		"amount_cents": itoa(input.AmountCents),
+		"dev":          "true",
+		"dev_callback": "POST /v1/webhooks/" + p.method + "/pay  body: {\"order_no\":\"" + input.OrderNo + "\",\"amount_cents\":" + itoa(input.AmountCents) + ",\"platform_trade_no\":\"DEV-...\",\"paid\":true}",
+		"app_id":       "DEV-APP-ID",
+		"prepay_id":    "DEV-PREPAY-" + input.OrderNo,
+		"timestamp":    "0",
+		"nonce_str":    "dev",
+		"sign":         "dev",
 	}, nil
 }
 
