@@ -126,6 +126,7 @@ func episodeAppView(e model.Episode, freeEpisodes int, unlocked bool) gin.H {
 func categoryView(c model.Category) gin.H {
 	return gin.H{
 		"id":         c.ID,
+		"type":       c.Type,
 		"name":       c.Name,
 		"sort_order": c.SortOrder,
 		"status":     c.Status,

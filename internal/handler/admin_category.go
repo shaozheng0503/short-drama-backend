@@ -7,9 +7,27 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// validCategoryType 白名单：只接受 4 个红果维度，避免 type 字段被乱写。
+func validCategoryType(t string) bool {
+	switch t {
+	case model.CategoryTypeTheme, model.CategoryTypeSetting,
+		model.CategoryTypeBackground, model.CategoryTypeAudience:
+		return true
+	}
+	return false
+}
+
 func (s *Server) adminListCategories(c *gin.Context) {
+	q := s.db.Model(&model.Category{})
+	if t := c.Query("type"); t != "" {
+		if !validCategoryType(t) {
+			response.InvalidParam(c, "type 不合法")
+			return
+		}
+		q = q.Where("type = ?", t)
+	}
 	var items []model.Category
-	if err := s.db.Order("sort_order asc, id asc").Find(&items).Error; err != nil {
+	if err := q.Order("type asc, sort_order asc, id asc").Find(&items).Error; err != nil {
 		response.ServerError(c, "查询分类失败")
 		return
 	}
@@ -21,6 +39,7 @@ func (s *Server) adminListCategories(c *gin.Context) {
 }
 
 type categoryUpsertRequest struct {
+	Type      *string `json:"type"`
 	Name      *string `json:"name"`
 	SortOrder *int    `json:"sort_order"`
 	Status    *string `json:"status"`
@@ -33,7 +52,14 @@ func (s *Server) adminCreateCategory(c *gin.Context) {
 		return
 	}
 
-	cat := model.Category{Name: *req.Name, Status: model.StatusActive}
+	cat := model.Category{Name: *req.Name, Status: model.StatusActive, Type: model.CategoryTypeTheme}
+	if req.Type != nil && *req.Type != "" {
+		if !validCategoryType(*req.Type) {
+			response.InvalidParam(c, "type 不合法")
+			return
+		}
+		cat.Type = *req.Type
+	}
 	if req.SortOrder != nil {
 		cat.SortOrder = *req.SortOrder
 	}

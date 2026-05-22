@@ -63,6 +63,32 @@ type Config struct {
 	// 支付 dev 模式：true 时所有 payment provider 返回 stub 参数，不真实联调
 	PaymentDevMode bool
 
+	// SeedMockData=true 时，启动期自动灌 mock 短剧 / 用户 / 订单等数据，便于前端联调。
+	// 幂等：已存在的不会重复写。生产严禁开启。
+	SeedMockData bool
+
+	// 腾讯云 COS（图片上传：封面 / 头像）
+	// CDNDomain 留空时，URL 拼为 https://{bucket}.cos.{region}.myqcloud.com
+	COSBucket    string
+	COSRegion    string
+	COSAppID     string
+	COSSecretID  string
+	COSSecretKey string
+	COSCDNDomain string
+
+	// 腾讯云 VOD（视频上传：剧集）
+	// SubAppID 若填 0，则走主应用（生产建议建子应用做数据隔离）。
+	// CallbackKey 为节点回调签名密钥；空 → 不验签（仅日志告警，生产必填）。
+	VODSubAppID     uint64
+	VODRegion       string
+	VODSecretID     string
+	VODSecretKey    string
+	VODProcedure    string
+	VODCallbackKey  string
+	VODCDNDomain    string
+	VODSignExpire   time.Duration // 客户端上传签名有效期，默认 1h
+	COSSignExpire   time.Duration // COS PUT 预签名有效期，默认 15min
+
 	// 微信 / 支付宝商户号（生产时填齐才会真实下单）
 	WechatAppID    string
 	WechatMchID    string
@@ -126,6 +152,24 @@ func Load() Config {
 		DataEncryptionKeyB64: getEnv("DATA_ENCRYPTION_KEY", ""),
 
 		PaymentDevMode: getEnvBool("PAYMENT_DEV_MODE", true),
+		SeedMockData:   getEnvBool("SEED_MOCK_DATA", false),
+
+		COSBucket:    getEnv("COS_BUCKET", ""),
+		COSRegion:    getEnv("COS_REGION", "ap-guangzhou"),
+		COSAppID:     getEnv("COS_APP_ID", ""),
+		COSSecretID:  getEnv("COS_SECRET_ID", ""),
+		COSSecretKey: getEnv("COS_SECRET_KEY", ""),
+		COSCDNDomain: getEnv("COS_CDN_DOMAIN", ""),
+		COSSignExpire: time.Duration(getEnvInt("COS_SIGN_EXPIRE_SECONDS", 900)) * time.Second,
+
+		VODSubAppID:    uint64(getEnvInt("VOD_SUB_APP_ID", 0)),
+		VODRegion:      getEnv("VOD_REGION", "ap-chongqing"),
+		VODSecretID:    getEnv("VOD_SECRET_ID", ""),
+		VODSecretKey:   getEnv("VOD_SECRET_KEY", ""),
+		VODProcedure:   getEnv("VOD_PROCEDURE_NAME", ""),
+		VODCallbackKey: getEnv("VOD_CALLBACK_KEY", ""),
+		VODCDNDomain:   getEnv("VOD_CDN_DOMAIN", ""),
+		VODSignExpire:  time.Duration(getEnvInt("VOD_SIGN_EXPIRE_SECONDS", 3600)) * time.Second,
 		WechatAppID:    getEnv("WECHAT_APP_ID", ""),
 		WechatMchID:    getEnv("WECHAT_MCH_ID", ""),
 		WechatAPIKeyV3: getEnv("WECHAT_API_KEY_V3", ""),

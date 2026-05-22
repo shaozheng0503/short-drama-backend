@@ -1,0 +1,150 @@
+// Package cos 给图片上传用：生成腾讯云 COS V5 PUT 预签名 URL。
+// 自实现签名（HMAC-SHA1），不引 cos-go-sdk-v5；避免再加一坨依赖。
+//
+// 协议参考：https://cloud.tencent.com/document/product/436/7778
+// 关键点：
+//  1. SignKey = HMAC-SHA1(SecretKey, KeyTime)
+//  2. StringToSign = "sha1\nKeyTime\nSHA1(HttpString)\n"
+//  3. Signature = HMAC-SHA1(SignKey, StringToSign)
+//  4. URL 拼出 q-sign-algorithm / q-ak / q-sign-time / q-key-time / q-header-list / q-url-param-list / q-signature
+package cos
+
+import (
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net/url"
+	"sort"
+	"strings"
+	"time"
+
+	"ai-drama-platform/internal/config"
+)
+
+var ErrNotConfigured = errors.New("cos not configured")
+
+type Signer struct {
+	cfg config.Config
+}
+
+func New(cfg config.Config) *Signer { return &Signer{cfg: cfg} }
+
+// Configured 用于挂路由前判断；缺任一关键项就视为未配置，handler 直接 503。
+func (s *Signer) Configured() bool {
+	c := s.cfg
+	return c.COSBucket != "" && c.COSRegion != "" && c.COSSecretID != "" && c.COSSecretKey != ""
+}
+
+// Host 返回 cos 默认 host（不含 scheme），生产可绑 CDN 域名再覆盖。
+func (s *Signer) Host() string {
+	return fmt.Sprintf("%s.cos.%s.myqcloud.com", s.cfg.COSBucket, s.cfg.COSRegion)
+}
+
+// PublicURL 返回上传完成后对外的访问链接。
+// 如果配了 CDN 就用 CDN，否则走 COS 默认域名。
+func (s *Signer) PublicURL(key string) string {
+	if s.cfg.COSCDNDomain != "" {
+		return strings.TrimRight(s.cfg.COSCDNDomain, "/") + "/" + strings.TrimLeft(key, "/")
+	}
+	return "https://" + s.Host() + "/" + strings.TrimLeft(key, "/")
+}
+
+// PresignedPUT 生成 PUT 直传预签名 URL。
+//
+// key 用业务自己定的路径（如 images/2026/05/avatars/abc.jpg）。
+// 调用方拿着返回的 URL 直接 PUT 文件即可，Body 是文件原文。
+// 关键：URL 签名里强制带 x-cos-acl=public-read 头，让对象一上传就是公有读，
+//      绕开"桶私有但要单文件公开"的常见踩坑场景。前端 PUT 时必须同时发这个 header。
+func (s *Signer) PresignedPUT(key string) (signedURL string, expiresAt time.Time, requiredHeaders map[string]string, err error) {
+	if !s.Configured() {
+		return "", time.Time{}, nil, ErrNotConfigured
+	}
+	now := time.Now()
+	expire := s.cfg.COSSignExpire
+	if expire <= 0 {
+		expire = 15 * time.Minute
+	}
+	expiresAt = now.Add(expire)
+
+	keyTime := fmt.Sprintf("%d;%d", now.Unix(), expiresAt.Unix())
+
+	// 把 x-cos-acl 签进签名 — 客户端 PUT 时必须带这个 header，COS 才认。
+	headers := map[string]string{
+		"x-cos-acl": "public-read",
+	}
+	headerListStr, headerStr := buildHeaderParts(headers)
+
+	httpString := strings.Join([]string{
+		"put",
+		"/" + strings.TrimLeft(key, "/"),
+		"",         // url params
+		headerStr,  // 已签的 header k=v；按 COS 规范 lower-case + urlencode value
+		"",
+	}, "\n")
+
+	signKey := hmacSHA1Hex(s.cfg.COSSecretKey, keyTime)
+	stringToSign := strings.Join([]string{"sha1", keyTime, sha1Hex(httpString), ""}, "\n")
+	signature := hmacSHA1Hex(signKey, stringToSign)
+
+	q := url.Values{}
+	q.Set("q-sign-algorithm", "sha1")
+	q.Set("q-ak", s.cfg.COSSecretID)
+	q.Set("q-sign-time", keyTime)
+	q.Set("q-key-time", keyTime)
+	q.Set("q-header-list", headerListStr)
+	q.Set("q-url-param-list", "")
+	q.Set("q-signature", signature)
+
+	signedURL = "https://" + s.Host() + "/" + strings.TrimLeft(key, "/") + "?" + sortedEncode(q)
+	return signedURL, expiresAt, headers, nil
+}
+
+// buildHeaderParts 输出两个值：
+//  1) q-header-list = "x-cos-acl;..." 用分号连接的小写 header 名（字典序）
+//  2) headerStr     = "x-cos-acl=public-read&..." 用 & 连的 key=urlencode(value)
+func buildHeaderParts(headers map[string]string) (string, string) {
+	keys := make([]string, 0, len(headers))
+	for k := range headers {
+		keys = append(keys, strings.ToLower(k))
+	}
+	sort.Strings(keys)
+	lower := make(map[string]string, len(headers))
+	for k, v := range headers {
+		lower[strings.ToLower(k)] = v
+	}
+	listParts := make([]string, 0, len(keys))
+	pairParts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		listParts = append(listParts, k)
+		pairParts = append(pairParts, k+"="+url.QueryEscape(lower[k]))
+	}
+	return strings.Join(listParts, ";"), strings.Join(pairParts, "&")
+}
+
+func hmacSHA1Hex(key, data string) string {
+	m := hmac.New(sha1.New, []byte(key))
+	_, _ = m.Write([]byte(data))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+func sha1Hex(data string) string {
+	h := sha1.New()
+	_, _ = h.Write([]byte(data))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// sortedEncode 按 key 字典序拼 query；COS 规定 q-* 参数顺序必须固定。
+func sortedEncode(v url.Values) string {
+	keys := make([]string, 0, len(v))
+	for k := range v {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, url.QueryEscape(k)+"="+url.QueryEscape(v.Get(k)))
+	}
+	return strings.Join(parts, "&")
+}

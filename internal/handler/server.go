@@ -10,6 +10,7 @@ import (
 	"ai-drama-platform/internal/alert"
 	"ai-drama-platform/internal/billing"
 	"ai-drama-platform/internal/config"
+	"ai-drama-platform/internal/cos"
 	"ai-drama-platform/internal/idempotency"
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/payment"
@@ -17,6 +18,7 @@ import (
 	"ai-drama-platform/internal/redisclient"
 	"ai-drama-platform/internal/secure"
 	"ai-drama-platform/internal/sms"
+	"ai-drama-platform/internal/vod"
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -33,6 +35,8 @@ type Server struct {
 	idem     *idempotency.Service
 	alerts   *alert.Client
 	redis    *redis.Client
+	cos      *cos.Signer
+	vod      *vod.Signer
 	started  time.Time
 }
 
@@ -57,6 +61,8 @@ func New(db *gorm.DB, cfg config.Config) *Server {
 		idem:     idempotency.New(rdb, cfg.IdempotencyTTL),
 		alerts:   alert.New(cfg),
 		redis:    rdb,
+		cos:      cos.New(cfg),
+		vod:      vod.New(cfg),
 		started:  time.Now(),
 	}
 }
@@ -118,6 +124,7 @@ func (s *Server) Router() *gin.Engine {
 
 	common := v1.Group("/common")
 	common.POST("/sms/send", s.sendSMS)
+	common.POST("/uploads/image-sign", s.commonImageUploadSign)
 
 	// === APP ===
 	app := v1.Group("/app")
@@ -189,6 +196,8 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/dramas/:id/episodes", s.adminCreateEpisode)
 	adminAuth.PUT("/episodes/:id", s.adminUpdateEpisode)
 
+	adminAuth.POST("/uploads/vod-sign", s.adminVODUploadSign)
+
 	adminAuth.GET("/creators", s.adminListCreators)
 	adminAuth.POST("/creators", s.adminCreateCreator)
 	adminAuth.GET("/creators/:id", s.adminGetCreator)
@@ -212,12 +221,14 @@ func (s *Server) Router() *gin.Engine {
 	webhooks := v1.Group("/webhooks")
 	webhooks.POST("/wechat/pay", s.webhookWechatPay)
 	webhooks.POST("/alipay/pay", s.webhookAlipayPay)
+	webhooks.POST("/vod", s.webhookVOD)
 
-	// === Dev-only：一键模拟支付成功，PAYMENT_DEV_MODE=true 才挂载 ===
+	// === Dev-only：一键模拟支付成功 + 一键灌 mock 数据，PAYMENT_DEV_MODE=true 才挂载 ===
 	if s.cfg.PaymentDevMode {
 		dev := v1.Group("/dev")
 		dev.POST("/orders/:order_no/pay", s.devMockPayOrder)
-		log.Printf("[dev] PAYMENT_DEV_MODE=true，已挂载 POST /v1/dev/orders/:order_no/pay")
+		dev.POST("/seed", s.devSeed)
+		log.Printf("[dev] PAYMENT_DEV_MODE=true，已挂载 POST /v1/dev/orders/:order_no/pay 和 POST /v1/dev/seed")
 	}
 
 	return r

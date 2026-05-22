@@ -405,6 +405,73 @@
 - `.env` / `.env.example` 显式列 `PAYMENT_DEV_MODE` + wechat/alipay 占位 + 说明，避免运维不知道当前在 mock 模式
 - 上线切换路径：填齐微信 / 支付宝密钥 → `PAYMENT_DEV_MODE=false` → 重启 → dev 端点自动消失、provider 自动替换；任一渠道配置不全自动 fallback 到 `UnavailableProvider`（拒绝下单，不会静默走 mock）
 
+### 3.28 测试服务器部署（2026-05-21）
+
+> 目标：先把 MVP 后端部署到腾讯云 Ubuntu 22.04 服务器，供前端和接口联调用；域名 / HTTPS 后续接入现有 80/443 入口。
+
+- ✅ 服务器：`43.132.168.84`，SSH 端口 `8848`，后端监听 `:18080`
+- ✅ 已安装并启用 PostgreSQL 14、Redis 6
+- ✅ 已创建数据库 `ai_drama`、数据库用户 `ai_drama`，应用启动时 AutoMigrate 成功创建 16 张表
+- ✅ 已部署 systemd 服务 `drama-backend.service`
+  - 工作目录：`/opt/drama-backend`
+  - 配置文件：`/opt/drama-backend/.env`（root/drama 可读，包含随机 DB 密码、JWT_SECRET、DATA_ENCRYPTION_KEY、初始 admin 密码）
+  - API 二进制：`/opt/drama-backend/drama-api`
+- ✅ 已部署运维二进制：`drama-check-config`、`drama-reconcile`、`drama-close-expired-orders`
+- ✅ 自测：
+  - `GET http://127.0.0.1:18080/health` → code=0
+  - `GET http://127.0.0.1:18080/ready` → database=ok / redis=ok
+  - `GET http://43.132.168.84:18080/health` → code=0
+  - `GET http://43.132.168.84:18080/ready` → database=ok / redis=ok
+  - `./drama-reconcile` → status=OK
+  - `./drama-close-expired-orders` → closed_expired_orders=0
+- ⚠️ 当前部署为联调 / 测试模式：
+  - `SMS_DEV_MODE=true`
+  - `PAYMENT_DEV_MODE=true`
+  - `CORS_ALLOWED_ORIGINS=*`
+  - 真实上线前需要改为正式短信 / 支付配置，并接入域名 HTTPS
+
+### 3.29 线上完整主链路自测（2026-05-21）
+
+> 目标：验证 `43.132.168.84:18080` 测试环境的 MVP 主链路可跑通。
+
+- ✅ 健康 / 就绪：
+  - `GET /health` → code=0
+  - `GET /ready` → `database=ok` / `redis=ok`
+- ✅ 管理端：
+  - `POST /v1/admin/auth/login` 登录成功
+  - `GET /v1/admin/me` 查询成功
+  - 创建分类、创建短剧、创建 2 集剧集、上架短剧成功
+- ✅ 创作者端：
+  - `POST /v1/common/sms/send` + `POST /v1/creator/auth/login` 登录成功
+  - `PUT /v1/creator/me/profile` 填姓名 / 身份证 / 银行卡后自动 `verified`
+  - `GET /v1/creator/dashboard` 收益正确增加
+  - `GET /v1/creator/income`、`GET /v1/creator/dramas` 查询成功
+  - `POST /v1/creator/withdrawals` 提现申请成功
+- ✅ APP 端：
+  - `POST /v1/common/sms/send` + `POST /v1/app/auth/login` 登录成功
+  - 首页、短剧详情、剧集列表可查询
+  - 免费集可播放
+  - 付费集未解锁时返回 `42001`
+  - `POST /v1/app/orders` 下单成功
+  - `POST /v1/dev/orders/:order_no/pay` mock 支付成功
+  - `POST /v1/app/episodes/:id/unlock` 解锁成功
+  - 解锁后付费集可播放
+  - `POST /v1/app/play-history` 观看历史写入成功
+- ✅ 管理查询：
+  - `GET /v1/admin/dashboard`
+  - `GET /v1/admin/orders`
+  - `GET /v1/admin/withdrawals`
+- ✅ 运维脚本：
+  - `/opt/drama-backend/drama-reconcile` → `status: OK`
+- 测试数据：
+  - `creator_id=2`
+  - `drama_id=2`
+  - 免费集 `episode_id=3`
+  - 付费集 `episode_id=4`
+  - `order_no=20260521175937911621823`
+  - `withdrawal_no=WD2026052117594328554`
+- 备注：第一次测试使用 `price_cents=199`，按 50% 分账仅 99 分，低于 `MIN_WITHDRAWAL_CENTS=1000`，提现按预期返回 40001；第二次使用 `price_cents=2000` 后提现链路通过。
+
 ### 3.25 第四轮代码 Bug 修复与优化
 
 > 重点：支付回调 HTTP 语义、金额/渠道校验、账号封禁即时生效、SMS 防刷、并发下单、运营校验补全。
