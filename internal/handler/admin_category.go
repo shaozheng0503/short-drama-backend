@@ -96,6 +96,13 @@ func (s *Server) adminUpdateCategory(c *gin.Context) {
 	}
 
 	updates := map[string]interface{}{}
+	if req.Type != nil && *req.Type != "" {
+		if !validCategoryType(*req.Type) {
+			response.InvalidParam(c, "type 不合法")
+			return
+		}
+		updates["type"] = *req.Type
+	}
 	if req.Name != nil && *req.Name != "" {
 		updates["name"] = *req.Name
 	}

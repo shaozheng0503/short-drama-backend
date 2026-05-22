@@ -2,6 +2,8 @@ package model
 
 import (
 	"time"
+
+	"gorm.io/gorm"
 )
 
 const (
@@ -210,6 +212,21 @@ type Episode struct {
 }
 
 func (Episode) TableName() string { return "episodes" }
+
+// Comment —— APP 端评论。
+// 软删用 DeletedAt（GORM 自动支持）：删除后 List 不返，但保留落库供审计 / 复活。
+// 长度限制 1000，超长在 handler 截断+拒绝；user_id 索引按用户拉自己评论。
+type Comment struct {
+	ID        uint64         `gorm:"primaryKey;column:id" json:"id"`
+	DramaID   uint64         `gorm:"column:drama_id;index;not null" json:"drama_id"`
+	UserID    uint64         `gorm:"column:user_id;index;not null" json:"user_id"`
+	Content   string         `gorm:"column:content;type:text;not null" json:"content"`
+	CreatedAt time.Time      `gorm:"column:created_at;index" json:"created_at"`
+	UpdatedAt time.Time      `gorm:"column:updated_at" json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"column:deleted_at;index" json:"-"`
+}
+
+func (Comment) TableName() string { return "comments" }
 
 // PlayHistory —— 观看历史（MVP 数据库设计 3.8）
 type PlayHistory struct {
