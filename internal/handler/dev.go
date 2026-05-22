@@ -8,9 +8,22 @@ import (
 	"ai-drama-platform/internal/billing"
 	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/response"
+	"ai-drama-platform/internal/seed"
 
 	"github.com/gin-gonic/gin"
 )
+
+// devSeed 一键灌 mock 短剧 / 剧集 / 用户 / 订单数据，幂等：已存在的会跳过。
+// 仅在 PAYMENT_DEV_MODE=true 时挂载，路径：POST /v1/dev/seed
+func (s *Server) devSeed(c *gin.Context) {
+	result, err := seed.Run(s.db)
+	if err != nil {
+		log.Printf("[dev] seed err=%v", err)
+		response.ServerError(c, "seed 失败: "+err.Error())
+		return
+	}
+	response.OK(c, gin.H{"mock": true, "seeded": result})
+}
 
 // devMockPayOrder 一键模拟支付成功，仅在 PAYMENT_DEV_MODE=true 时挂载。
 // 前端联调路径：POST /v1/app/orders 拿到 order_no → POST /v1/dev/orders/:order_no/pay

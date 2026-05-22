@@ -11,8 +11,9 @@ import (
 )
 
 func (s *Server) appHome(c *gin.Context) {
+	// 首页类目只展示「主题」维度，避免设定/背景/受众标签把入口列表挤乱。
 	var categories []model.Category
-	s.db.Where("status = ?", model.StatusActive).
+	s.db.Where("status = ? AND type = ?", model.StatusActive, model.CategoryTypeTheme).
 		Order("sort_order asc, id asc").
 		Limit(20).
 		Find(&categories)

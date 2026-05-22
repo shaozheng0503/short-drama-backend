@@ -48,6 +48,15 @@ const (
 	ProductTypeEpisodeUnlock = "episode_unlock"
 )
 
+// 红果短剧分类的 4 个维度：一部剧通常 1 个 theme + 多个 setting + 1~2 个 background + 1 个 audience。
+// 流转：Category.Type 标记维度；DramaTag 做多对多；Drama.CategoryID 仍指向首要 theme，保持单 FK 老接口可用。
+const (
+	CategoryTypeTheme      = "theme"      // 主题：现言、古言、悬疑 …
+	CategoryTypeSetting    = "setting"    // 设定：豪门、重生、甜宠 …
+	CategoryTypeBackground = "background" // 背景：现代、古代、校园 …
+	CategoryTypeAudience   = "audience"   // 受众：男频 / 女频
+)
+
 const (
 	PaymentMethodWechat = "wechat"
 	PaymentMethodAlipay = "alipay"
@@ -137,9 +146,13 @@ type Creator struct {
 func (Creator) TableName() string { return "creators" }
 
 // Category —— 短剧分类（MVP 数据库设计 3.5）
+// Type 见 CategoryType* 常量：theme / setting / background / audience。
+// 老库迁移：缺省 'theme'，存量行 AutoMigrate 后默认值会自动回填。
+// 唯一键 (type, name)：允许不同维度下重名（理论上不会，但 schema 上不堵）。
 type Category struct {
 	ID        uint64    `gorm:"primaryKey;column:id" json:"id"`
-	Name      string    `gorm:"column:name;size:64;index" json:"name"`
+	Type      string    `gorm:"column:type;size:20;default:theme;uniqueIndex:uniq_cat_type_name,priority:1" json:"type"`
+	Name      string    `gorm:"column:name;size:64;uniqueIndex:uniq_cat_type_name,priority:2;index" json:"name"`
 	SortOrder int       `gorm:"column:sort_order;default:0" json:"sort_order"`
 	Status    string    `gorm:"column:status;size:20;default:active" json:"status"`
 	CreatedAt time.Time `gorm:"column:created_at" json:"created_at"`
@@ -147,6 +160,17 @@ type Category struct {
 }
 
 func (Category) TableName() string { return "categories" }
+
+// DramaTag —— 剧与分类的多对多。 Drama.CategoryID 是首要主题（向后兼容老 API），
+// 其余维度 (setting / background / audience) 都通过 drama_tags 关联。
+type DramaTag struct {
+	ID         uint64    `gorm:"primaryKey;column:id" json:"id"`
+	DramaID    uint64    `gorm:"column:drama_id;uniqueIndex:uniq_drama_tag,priority:1" json:"drama_id"`
+	CategoryID uint64    `gorm:"column:category_id;uniqueIndex:uniq_drama_tag,priority:2;index" json:"category_id"`
+	CreatedAt  time.Time `gorm:"column:created_at" json:"created_at"`
+}
+
+func (DramaTag) TableName() string { return "drama_tags" }
 
 // Drama —— 短剧（MVP 数据库设计 3.6）
 type Drama struct {

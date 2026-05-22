@@ -6,6 +6,7 @@ import (
 
 	"ai-drama-platform/internal/config"
 	"ai-drama-platform/internal/model"
+	"ai-drama-platform/internal/seed"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
@@ -23,6 +24,7 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		&model.Admin{},
 		&model.Creator{},
 		&model.Category{},
+		&model.DramaTag{},
 		&model.Drama{},
 		&model.Episode{},
 		&model.PlayHistory{},
@@ -45,6 +47,13 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 	}
 	if err := ensureIndexes(db); err != nil {
 		return nil, err
+	}
+	if cfg.SeedMockData {
+		result, err := seed.Run(db)
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("[seed] auto-seed on startup: %+v", result)
 	}
 	return db, nil
 }
