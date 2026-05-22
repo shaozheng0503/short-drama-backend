@@ -133,6 +133,7 @@ func (s *Server) Router() *gin.Engine {
 	app.GET("/dramas", s.appListDramas)
 	app.GET("/dramas/:id", s.appDramaDetail)
 	app.GET("/dramas/:id/episodes", s.appListEpisodes)
+	app.GET("/dramas/:id/comments", s.appListComments)
 	app.GET("/search", s.appSearch)
 	app.GET("/products", s.appListProducts)
 
@@ -150,6 +151,7 @@ func (s *Server) Router() *gin.Engine {
 	appAuth.POST("/dramas/:id/favorite", s.appFavoriteDrama)
 	appAuth.DELETE("/dramas/:id/favorite", s.appUnfavoriteDrama)
 	appAuth.POST("/dramas/:id/share", s.appShareDrama)
+	appAuth.POST("/dramas/:id/comments", s.appCreateComment)
 	appAuth.POST("/orders", s.idempotencyMiddleware("app"), s.appCreateOrder)
 	appAuth.GET("/orders/:order_no", s.appGetOrder)
 	appAuth.POST("/episodes/:id/unlock", s.appUnlockEpisode)
