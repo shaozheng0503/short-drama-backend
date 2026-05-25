@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"log"
+
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/response"
@@ -9,8 +11,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// appPlayEpisode 播放地址：MVP 不接入云点播签名，先返回 episodes.video_url 兜底。
-// 真实接入后改为云点播 GenerateAccessURL，并把 expire_seconds 改为对应 TTL。
+// appPlayEpisode 播放地址：
+//   - 默认（VOD_PLAY_SIGN_ENABLED=false）：直返 episodes.video_url 兜底，联调期常态。
+//   - 开通腾讯 VOD「Key 防盗链」后置 VOD_PLAY_SIGN_ENABLED=true：把 video_url 走 SignPlayURL 拼一次性 token，URL 泄露也无法播。
 func (s *Server) appPlayEpisode(c *gin.Context) {
 	uid := middleware.CurrentID(c)
 	id := parseUint(c.Param("id"))
@@ -71,6 +74,19 @@ func (s *Server) appPlayEpisode(c *gin.Context) {
 		nextID = &nid
 	}
 
+	playURL := ep.VideoURL
+	expireSeconds := 3600
+	if s.vod.PlaySignConfigured() && playURL != "" {
+		signed, err := s.vod.SignPlayURL(playURL)
+		if err != nil {
+			// 签名失败不暴露给用户，退回裸链以保证可播；同时打 error 日志方便排查。
+			log.Printf("[play] sign vod url err=%v ep_id=%d", err, ep.ID)
+		} else {
+			playURL = signed
+			expireSeconds = int(s.cfg.VODPlaySignExpire.Seconds())
+		}
+	}
+
 	response.OK(c, gin.H{
 		"episode": gin.H{
 			"id":         ep.ID,
@@ -78,8 +94,8 @@ func (s *Server) appPlayEpisode(c *gin.Context) {
 			"episode_no": ep.EpisodeNo,
 			"title":      ep.Title,
 		},
-		"play_url":        ep.VideoURL,
-		"expire_seconds":  3600,
+		"play_url":        playURL,
+		"expire_seconds":  expireSeconds,
 		"next_episode_id": nextID,
 	})
 }

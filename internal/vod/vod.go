@@ -12,11 +12,14 @@ package vod
 
 import (
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
 	"sort"
 	"strings"
@@ -120,6 +123,76 @@ func (s *Signer) VerifyCallback(query url.Values, rawBody []byte) error {
 		return ErrCallbackBadSignature
 	}
 	return nil
+}
+
+// PlaySignConfigured 判断是否启用且配置完备；未启用时调用方应直接返回原 URL。
+func (s *Signer) PlaySignConfigured() bool {
+	return s.cfg.VODPlaySignEnabled && s.cfg.VODPlaySignKey != ""
+}
+
+// SignPlayURL 为云点播 video URL 拼 Key 防盗链 token，挡 URL 泄露白嫖。
+//
+// 算法（腾讯 VOD「Key 防盗链」官方）：
+//
+//	sign = md5(KEY + Dir + t + exper + rlimit + us)
+//	URL  = origURL?t=<hex>&exper=<n>&rlimit=<n>&us=<rand>&sign=<md5hex>
+//
+// Dir 是 path 里最后一个 / 之前的部分（含首尾 /）：
+//
+//	/foo/bar/baz.mp4   →   Dir = /foo/bar/
+//	/playlist.m3u8     →   Dir = /
+//
+// t 是过期时间 unix 秒数的小写 hex；exper / rlimit 是十进制数字串；us 随机 10 字符。
+//
+// 文档：https://cloud.tencent.com/document/product/266/14048
+func (s *Signer) SignPlayURL(origURL string) (string, error) {
+	if !s.PlaySignConfigured() {
+		return origURL, nil
+	}
+	u, err := url.Parse(origURL)
+	if err != nil {
+		return "", fmt.Errorf("parse url: %w", err)
+	}
+	dir := u.Path
+	if i := strings.LastIndex(dir, "/"); i >= 0 {
+		dir = dir[:i+1]
+	} else {
+		dir = "/"
+	}
+	expire := s.cfg.VODPlaySignExpire
+	if expire <= 0 {
+		expire = time.Hour
+	}
+	t := fmt.Sprintf("%x", time.Now().Add(expire).Unix())
+	exper := fmt.Sprintf("%d", s.cfg.VODPlaySignExper)
+	rlimit := fmt.Sprintf("%d", s.cfg.VODPlaySignRlimit)
+	us := randomHex(10)
+
+	raw := s.cfg.VODPlaySignKey + dir + t + exper + rlimit + us
+	sum := md5.Sum([]byte(raw))
+	sign := hex.EncodeToString(sum[:])
+
+	// 把原 query 留着（HLS 可能本来就带 ts 编号等）；追加防盗链字段。
+	q := u.Query()
+	q.Set("t", t)
+	q.Set("exper", exper)
+	q.Set("rlimit", rlimit)
+	q.Set("us", us)
+	q.Set("sign", sign)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+func randomHex(n int) string {
+	b := make([]byte, (n+1)/2)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand 失败极罕见，退一步用时间兜底，保证 url 仍能签出
+		t := time.Now().UnixNano()
+		for i := range b {
+			b[i] = byte(t >> (i * 8))
+		}
+	}
+	return hex.EncodeToString(b)[:n]
 }
 
 func itoa(n int64) string {
