@@ -11,35 +11,57 @@ import (
 )
 
 func (s *Server) appHome(c *gin.Context) {
-	// 首页类目只展示「主题」维度，避免设定/背景/受众标签把入口列表挤乱。
-	var categories []model.Category
-	s.db.Where("status = ? AND type = ?", model.StatusActive, model.CategoryTypeTheme).
-		Order("sort_order asc, id asc").
-		Limit(20).
-		Find(&categories)
-
-	categoryViews := make([]gin.H, 0, len(categories))
-	for _, cat := range categories {
-		categoryViews = append(categoryViews, gin.H{"id": cat.ID, "name": cat.Name})
-	}
-
+	// 首页按短视频信息流返回：前端直接拿 recommend_dramas 渲染上下滑视频流。
 	var recommend []model.Drama
 	s.db.Where("status = ?", model.DramaStatusPublished).
 		Order("sort_order desc, published_at desc, id desc").
 		Limit(10).
 		Find(&recommend)
 
-	var hot []model.Drama
-	s.db.Where("status = ?", model.DramaStatusPublished).
-		Order("play_count desc, id desc").
-		Limit(10).
-		Find(&hot)
-
 	response.OK(c, gin.H{
-		"categories":       categoryViews,
-		"recommend_dramas": dramaCardList(recommend),
-		"hot_dramas":       dramaCardList(hot),
+		"recommend_dramas": s.homeFeedDramaList(recommend),
 	})
+}
+
+func (s *Server) homeFeedDramaList(dramas []model.Drama) []gin.H {
+	out := make([]gin.H, 0, len(dramas))
+	if len(dramas) == 0 {
+		return out
+	}
+
+	dramaIDs := make([]uint64, 0, len(dramas))
+	for _, drama := range dramas {
+		dramaIDs = append(dramaIDs, drama.ID)
+	}
+
+	var episodes []model.Episode
+	s.db.Where("drama_id IN ? AND status = ?", dramaIDs, model.EpisodeStatusReady).
+		Order("drama_id asc, episode_no asc").
+		Find(&episodes)
+
+	firstEpisodeByDrama := map[uint64]model.Episode{}
+	for _, episode := range episodes {
+		if _, ok := firstEpisodeByDrama[episode.DramaID]; !ok {
+			firstEpisodeByDrama[episode.DramaID] = episode
+		}
+	}
+
+	for _, drama := range dramas {
+		view := dramaCardView(drama)
+		if episode, ok := firstEpisodeByDrama[drama.ID]; ok {
+			view["first_episode"] = gin.H{
+				"id":               episode.ID,
+				"episode_no":       episode.EpisodeNo,
+				"title":            episode.Title,
+				"play_url":         episode.VideoURL,
+				"duration_seconds": episode.DurationSeconds,
+			}
+		} else {
+			view["first_episode"] = nil
+		}
+		out = append(out, view)
+	}
+	return out
 }
 
 func (s *Server) appListDramas(c *gin.Context) {
