@@ -493,6 +493,23 @@
 - `短剧MVP-OpenAPI.yaml` `/common/sms/send` 响应 schema 加回 `data.dev_code` 字段，description 改回 dev 模式说明。
 - `MVP后端设计-API接口.md` 响应示例同步追加 `dev_code` 字段说明。
 - SMS 业务范围核定：当前只有 APP 登录（`scene=login`）+ 创作者登录（`scene=creator_login`）。
+
+### 3.32 APP 首页视频流结构调整（2026-05-25）
+
+> 目标：APP 首页改成类似抖音 / 红果短剧的视频流形式，前端直接渲染推荐短剧列表。
+
+- ✅ `GET /v1/app/home` 不再返回 `categories` / `hot_dramas`
+- ✅ 响应只保留 `recommend_dramas`
+- ✅ 每个推荐短剧新增 `first_episode`
+  - `id`
+  - `episode_no`
+  - `title`
+  - `play_url`
+  - `duration_seconds`
+- ✅ `first_episode` 默认取该短剧最靠前的 `ready` 剧集（通常是第 1 集）
+- ✅ OpenAPI 已同步新增 `HomeFeedDramaItem`
+- ✅ 已部署到测试服务器 `43.132.168.84:18080`
+- ✅ 自测：`GET /v1/app/home` 返回 top-level `data` 仅含 `recommend_dramas`；首条数据包含 `first_episode.play_url`
 - 联调注意：60 秒重发频控 + 错码 5 次锁 15 分钟 + 单 IP RPS=0.2 burst=3 在 dev 模式下**全部仍然生效**，不会因为 dev 就放开。
 - 上线前回切：把服务器 `.env` 改回 `SMS_DEV_MODE=false`，腾讯模板 + 签名补齐，重启即可；`dev_code` 字段就不再出现在响应里。
 
@@ -537,13 +554,52 @@
 ### 3.34 VOD / 视频链路上线前 P0 遗留（2026-05-25）
 
 > 测试链路全部跑通，但生产前以下四点必补。当前都不影响联调，记下来排期。
+>
+> ⚠️ 其中第 3 / 4 项的**代码侧**已在 3.35 落地，env flag 默认关；控制台配齐 + 翻开关后即生效。
 
 1. **可靠回调模式适配**：控制台两种回调里我们用了「普通回调」（push），但腾讯推荐生产用「可靠回调」（事件入消息队列，业务方拉）。现在代码不支持拉取，要切到可靠回调需要新增 puller。普通回调缺点：弱网 / 服务端宕机时事件直接丢，没重试。
 2. **HTTPS**：当前 `http://43.132.168.84:18080` 是裸 HTTP。腾讯云回调对 HTTPS 没强制（已实测能通），但 iOS App Store 审核 + 自身安全考量必须接入。等 Nginx + 证书。
-3. **`VOD_PROCEDURE_NAME=` 空 → 不自动转码**：当前上传后 VOD 不会触发转码 / 多码率 / HLS 切片 / 雪碧图截图，前端拿到的是原始 mp4。生产必须在 VOD 控制台建一个转码模板（例如 `LongVideoPreset`），把模板名填到 `.env::VOD_PROCEDURE_NAME`，重启服务。此时回调链路变成「先 `NewFileUpload`（不 ready），再 `ProcedureStateChanged FINISH`（才 ready）」，`handleVODProcedureStateChanged` 已实现，但要回归测一次。
-4. **VOD URL 防盗链**：付费集播放接口 `/v1/app/episodes/:id/play` 已经卡了「未解锁返 42001」，但**返回的 VOD URL 是裸链**，截图发给别人也能播。生产必须：
-   - VOD 控制台 → 分发播放 → Key 防盗链开启
-   - `appPlayEpisode` 在拼 `play_url` 时签一次性 token（带 `t=` expire + `sign=` HMAC，绑 user_id），代码现在还没写
+3. **`VOD_PROCEDURE_NAME=` 空 → 不自动转码**：代码侧已在 3.35 修补完整（`handleVODProcedureStateChanged` 现在会从 `MediaProcessResultSet.TranscodeTask.Output.Url` 拿转码后 URL 回填 video_url）；激活只差控制台建模板 + `.env::VOD_PROCEDURE_NAME` 填名字 + 重启。
+4. **VOD URL 防盗链**：代码侧已在 3.35 落地 `SignPlayURL` + `appPlayEpisode` 集成；激活只差控制台开 Key 防盗链 + `.env::VOD_PLAY_SIGN_ENABLED=true` + `VOD_PLAY_SIGN_KEY=<32位>` + 重启。
+
+### 3.35 落 P0 #3/#4 + P1 #6 代码（env flag 默认关）（2026-05-25）
+
+> 三件事都加 env flag、默认 OFF，部署到服务器也保持 OFF，联调收尾后翻开关即可激活。
+
+**P0 #3 — VOD 转码输出回填**：
+- `vodCallbackEnvelope.ProcedureStateChangeEvent` 补全 `ErrCode` / `Message` / `MediaProcessResultSet.TranscodeTask.Output.{Url,Container,Bitrate,Width,Height,Duration}` 字段。
+- 新增 `pickTranscodeOutput`：优先选 `container=hls` 的转码输出 → 否则任意 mp4 → 都没有就只置 status=ready。**避免运营配了转码模板但 video_url 还停在原始 mp4**。
+- `handleVODProcedureStateChanged` 在 FINISH 时 UPDATE 同时写 `status=ready` + 新 `video_url`；ERROR 时打日志带 `ErrCode` + `Message`，方便排查转码失败具体原因。
+- 激活步骤：
+  1. 腾讯 VOD 控制台 → 视频处理 → 任务流模板 → 新建（例如 `LongVideoPreset`，配 HLS 自适应输出）
+  2. 服务器 `.env`：`VOD_PROCEDURE_NAME=LongVideoPreset`
+  3. `systemctl restart drama-backend.service`
+  4. 此后 `NewFileUpload` 不再立刻 ready，要等 `ProcedureStateChanged FINISH` 才 ready，video_url 自动切到 HLS m3u8。
+
+**P0 #4 — VOD URL Key 防盗链签名**：
+- 新增 `internal/vod/vod.go::SignPlayURL`：按腾讯官方算法 `sign = md5(KEY + Dir + t + exper + rlimit + us)` 拼一次性 token URL；本地手算对账 32 hex 一致。
+- `internal/handler/app_play.go::appPlayEpisode`：`vod.PlaySignConfigured()` 为 true 时把 `play_url` 走签名包一层，`expire_seconds` 同步改为签名 TTL；签名失败退回裸链 + error log（不阻塞播放）。
+- 新增 5 项 config：`VOD_PLAY_SIGN_ENABLED` / `VOD_PLAY_SIGN_KEY` / `VOD_PLAY_SIGN_EXPIRE_SECONDS` / `VOD_PLAY_SIGN_EXPER` / `VOD_PLAY_SIGN_RLIMIT`，`.env.example` 同步补注释。
+- **默认关**：当前 `.env.example` 和服务器 `.env` 都是 `VOD_PLAY_SIGN_ENABLED=false`，行为与昨天一致；自测 ep_id=8/9/20 三集 `/play` 仍返回裸链 ✅
+- 激活步骤：
+  1. 腾讯 VOD 控制台 → 分发播放 → Key 防盗链「启用」→ 拿到 32 位 KEY
+  2. 服务器 `.env`：`VOD_PLAY_SIGN_ENABLED=true` + `VOD_PLAY_SIGN_KEY=<32位KEY>`
+  3. `systemctl restart`
+  4. 此后 `/v1/app/episodes/:id/play` 返回的 `play_url` 会带 `?t=&exper=&rlimit=&us=&sign=` 五参数，TTL = `VOD_PLAY_SIGN_EXPIRE_SECONDS`。
+
+**P1 #6 — COS Referer 白名单工具**：
+- 新增 `cmd/setup-cos-referer/main.go`：从 `.env::COS_REFERER_WHITELIST`（逗号分隔，支持通配符）读取白名单，调腾讯 COS `PutBucketReferer` 写桶级 Referer 防盗链规则。
+- 加 `--disable` 关闭、`--empty-allow` 允许无 Referer 请求（联调期专用，curl/Apifox 默认不带 Referer）。
+- **不在 drama-api 主进程里执行**：是独立二进制 `drama-setup-cos-referer`，你/运维想生效就 SSH 进服务器跑一次；桶级配置立即生效，无需重启 drama-api。
+- 二进制已 cross-compile 上传到 `/opt/drama-backend/drama-setup-cos-referer`，权限 +x。
+- 激活步骤：
+  1. 服务器 `.env` 追加：`COS_REFERER_WHITELIST=*.shoplazza.com,localhost,apifox.com,<前端域名>`
+  2. 跑一次：`/opt/drama-backend/drama-setup-cos-referer --empty-allow`（联调期）或 不带参数（生产）
+  3. 回滚：`/opt/drama-backend/drama-setup-cos-referer --disable`
+
+**部署**：linux/amd64 cross-compile + scp 到 `/opt/drama-backend/`，老 `drama-api` 备份到 `drama-api.bak.20260525-165028`，systemctl restart 后服务 active 无错误。
+
+**新依赖**：`github.com/tencentyun/cos-go-sdk-v5 v0.7.73` + 4 个二级依赖（mxj / mapstructure / go-querystring / go-httpheader）。
 
 ### 3.25 第四轮代码 Bug 修复与优化
 

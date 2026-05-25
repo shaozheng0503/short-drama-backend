@@ -134,14 +134,34 @@ type vodCallbackEnvelope struct {
 		} `json:"MetaData"`
 	} `json:"FileUploadEvent,omitempty"`
 	ProcedureStateChangeEvent *struct {
-		TaskID   string `json:"TaskId"`
-		Status   string `json:"Status"` // PROCESSING / FINISH / ERROR
-		FileID   string `json:"FileId"`
-		FileName string `json:"FileName"`
-		MediaProcessResultSet []struct {
-			Type string `json:"Type"` // Transcode 等
-		} `json:"MediaProcessResultSet,omitempty"`
+		TaskID                string                  `json:"TaskId"`
+		Status                string                  `json:"Status"` // PROCESSING / FINISH / ERROR
+		ErrCode               int                     `json:"ErrCode"`
+		Message               string                  `json:"Message"`
+		FileID                string                  `json:"FileId"`
+		FileName              string                  `json:"FileName"`
+		MediaProcessResultSet []mediaProcessResultItem `json:"MediaProcessResultSet,omitempty"`
 	} `json:"ProcedureStateChangeEvent,omitempty"`
+}
+
+// mediaProcessResultItem —— 转码 / 截图 / AI 审核每个子任务的结果。
+// 我们只关心 Transcode 这一类：FINISH 时拿其中第一个有 Url 的 Output 作为新的 video_url。
+// 文档：https://cloud.tencent.com/document/product/266/33779
+type mediaProcessResultItem struct {
+	Type          string `json:"Type"` // Transcode / SnapshotByTimeOffset / AiContentReview ...
+	TranscodeTask *struct {
+		Status  string `json:"Status"` // SUCCESS / FAIL
+		ErrCode int    `json:"ErrCode"`
+		Message string `json:"Message"`
+		Output  *struct {
+			URL       string  `json:"Url"`
+			Container string  `json:"Container"` // mp4 / hls / dash ...
+			Bitrate   int64   `json:"Bitrate"`
+			Height    int     `json:"Height"`
+			Width     int     `json:"Width"`
+			Duration  float64 `json:"Duration"`
+		} `json:"Output,omitempty"`
+	} `json:"TranscodeTask,omitempty"`
 }
 
 // webhookVOD 节点回调：转码 / 上传完成时更新 episodes 表。
@@ -233,8 +253,16 @@ func (s *Server) handleVODProcedureStateChanged(env *vodCallbackEnvelope) {
 	switch e.Status {
 	case "FINISH":
 		updates["status"] = model.EpisodeStatusReady
+		// 转码成功后优先把 video_url 切到转码输出（HLS / 多码率），否则前端拿到的还是原始 mp4。
+		if outURL, container := pickTranscodeOutput(e.MediaProcessResultSet); outURL != "" {
+			updates["video_url"] = outURL
+			log.Printf("[webhook-vod] proc_state transcode_picked file_id=%s container=%s url=%s",
+				e.FileID, container, truncate(outURL, 120))
+		}
 	case "ERROR":
 		updates["status"] = model.EpisodeStatusFailed
+		log.Printf("[webhook-vod] proc_state ERROR file_id=%s err_code=%d msg=%s",
+			e.FileID, e.ErrCode, truncate(e.Message, 200))
 	default:
 		return
 	}
@@ -244,6 +272,32 @@ func (s *Server) handleVODProcedureStateChanged(env *vodCallbackEnvelope) {
 		return
 	}
 	log.Printf("[webhook-vod] proc_state file_id=%s status=%s rows=%d", e.FileID, e.Status, res.RowsAffected)
+}
+
+// pickTranscodeOutput 在 MediaProcessResultSet 里找一个可用的转码输出 URL。
+// 选取规则：优先 container=hls（自适应播放最稳）→ 没有再退到任意 mp4/其它 → 最后才返回 "" 表示没找到。
+// 同一种 container 出现多个分辨率时取第一个（运营在控制台模板里把目标清晰度排第一即可）。
+func pickTranscodeOutput(items []mediaProcessResultItem) (url, container string) {
+	var fallbackURL, fallbackContainer string
+	for _, it := range items {
+		if it.Type != "Transcode" || it.TranscodeTask == nil || it.TranscodeTask.Output == nil {
+			continue
+		}
+		if it.TranscodeTask.Status != "" && it.TranscodeTask.Status != "SUCCESS" {
+			continue
+		}
+		out := it.TranscodeTask.Output
+		if out.URL == "" {
+			continue
+		}
+		if out.Container == "hls" {
+			return out.URL, out.Container
+		}
+		if fallbackURL == "" {
+			fallbackURL, fallbackContainer = out.URL, out.Container
+		}
+	}
+	return fallbackURL, fallbackContainer
 }
 
 // --- small helpers ---
