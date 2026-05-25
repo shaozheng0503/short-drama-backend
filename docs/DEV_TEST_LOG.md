@@ -484,6 +484,67 @@
   - 分步先提交姓名 + 银行，再单独提交身份证 → `verify_status=pending`
   - 同一次完整提交姓名 + 身份证 + 银行名 + 银行卡 → `verify_status=verified`
 
+### 3.31 SMS dev_code 模式 + Apifox 文档同步（2026-05-25）
+
+> 目标：腾讯短信测试号 `19703092478` 日发量被 `LimitExceeded.PhoneNumberDailyLimit` 顶死，前端联调拿不到验证码。MVP 期间统一切到 dev 模式，验证码在响应里回显。
+
+- 服务器 `/opt/drama-backend/.env`：`SMS_DEV_MODE=false → true`；本地 `.env` / `.env.example` 同步更新注释。
+- 服务启动日志 `[sms] provider=dev dev_mode=true` 表示已切换；腾讯路径整体绕开。
+- `短剧MVP-OpenAPI.yaml` `/common/sms/send` 响应 schema 加回 `data.dev_code` 字段，description 改回 dev 模式说明。
+- `MVP后端设计-API接口.md` 响应示例同步追加 `dev_code` 字段说明。
+- SMS 业务范围核定：当前只有 APP 登录（`scene=login`）+ 创作者登录（`scene=creator_login`）。
+- 联调注意：60 秒重发频控 + 错码 5 次锁 15 分钟 + 单 IP RPS=0.2 burst=3 在 dev 模式下**全部仍然生效**，不会因为 dev 就放开。
+- 上线前回切：把服务器 `.env` 改回 `SMS_DEV_MODE=false`，腾讯模板 + 签名补齐，重启即可；`dev_code` 字段就不再出现在响应里。
+
+### 3.32 mock seed + COS 视频迁移（2026-05-25）
+
+> 目标：测试服务器 DB 只有几条自测残留，前端联调没像样的剧 / 集 / 订单数据；同时把外网 mp4 搬上腾讯云 COS，避免国内网络拉外站 mp4 卡顿。
+
+- 触发 `POST /v1/dev/seed`，seeder 写入：
+  - 6 部 mock 短剧（5 部 published + 1 部 draft `重回 2008`），分别 8–20 集
+  - 84 条分类（红果 4 维：theme=31 / setting=42 / background=11 / audience=2），42 条 drama_tag
+  - 3 个 mock 创作者（`13800000001 顾导演` 等）、3 个 mock 用户、若干订单 / 解锁 / 提现 / 合同
+- mock 短剧封面用 `picsum.photos/seed/dramaN/600/900` 占位图；6 张 HEAD 全部 200。
+- 真实视频源：8 支公开 mp4（`media.w3.org` / `vjs.zencdn.net` / `test-videos.co.uk` / `blender.org`），按 `(drama_id*31 + ep_no) % 8` 确定性分给每集。
+- 视频迁到 COS：
+  - 服务器 `wget` 下 8 支共 57 MB 到 `/tmp/mock-videos/`
+  - Python 复刻 `internal/cos/cos.go` 的 HMAC-SHA1 + `x-cos-acl=public-read` 签名 PUT 上 `duanju-1318683367.cos.ap-guangzhou.myqcloud.com/videos/mock/`
+  - UPDATE 73 条 mock episodes 的 `video_url`，从外网域名替换为 COS 公网 URL；剩 4 条 `example.com/*` 是早期自测残留没动
+- 验证：抽 3 集打 `/v1/app/episodes/:id/play`，返回 COS URL，HEAD 200 + `Content-Type: video/mp4`。
+- 同时确认付费集 API 鉴权：免费集 ✅、未解锁付费集 `42001` ✅、匿名 `40101` ✅；但**VOD URL 本身没做防盗链**，URL 泄露即可白嫖（见 3.34 P0）。
+
+### 3.33 VOD 完整链路真打通（2026-05-25）
+
+> 目标：把"VOD 上传 + 转码 + webhook → DB 自动更新 episode"这条链路用真实腾讯 API 跑一遍。
+
+- 服务器装 `tencentcloud-sdk-python` + `cos-python-sdk-v5`（VOD 没现成的 PyPI 上传包，用 `ApplyUpload` + 临时密钥 COS PUT + `CommitUpload` 三步手拼）。
+- 4 次真实上传成功，4 个 FileId 都拿到 + MediaUrl 都拿到：
+  - `5145403727999033095` (oceans.mp4) — 绑给 ep_id=8
+  - `5145403727898572930` (bunny-trailer.mp4)
+  - `5145403727898713341` (sintel-trailer.mp4)
+  - `5145403728002149553` (movie-300.mp4) — 绑给 ep_id=9
+- VOD 控制台「事件通知」配 URL `http://43.132.168.84:18080/v1/webhooks/vod`，通知方式选「普通回调」；勾「视频上传完成 + 任务流状态变更」事件。**腾讯控制台没有「节点回调（含签名）」选项**，只有普通回调和可靠回调，普通回调不带 Sign。
+- 服务端验签逻辑对应：`internal/vod/vod.go` 设计上 `VOD_CALLBACK_KEY` 非空才校验 Sign，所以**普通回调时 `VOD_CALLBACK_KEY` 必须为空**才能放行。服务器 `.env` 保持 `VOD_CALLBACK_KEY=`。
+- 实际效果：上传完成后 ~5 秒，腾讯主动 POST `/v1/webhooks/vod`（payload 约 2.3 KB，比手工 mock body 大 10 倍）。
+- **代码 bug 发现 + 修复**：`internal/handler/uploads.go::vodCallbackEnvelope` 原本期望 `FileUploadEvent.MediaUrl`，但腾讯真实 payload 是 `FileUploadEvent.MediaBasicInfo.MediaUrl`。增加 `MediaBasicInfo` 嵌套结构，`handleVODFileUpload` 优先取 `MediaBasicInfo.MediaUrl`，老路径作 fallback；`url_set` 日志字段改用解析后的 `mediaURL` 变量。
+- 闭环验证：重置 ep_id=9 → 上传 → 绑 FileId → 腾讯回调 → ep_id=9 自动变成 `status=ready`、`duration=300`、`video_url=https://1318683367.vod-qcloud.com/.../5uY8…mp4`，**没碰任何 SQL**。
+- 部署：linux/amd64 cross-compile + scp 到 `/opt/drama-backend/drama-api`，备份原二进制为 `drama-api.bak.<ts>`，systemctl restart。
+- 真实用户流程对照：
+  - **播放**（APP 用户 / 创作者预览 / admin 审片）：跟我们测的一模一样，前端 GET `/v1/app/episodes/:id/play` 拿 `play_url` 喂 `<video>`。
+  - **上传**（运营 / admin）：浏览器端用 `vod-js-sdk-v6` SDK 直传，签名走 `POST /v1/admin/uploads/vod-sign`；底层调的还是 ApplyUpload / COS / CommitUpload，业务等价于我们今天用 Python SDK 跑的，只是 SDK 形态不同。
+  - **创作者目前不能自助上传**（MVP 设计：创作者只看分账 / 提现，admin 负责上传发布）。要做 UGC 得在 `creatorAuth` 路由组复制一份 admin 那套上传接口。
+
+### 3.34 VOD / 视频链路上线前 P0 遗留（2026-05-25）
+
+> 测试链路全部跑通，但生产前以下四点必补。当前都不影响联调，记下来排期。
+
+1. **可靠回调模式适配**：控制台两种回调里我们用了「普通回调」（push），但腾讯推荐生产用「可靠回调」（事件入消息队列，业务方拉）。现在代码不支持拉取，要切到可靠回调需要新增 puller。普通回调缺点：弱网 / 服务端宕机时事件直接丢，没重试。
+2. **HTTPS**：当前 `http://43.132.168.84:18080` 是裸 HTTP。腾讯云回调对 HTTPS 没强制（已实测能通），但 iOS App Store 审核 + 自身安全考量必须接入。等 Nginx + 证书。
+3. **`VOD_PROCEDURE_NAME=` 空 → 不自动转码**：当前上传后 VOD 不会触发转码 / 多码率 / HLS 切片 / 雪碧图截图，前端拿到的是原始 mp4。生产必须在 VOD 控制台建一个转码模板（例如 `LongVideoPreset`），把模板名填到 `.env::VOD_PROCEDURE_NAME`，重启服务。此时回调链路变成「先 `NewFileUpload`（不 ready），再 `ProcedureStateChanged FINISH`（才 ready）」，`handleVODProcedureStateChanged` 已实现，但要回归测一次。
+4. **VOD URL 防盗链**：付费集播放接口 `/v1/app/episodes/:id/play` 已经卡了「未解锁返 42001」，但**返回的 VOD URL 是裸链**，截图发给别人也能播。生产必须：
+   - VOD 控制台 → 分发播放 → Key 防盗链开启
+   - `appPlayEpisode` 在拼 `play_url` 时签一次性 token（带 `t=` expire + `sign=` HMAC，绑 user_id），代码现在还没写
+
 ### 3.25 第四轮代码 Bug 修复与优化
 
 > 重点：支付回调 HTTP 语义、金额/渠道校验、账号封禁即时生效、SMS 防刷、并发下单、运营校验补全。

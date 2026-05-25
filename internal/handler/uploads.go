@@ -115,12 +115,21 @@ func (s *Server) adminVODUploadSign(c *gin.Context) {
 
 // vodCallbackEnvelope —— 节点回调的最常见字段子集。
 // 实际腾讯 VOD 节点回调 schema 较复杂，本结构只挑业务关心的字段；其它由 raw body 经签名校验后透传到日志。
+//
+// FileUploadEvent.MediaUrl 真实路径是 MediaBasicInfo.MediaUrl（首次联调被坑过）；
+// 同时保留顶层 MediaUrl 兼容旧/精简 payload，handler 解析时优先取 MediaBasicInfo。
 type vodCallbackEnvelope struct {
 	EventType string `json:"EventType"`
 	FileUploadEvent *struct {
-		FileID    string `json:"FileId"`
-		MediaURL  string `json:"MediaUrl"`
-		MetaData  *struct {
+		FileID         string `json:"FileId"`
+		MediaURL       string `json:"MediaUrl"`
+		MediaBasicInfo *struct {
+			Name     string `json:"Name"`
+			Type     string `json:"Type"`
+			MediaURL string `json:"MediaUrl"`
+			CoverURL string `json:"CoverUrl"`
+		} `json:"MediaBasicInfo,omitempty"`
+		MetaData *struct {
 			Duration float64 `json:"Duration"`
 		} `json:"MetaData"`
 	} `json:"FileUploadEvent,omitempty"`
@@ -189,8 +198,12 @@ func (s *Server) handleVODFileUpload(env *vodCallbackEnvelope) {
 		return
 	}
 	updates := map[string]interface{}{}
-	if e.MediaURL != "" {
-		updates["video_url"] = e.MediaURL
+	mediaURL := e.MediaURL
+	if mediaURL == "" && e.MediaBasicInfo != nil {
+		mediaURL = e.MediaBasicInfo.MediaURL
+	}
+	if mediaURL != "" {
+		updates["video_url"] = mediaURL
 	}
 	if e.MetaData != nil && e.MetaData.Duration > 0 {
 		updates["duration_seconds"] = int(e.MetaData.Duration)
@@ -208,7 +221,7 @@ func (s *Server) handleVODFileUpload(env *vodCallbackEnvelope) {
 		log.Printf("[webhook-vod] update by file_id=%s err=%v", e.FileID, res.Error)
 		return
 	}
-	log.Printf("[webhook-vod] file_upload file_id=%s rows=%d url_set=%v", e.FileID, res.RowsAffected, e.MediaURL != "")
+	log.Printf("[webhook-vod] file_upload file_id=%s rows=%d url_set=%v", e.FileID, res.RowsAffected, mediaURL != "")
 }
 
 func (s *Server) handleVODProcedureStateChanged(env *vodCallbackEnvelope) {
