@@ -46,7 +46,7 @@ func (s *Server) appCreateOrder(c *gin.Context) {
 		return
 	}
 	if idem := c.GetHeader("Idempotency-Key"); idem != "" {
-		// TODO: 上 Redis 后做强幂等；当前依赖"复用 pending + 已 paid 直返"业务幂等。
+		// Redis 强幂等已由 idempotencyMiddleware 处理（响应缓存 + 同 key 不同 body 拒绝）；这里只是审计日志。
 		log.Printf("[order] user=%d idem=%s drama=%d episode=%d", uid, idem, req.DramaID, req.EpisodeID)
 	}
 
