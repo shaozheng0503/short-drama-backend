@@ -229,6 +229,108 @@ func (s *Server) adminBanCreator(c *gin.Context) {
 	response.OK(c, gin.H{"id": id, "status": model.StatusBanned})
 }
 
+// === APP 用户管理 ===
+//
+// MVP 阶段只暴露列表 / 详情 / ban / unban；恶意用户场景必备，无 ban 接口运维只能 SQL。
+// 鉴权由 adminAuth 组保障；ban 后用户的 JWT 在 requireActiveApp 中间件下一次请求就 40301 失效。
+
+func (s *Server) adminListUsers(c *gin.Context) {
+	page, pageSize := paginate(c)
+	q := s.db.Model(&model.User{})
+	if v := c.Query("status"); v != "" {
+		q = q.Where("status = ?", v)
+	}
+	if v := c.Query("phone"); v != "" {
+		q = q.Where("phone LIKE ?", "%"+v+"%")
+	}
+	var total int64
+	q.Count(&total)
+	var users []model.User
+	if err := q.Order("id desc").
+		Limit(pageSize).
+		Offset((page - 1) * pageSize).
+		Find(&users).Error; err != nil {
+		response.ServerError(c, "查询失败")
+		return
+	}
+	list := make([]gin.H, 0, len(users))
+	for _, u := range users {
+		list = append(list, gin.H{
+			"id":         u.ID,
+			"phone":      sms.MaskPhone(u.Phone),
+			"nickname":   u.Nickname,
+			"avatar":     u.Avatar,
+			"status":     u.Status,
+			"created_at": u.CreatedAt,
+		})
+	}
+	response.OK(c, pageResp(list, page, pageSize, total))
+}
+
+func (s *Server) adminGetUser(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var u model.User
+	if err := s.db.First(&u, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "用户不存在")
+			return
+		}
+		response.ServerError(c, "查询失败")
+		return
+	}
+	response.OK(c, gin.H{
+		"id":         u.ID,
+		"phone":      sms.MaskPhone(u.Phone),
+		"nickname":   u.Nickname,
+		"avatar":     u.Avatar,
+		"status":     u.Status,
+		"created_at": u.CreatedAt,
+		"updated_at": u.UpdatedAt,
+	})
+}
+
+func (s *Server) adminBanUser(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	res := s.db.Model(&model.User{}).Where("id = ?", id).
+		Update("status", model.StatusBanned)
+	if res.Error != nil {
+		response.ServerError(c, "封禁失败")
+		return
+	}
+	if res.RowsAffected == 0 {
+		response.NotFound(c, "用户不存在")
+		return
+	}
+	response.OK(c, gin.H{"id": id, "status": model.StatusBanned})
+}
+
+func (s *Server) adminUnbanUser(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	res := s.db.Model(&model.User{}).Where("id = ?", id).
+		Update("status", model.StatusActive)
+	if res.Error != nil {
+		response.ServerError(c, "解封失败")
+		return
+	}
+	if res.RowsAffected == 0 {
+		response.NotFound(c, "用户不存在")
+		return
+	}
+	response.OK(c, gin.H{"id": id, "status": model.StatusActive})
+}
+
 // === 订单管理 ===
 
 func (s *Server) adminListOrders(c *gin.Context) {

@@ -206,6 +206,11 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.PUT("/creators/:id", s.adminUpdateCreator)
 	adminAuth.POST("/creators/:id/ban", s.adminBanCreator)
 
+	adminAuth.GET("/users", s.adminListUsers)
+	adminAuth.GET("/users/:id", s.adminGetUser)
+	adminAuth.POST("/users/:id/ban", s.adminBanUser)
+	adminAuth.POST("/users/:id/unban", s.adminUnbanUser)
+
 	adminAuth.GET("/orders", s.adminListOrders)
 	adminAuth.GET("/orders/:order_no", s.adminGetOrder)
 

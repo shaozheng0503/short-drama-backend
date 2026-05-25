@@ -50,7 +50,7 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		return nil, err
 	}
 	if cfg.SeedMockData {
-		result, err := seed.Run(db)
+		result, err := seed.Run(db, cfg)
 		if err != nil {
 			return nil, err
 		}

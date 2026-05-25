@@ -8,9 +8,11 @@ import (
 	"log"
 	"time"
 
+	"ai-drama-platform/internal/config"
 	"ai-drama-platform/internal/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Result 汇总本次 seed 写入 / 已存在的各模型数量，回给调用方查看效果。
@@ -37,7 +39,9 @@ type catKey struct {
 
 // Run 是 seed 的唯一入口，幂等：已存在的记录按 phone / title 等业务键跳过。
 // 写入顺序遵循 categories → creators → users → dramas → episodes → 互动 / 订单 / 资金。
-func Run(db *gorm.DB) (*Result, error) {
+// cfg 用于跑分账（CreatorShareRate）保持与 billing.MarkOrderPaid 一致，
+// 避免 mock 订单造出 reconcile 检查不平的账面。
+func Run(db *gorm.DB, cfg config.Config) (*Result, error) {
 	r := &Result{}
 	now := time.Now()
 
@@ -93,7 +97,7 @@ func Run(db *gorm.DB) (*Result, error) {
 	}
 	r.PlayHistory = n
 
-	orders, n, err := seedOrders(db, users, dramas, episodes, now)
+	orders, n, err := seedOrders(db, cfg, users, dramas, episodes, now)
 	if err != nil {
 		return nil, fmt.Errorf("seed orders: %w", err)
 	}
@@ -200,6 +204,10 @@ func seedCategories(db *gorm.DB) (map[catKey]uint64, int, error) {
 	return out, created, nil
 }
 
+// seedCreators：初始账面**全部置 0**。
+// 之前给固定值（1.2M / 800K 等）造出来的余额根本被任何 mock 订单"兜不住"，
+// 跑 reconcile 一查必然报 creator_total_income_mismatch + creator_balance_formula_mismatch。
+// 联调时财务数字靠真订单流（/orders → /dev/orders/:order_no/pay）累积更接近生产。
 func seedCreators(db *gorm.DB, now time.Time) (map[string]uint64, int, error) {
 	defs := []struct {
 		Phone        string
@@ -207,12 +215,10 @@ func seedCreators(db *gorm.DB, now time.Time) (map[string]uint64, int, error) {
 		BankName     string
 		Last4        string
 		VerifyStatus string
-		Total        int64
-		Balance      int64
 	}{
-		{"13800000001", "顾导演", "招商银行", "8421", model.CreatorVerifyVerified, 1_200_000, 600_000},
-		{"13800000002", "苏编剧", "工商银行", "5566", model.CreatorVerifyVerified, 800_000, 350_000},
-		{"13800000003", "林制片", "建设银行", "1234", model.CreatorVerifyPending, 0, 0},
+		{"13800000001", "顾导演", "招商银行", "8421", model.CreatorVerifyVerified},
+		{"13800000002", "苏编剧", "工商银行", "5566", model.CreatorVerifyVerified},
+		{"13800000003", "林制片", "建设银行", "1234", model.CreatorVerifyPending},
 	}
 	out := map[string]uint64{}
 	created := 0
@@ -223,8 +229,9 @@ func seedCreators(db *gorm.DB, now time.Time) (map[string]uint64, int, error) {
 			BankName:         d.BankName,
 			BankCardLast4:    d.Last4,
 			VerifyStatus:     d.VerifyStatus,
-			TotalIncomeCents: d.Total,
-			BalanceCents:     d.Balance,
+			TotalIncomeCents: 0,
+			BalanceCents:     0,
+			FrozenCents:      0,
 			Status:           model.StatusActive,
 			CreatedAt:        now,
 			UpdatedAt:        now,
@@ -639,8 +646,11 @@ type seededOrder struct {
 }
 
 // seedOrders：给用户 1 一笔 paid 订单（用于解锁 + 跑通分账查询），用户 2 一笔 pending 订单。
+// paid 订单同步 mirror billing.MarkOrderPaid 的副作用：bump creator total_income +
+// balance，写入 creator_stats_daily，保证 reconcile 检查不出 mismatch。
 func seedOrders(
 	db *gorm.DB,
+	cfg config.Config,
 	users map[string]uint64,
 	dramas map[string]uint64,
 	episodes map[uint64][]model.Episode,
@@ -707,9 +717,52 @@ func seedOrders(
 		out = append(out, seededOrder{Order: got, DramaID: did})
 		if isNew {
 			created++
+			// 仅在本次确实新创建了 paid 订单时，mirror billing.MarkOrderPaid 的副作用：
+			// bump creator.total_income + balance + upsert creator_stats_daily。否则
+			// reconcile 跑出来必报 creator_total_income_mismatch / creator_stats_income_mismatch。
+			if got.Status == model.OrderStatusPaid && drama.CreatorID != nil {
+				if err := applySeedPaidOrderToCreator(db, cfg, drama.CreatorID, did, got.AmountCents, paidAt); err != nil {
+					return nil, 0, fmt.Errorf("apply seed paid order to creator: %w", err)
+				}
+			}
 		}
 	}
 	return out, created, nil
+}
+
+// applySeedPaidOrderToCreator 复刻 billing.MarkOrderPaid 的分账副作用，专给 seed
+// 用：不走完整事务（seed 数据本身就是大批量幂等写）、不锁行（无并发）、不解锁
+// （seedUnlocks 单独处理）。只关心账面一致：
+//   - creator.total_income += share、creator.balance += share
+//   - creator_stats_daily 当日聚合 +share
+func applySeedPaidOrderToCreator(db *gorm.DB, cfg config.Config, creatorID *uint64, dramaID uint64, amountCents int64, paidAt *time.Time) error {
+	if creatorID == nil || paidAt == nil {
+		return nil
+	}
+	share := int64(float64(amountCents) * cfg.CreatorShareRate)
+	if share <= 0 {
+		return nil
+	}
+	if err := db.Model(&model.Creator{}).
+		Where("id = ?", *creatorID).
+		Updates(map[string]interface{}{
+			"total_income_cents": gorm.Expr("total_income_cents + ?", share),
+			"balance_cents":      gorm.Expr("balance_cents + ?", share),
+		}).Error; err != nil {
+		return err
+	}
+	stat := model.CreatorStatsDaily{
+		CreatorID:   *creatorID,
+		DramaID:     dramaID,
+		StatDate:    paidAt.Format("2006-01-02"),
+		IncomeCents: share,
+	}
+	return db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "creator_id"}, {Name: "drama_id"}, {Name: "stat_date"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"income_cents": gorm.Expr("creator_stats_daily.income_cents + ?", share),
+		}),
+	}).Create(&stat).Error
 }
 
 // seedUnlocks：根据上面 paid 的订单写入对应 episode_unlocks 行。
@@ -786,6 +839,10 @@ func seedContracts(
 }
 
 func seedWithdrawals(db *gorm.DB, creators map[string]uint64, now time.Time) (int, error) {
+	// 不再 seed 假提现：mock 创作者余额已置 0，假提现金额（200K / 100K / 50K）
+	// 无法被任何 mock 订单兜底，跑 reconcile 必然报 creator_frozen_mismatch +
+	// creator_balance_formula_mismatch。联调要看「提现列表 / 提现审核」效果，
+	// 让创作者真的下单累积余额后，调 /v1/creator/withdrawals POST 自己造数据。
 	specs := []struct {
 		CreatorPhone string
 		WithdrawalNo string
@@ -793,11 +850,7 @@ func seedWithdrawals(db *gorm.DB, creators map[string]uint64, now time.Time) (in
 		Status       string
 		BankName     string
 		Card4        string
-	}{
-		{"13800000001", "MOCK-WD-0001", 200_000, model.WithdrawalStatusPaid, "招商银行", "8421"},
-		{"13800000001", "MOCK-WD-0002", 100_000, model.WithdrawalStatusPending, "招商银行", "8421"},
-		{"13800000002", "MOCK-WD-0003", 50_000, model.WithdrawalStatusApproved, "工商银行", "5566"},
-	}
+	}{}
 	created := 0
 	for _, s := range specs {
 		cid, ok := creators[s.CreatorPhone]

@@ -32,6 +32,17 @@ var allowedImageExt = map[string]bool{
 	"jpg": true, "jpeg": true, "png": true, "webp": true, "gif": true,
 }
 
+// imageContentType 按 ext 推 MIME；image-sign 把这个回给客户端，让 PUT 时按这个
+// header 传。客户端漏传 Content-Type 的话，COS 会落成 application/x-www-form-urlencoded，
+// 后续浏览器加载图片可能不渲染。
+var imageContentType = map[string]string{
+	"jpg":  "image/jpeg",
+	"jpeg": "image/jpeg",
+	"png":  "image/png",
+	"webp": "image/webp",
+	"gif":  "image/gif",
+}
+
 // commonImageUploadSign 返回 COS PUT 预签名。前端拿到 url 后 PUT 文件原文即可。
 // 路径：POST /v1/common/uploads/image-sign
 // 公开接口（共用：APP 头像 / 后台封面）；为了防滥用，匿名走也允许，但靠速率限制 + key 路径前缀做 audit。
@@ -81,13 +92,19 @@ func (s *Server) commonImageUploadSign(c *gin.Context) {
 		hdrs[k] = v
 	}
 
+	// 顺手把 MIME 也回给客户端：COS 默认 Content-Type 会被写成 form-urlencoded，
+	// 浏览器加载就废。把 image/png 这种放进 headers 让客户端 PUT 时一并带上。
+	if mime, ok := imageContentType[ext]; ok {
+		hdrs["Content-Type"] = mime
+	}
+
 	response.OK(c, gin.H{
 		"method":     "PUT",
 		"upload_url": url,
 		"public_url": s.cos.PublicURL(key),
 		"key":        key,
 		"expires_at": expiresAt,
-		"headers":    hdrs, // 前端 PUT 时务必把这些 header 原样带上，否则 COS 验签失败
+		"headers":    hdrs, // 前端 PUT 时务必把这些 header 原样带上，否则 COS 验签失败 / MIME 不对
 	})
 }
 
