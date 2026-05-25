@@ -493,6 +493,8 @@
 - `短剧MVP-OpenAPI.yaml` `/common/sms/send` 响应 schema 加回 `data.dev_code` 字段，description 改回 dev 模式说明。
 - `MVP后端设计-API接口.md` 响应示例同步追加 `dev_code` 字段说明。
 - SMS 业务范围核定：当前只有 APP 登录（`scene=login`）+ 创作者登录（`scene=creator_login`）。
+- 联调注意：60 秒重发频控 + 错码 5 次锁 15 分钟 + 单 IP RPS=0.2 burst=3 在 dev 模式下**全部仍然生效**，不会因为 dev 就放开。
+- 上线前回切：把服务器 `.env` 改回 `SMS_DEV_MODE=false`，腾讯模板 + 签名补齐，重启即可；`dev_code` 字段就不再出现在响应里。
 
 ### 3.32 APP 首页视频流结构调整（2026-05-25）
 
@@ -510,10 +512,8 @@
 - ✅ OpenAPI 已同步新增 `HomeFeedDramaItem`
 - ✅ 已部署到测试服务器 `43.132.168.84:18080`
 - ✅ 自测：`GET /v1/app/home` 返回 top-level `data` 仅含 `recommend_dramas`；首条数据包含 `first_episode.play_url`
-- 联调注意：60 秒重发频控 + 错码 5 次锁 15 分钟 + 单 IP RPS=0.2 burst=3 在 dev 模式下**全部仍然生效**，不会因为 dev 就放开。
-- 上线前回切：把服务器 `.env` 改回 `SMS_DEV_MODE=false`，腾讯模板 + 签名补齐，重启即可；`dev_code` 字段就不再出现在响应里。
 
-### 3.32 mock seed + COS 视频迁移（2026-05-25）
+### 3.33 mock seed + COS 视频迁移（2026-05-25）
 
 > 目标：测试服务器 DB 只有几条自测残留，前端联调没像样的剧 / 集 / 订单数据；同时把外网 mp4 搬上腾讯云 COS，避免国内网络拉外站 mp4 卡顿。
 
@@ -528,9 +528,9 @@
   - Python 复刻 `internal/cos/cos.go` 的 HMAC-SHA1 + `x-cos-acl=public-read` 签名 PUT 上 `duanju-1318683367.cos.ap-guangzhou.myqcloud.com/videos/mock/`
   - UPDATE 73 条 mock episodes 的 `video_url`，从外网域名替换为 COS 公网 URL；剩 4 条 `example.com/*` 是早期自测残留没动
 - 验证：抽 3 集打 `/v1/app/episodes/:id/play`，返回 COS URL，HEAD 200 + `Content-Type: video/mp4`。
-- 同时确认付费集 API 鉴权：免费集 ✅、未解锁付费集 `42001` ✅、匿名 `40101` ✅；但**VOD URL 本身没做防盗链**，URL 泄露即可白嫖（见 3.34 P0）。
+- 同时确认付费集 API 鉴权：免费集 ✅、未解锁付费集 `42001` ✅、匿名 `40101` ✅；但**VOD URL 本身没做防盗链**，URL 泄露即可白嫖（见 3.35 P0）。
 
-### 3.33 VOD 完整链路真打通（2026-05-25）
+### 3.34 VOD 完整链路真打通（2026-05-25）
 
 > 目标：把"VOD 上传 + 转码 + webhook → DB 自动更新 episode"这条链路用真实腾讯 API 跑一遍。
 
@@ -551,18 +551,18 @@
   - **上传**（运营 / admin）：浏览器端用 `vod-js-sdk-v6` SDK 直传，签名走 `POST /v1/admin/uploads/vod-sign`；底层调的还是 ApplyUpload / COS / CommitUpload，业务等价于我们今天用 Python SDK 跑的，只是 SDK 形态不同。
   - **创作者目前不能自助上传**（MVP 设计：创作者只看分账 / 提现，admin 负责上传发布）。要做 UGC 得在 `creatorAuth` 路由组复制一份 admin 那套上传接口。
 
-### 3.34 VOD / 视频链路上线前 P0 遗留（2026-05-25）
+### 3.35 VOD / 视频链路上线前 P0 遗留（2026-05-25）
 
 > 测试链路全部跑通，但生产前以下四点必补。当前都不影响联调，记下来排期。
 >
-> ⚠️ 其中第 3 / 4 项的**代码侧**已在 3.35 落地，env flag 默认关；控制台配齐 + 翻开关后即生效。
+> ⚠️ 其中第 3 / 4 项的**代码侧**已在 3.36 落地，env flag 默认关；控制台配齐 + 翻开关后即生效。
 
 1. **可靠回调模式适配**：控制台两种回调里我们用了「普通回调」（push），但腾讯推荐生产用「可靠回调」（事件入消息队列，业务方拉）。现在代码不支持拉取，要切到可靠回调需要新增 puller。普通回调缺点：弱网 / 服务端宕机时事件直接丢，没重试。
 2. **HTTPS**：当前 `http://43.132.168.84:18080` 是裸 HTTP。腾讯云回调对 HTTPS 没强制（已实测能通），但 iOS App Store 审核 + 自身安全考量必须接入。等 Nginx + 证书。
-3. **`VOD_PROCEDURE_NAME=` 空 → 不自动转码**：代码侧已在 3.35 修补完整（`handleVODProcedureStateChanged` 现在会从 `MediaProcessResultSet.TranscodeTask.Output.Url` 拿转码后 URL 回填 video_url）；激活只差控制台建模板 + `.env::VOD_PROCEDURE_NAME` 填名字 + 重启。
-4. **VOD URL 防盗链**：代码侧已在 3.35 落地 `SignPlayURL` + `appPlayEpisode` 集成；激活只差控制台开 Key 防盗链 + `.env::VOD_PLAY_SIGN_ENABLED=true` + `VOD_PLAY_SIGN_KEY=<32位>` + 重启。
+3. **`VOD_PROCEDURE_NAME=` 空 → 不自动转码**：代码侧已在 3.36 修补完整（`handleVODProcedureStateChanged` 现在会从 `MediaProcessResultSet.TranscodeTask.Output.Url` 拿转码后 URL 回填 video_url）；激活只差控制台建模板 + `.env::VOD_PROCEDURE_NAME` 填名字 + 重启。
+4. **VOD URL 防盗链**：代码侧已在 3.36 落地 `SignPlayURL` + `appPlayEpisode` 集成；激活只差控制台开 Key 防盗链 + `.env::VOD_PLAY_SIGN_ENABLED=true` + `VOD_PLAY_SIGN_KEY=<32位>` + 重启。
 
-### 3.35 落 P0 #3/#4 + P1 #6 代码（env flag 默认关）（2026-05-25）
+### 3.36 落 P0 #3/#4 + P1 #6 代码（env flag 默认关）（2026-05-25）
 
 > 三件事都加 env flag、默认 OFF，部署到服务器也保持 OFF，联调收尾后翻开关即可激活。
 
