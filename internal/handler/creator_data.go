@@ -211,7 +211,8 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 		return
 	}
 
-	// 资料齐全且当前是 pending：MVP 直接置为 verified（真实人脸 / 银行卡四要素接入后改逻辑）
+	// MVP 暂不接实名 / 银行卡四要素，允许"同一次提交完整资料"后自动置为 verified。
+	// 分步上传身份证 / 银行卡时不自动认证，避免前端单字段保存误触发认证状态。
 	var creator model.Creator
 	if err := s.db.First(&creator, cid).Error; err != nil {
 		response.ServerError(c, "查询创作者失败")
@@ -263,7 +264,12 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 	if v, ok := updates["bank_name"].(string); ok {
 		willBankName = v
 	}
+	submittedCompleteProfile := req.Name != nil && *req.Name != "" &&
+		req.IDCardNo != nil && *req.IDCardNo != "" &&
+		req.BankName != nil && *req.BankName != "" &&
+		req.BankCardNo != nil && *req.BankCardNo != ""
 	if creator.VerifyStatus != model.CreatorVerifyVerified &&
+		submittedCompleteProfile &&
 		willName != "" && willIDCard != "" && willBankCard != "" && willBankName != "" {
 		updates["verify_status"] = model.CreatorVerifyVerified
 	}
