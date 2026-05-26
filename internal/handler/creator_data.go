@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"fmt"
+	"regexp"
 	"time"
 
 	"ai-drama-platform/internal/middleware"
@@ -199,6 +201,22 @@ type creatorProfileRequest struct {
 	BankCardNo *string `json:"bank_card_no"`
 }
 
+// idCardRegex / bankCardRegex 入参做最小可用本地校验。
+// MVP 阶段不接腾讯实人 / 银联四要素，但前置格式校验能挡 99% 的乱填，避免：
+//   - 脏数据落库后接入实人认证时全部失败
+//   - 太长字符串直接吃 DB column 长度上限报 500
+var (
+	idCardRegex   = regexp.MustCompile(`^[1-9]\d{16}[\dXx]$`) // 18 位，末位允许 X/x
+	bankCardRegex = regexp.MustCompile(`^\d{16,19}$`)
+)
+
+const (
+	creatorNameMaxRune     = 50
+	creatorBankNameMaxRune = 50
+)
+
+func runeLen(s string) int { return len([]rune(s)) }
+
 func (s *Server) creatorUpdateProfile(c *gin.Context) {
 	cid := middleware.CurrentID(c)
 	if s.cryptor == nil {
@@ -209,6 +227,32 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.InvalidParam(c, "请求体不合法")
 		return
+	}
+
+	// 入参格式校验：长度 / 身份证 / 银行卡。失败统一返 40001，避免吃 DB 错误 → 500。
+	if req.Name != nil && *req.Name != "" {
+		if runeLen(*req.Name) > creatorNameMaxRune {
+			response.InvalidParam(c, fmt.Sprintf("name 长度不能超过 %d 个字符", creatorNameMaxRune))
+			return
+		}
+	}
+	if req.BankName != nil && *req.BankName != "" {
+		if runeLen(*req.BankName) > creatorBankNameMaxRune {
+			response.InvalidParam(c, fmt.Sprintf("bank_name 长度不能超过 %d 个字符", creatorBankNameMaxRune))
+			return
+		}
+	}
+	if req.IDCardNo != nil && *req.IDCardNo != "" {
+		if !idCardRegex.MatchString(*req.IDCardNo) {
+			response.InvalidParam(c, "id_card_no 必须是 18 位身份证号（末位可为 X）")
+			return
+		}
+	}
+	if req.BankCardNo != nil && *req.BankCardNo != "" {
+		if !bankCardRegex.MatchString(*req.BankCardNo) {
+			response.InvalidParam(c, "bank_card_no 必须是 16-19 位数字")
+			return
+		}
 	}
 
 	// MVP 暂不接实名 / 银行卡四要素，允许"同一次提交完整资料"后自动置为 verified。

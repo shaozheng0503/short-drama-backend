@@ -35,7 +35,15 @@ func (s *Server) adminListCategories(c *gin.Context) {
 	for _, cat := range items {
 		views = append(views, categoryView(cat))
 	}
-	response.OK(c, gin.H{"list": views})
+	// 分类总条数有限（按 4 维拆开顶多几十条），不做分页；但为了让前端拿到的列表
+	// 响应结构与其他 list 接口对齐（total/page/page_size/has_more），明确给死值。
+	response.OK(c, gin.H{
+		"list":      views,
+		"total":     int64(len(views)),
+		"page":      1,
+		"page_size": len(views),
+		"has_more":  false,
+	})
 }
 
 type categoryUpsertRequest struct {
@@ -67,6 +75,10 @@ func (s *Server) adminCreateCategory(c *gin.Context) {
 		cat.Status = *req.Status
 	}
 	if err := s.db.Create(&cat).Error; err != nil {
+		if isUniqueViolation(err) {
+			response.Conflict(c, "该 type 下同名分类已存在")
+			return
+		}
 		response.ServerError(c, "创建分类失败")
 		return
 	}
@@ -118,6 +130,10 @@ func (s *Server) adminUpdateCategory(c *gin.Context) {
 	}
 
 	if err := s.db.Model(&cat).Updates(updates).Error; err != nil {
+		if isUniqueViolation(err) {
+			response.Conflict(c, "该 type 下同名分类已存在")
+			return
+		}
 		response.ServerError(c, "更新分类失败")
 		return
 	}
