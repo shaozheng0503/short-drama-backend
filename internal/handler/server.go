@@ -16,6 +16,7 @@ import (
 	"ai-drama-platform/internal/payment"
 	"ai-drama-platform/internal/ratelimit"
 	"ai-drama-platform/internal/redisclient"
+	"ai-drama-platform/internal/response"
 	"ai-drama-platform/internal/secure"
 	"ai-drama-platform/internal/sms"
 	"ai-drama-platform/internal/vod"
@@ -115,6 +116,21 @@ func (s *Server) closeExpiredOrders(now time.Time) {
 
 func (s *Server) Router() *gin.Engine {
 	r := gin.Default()
+	// 默认 gin 不区分 404 / 405，路径错或方法错都走 NoRoute。打开后才能让 NoMethod 生效，
+	// 给前端更清晰的错误码（虽然 body 走同一套 JSON 结构）。
+	r.HandleMethodNotAllowed = true
+	// NoRoute / NoMethod 走统一 JSON 包，避免 gin 默认 "404 page not found" plain text
+	// 让前端 / Apifox 拿到结构化错误响应（与其他 40x 响应一致）。
+	r.NoRoute(func(c *gin.Context) {
+		response.NotFound(c, "接口路径不存在")
+	})
+	r.NoMethod(func(c *gin.Context) {
+		c.JSON(http.StatusMethodNotAllowed, response.Body{
+			Code:    response.CodeNotFound,
+			Message: "HTTP 方法不允许",
+			Data:    nil,
+		})
+	})
 	r.Use(s.corsMiddleware())
 	r.Use(ratelimit.New(s.cfg).Handler())
 	r.GET("/health", s.health)
