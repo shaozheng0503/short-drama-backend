@@ -195,12 +195,17 @@ func (s *Server) creatorIncome(c *gin.Context) {
 }
 
 type creatorProfileRequest struct {
-	Name        *string `json:"name"`
-	CreatorType *string `json:"creator_type"` // personal / organization
-	OrgName     *string `json:"org_name"`     // 机构名称（机构类型）
-	IDCardNo    *string `json:"id_card_no"`
-	BankName    *string `json:"bank_name"`
-	BankCardNo  *string `json:"bank_card_no"`
+	Name         *string `json:"name"`
+	Nickname     *string `json:"nickname"`
+	AvatarURL    *string `json:"avatar_url"`
+	AccountUID   *string `json:"account_uid"`
+	CreatorType  *string `json:"creator_type"`  // personal / organization
+	OrgName      *string `json:"org_name"`      // 机构名称（机构类型）
+	IdentityMID  *string `json:"identity_mid"`  // 创作者身份信息 MID
+	IdentityRole *string `json:"identity_role"` // 版权人 / 制作方等
+	IDCardNo     *string `json:"id_card_no"`
+	BankName     *string `json:"bank_name"`
+	BankCardNo   *string `json:"bank_card_no"`
 }
 
 // idCardRegex / bankCardRegex 入参做最小可用本地校验。
@@ -237,6 +242,26 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 			response.InvalidParam(c, fmt.Sprintf("name 长度不能超过 %d 个字符", creatorNameMaxRune))
 			return
 		}
+	}
+	if req.Nickname != nil && runeLen(*req.Nickname) > creatorNameMaxRune {
+		response.InvalidParam(c, fmt.Sprintf("nickname 长度不能超过 %d 个字符", creatorNameMaxRune))
+		return
+	}
+	if req.AvatarURL != nil && len(*req.AvatarURL) > 512 {
+		response.InvalidParam(c, "avatar_url 过长")
+		return
+	}
+	if req.AccountUID != nil && len(*req.AccountUID) > 64 {
+		response.InvalidParam(c, "account_uid 过长")
+		return
+	}
+	if req.IdentityMID != nil && len(*req.IdentityMID) > 64 {
+		response.InvalidParam(c, "identity_mid 过长")
+		return
+	}
+	if req.IdentityRole != nil && len(*req.IdentityRole) > 32 {
+		response.InvalidParam(c, "identity_role 过长")
+		return
 	}
 	if req.BankName != nil && *req.BankName != "" {
 		if runeLen(*req.BankName) > creatorBankNameMaxRune {
@@ -275,11 +300,26 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 	if req.Name != nil && *req.Name != "" {
 		updates["name"] = *req.Name
 	}
+	if req.Nickname != nil {
+		updates["nickname"] = *req.Nickname
+	}
+	if req.AvatarURL != nil {
+		updates["avatar_url"] = *req.AvatarURL
+	}
+	if req.AccountUID != nil {
+		updates["account_uid"] = *req.AccountUID
+	}
 	if req.CreatorType != nil && *req.CreatorType != "" {
 		updates["creator_type"] = *req.CreatorType
 	}
 	if req.OrgName != nil {
 		updates["org_name"] = *req.OrgName
+	}
+	if req.IdentityMID != nil {
+		updates["identity_mid"] = *req.IdentityMID
+	}
+	if req.IdentityRole != nil {
+		updates["identity_role"] = *req.IdentityRole
 	}
 	if req.BankName != nil {
 		if *req.BankName == "" && creator.VerifyStatus == model.CreatorVerifyVerified {
@@ -295,6 +335,7 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 			return
 		}
 		updates["id_card_no_enc"] = enc
+		updates["id_card_no_masked"] = maskIDCard(*req.IDCardNo)
 	}
 	if req.BankCardNo != nil && *req.BankCardNo != "" {
 		enc, err := s.cryptor.Encrypt(*req.BankCardNo)
@@ -304,6 +345,7 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 		}
 		updates["bank_card_no_enc"] = enc
 		updates["bank_card_last4"] = secure.Last4(*req.BankCardNo)
+		updates["bank_card_no_masked"] = maskBankCard(*req.BankCardNo)
 	}
 
 	willName := creator.Name
@@ -348,21 +390,60 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 
 func creatorFullView(cr model.Creator) gin.H {
 	maskedBank := ""
-	if cr.BankCardLast4 != "" {
+	if cr.BankCardNoMasked != "" {
+		maskedBank = cr.BankCardNoMasked
+	} else if cr.BankCardLast4 != "" {
 		maskedBank = "***" + cr.BankCardLast4
 	}
 	return gin.H{
 		"id":                  cr.ID,
 		"phone":               sms.MaskPhone(cr.Phone),
+		"login_phone":         sms.MaskPhone(cr.Phone),
 		"name":                cr.Name,
+		"nickname":            cr.Nickname,
+		"avatar_url":          cr.AvatarURL,
+		"account_uid":         cr.AccountUID,
 		"creator_type":        cr.CreatorType,
 		"org_name":            cr.OrgName,
+		"identity_mid":        cr.IdentityMID,
+		"identity_role":       cr.IdentityRole,
 		"bank_name":           cr.BankName,
+		"id_card_no_masked":   cr.IDCardNoMasked,
 		"bank_card_no_masked": maskedBank,
 		"verify_status":       cr.VerifyStatus,
 		"total_income_cents":  cr.TotalIncomeCents,
 		"balance_cents":       cr.BalanceCents,
 		"frozen_cents":        cr.FrozenCents,
 		"status":              cr.Status,
+		"account_info": gin.H{
+			"avatar_url":  cr.AvatarURL,
+			"nickname":    cr.Nickname,
+			"account_uid": cr.AccountUID,
+			"login_phone": sms.MaskPhone(cr.Phone),
+		},
+		"real_name_info": gin.H{
+			"real_name":           cr.Name,
+			"id_card_no_masked":   cr.IDCardNoMasked,
+			"bank_card_no_masked": maskedBank,
+			"bank_name":           cr.BankName,
+		},
+		"identity_info": gin.H{
+			"identity_mid":  cr.IdentityMID,
+			"identity_role": cr.IdentityRole,
+		},
 	}
+}
+
+func maskIDCard(id string) string {
+	if len(id) < 10 {
+		return "***"
+	}
+	return id[:6] + "****" + id[len(id)-4:]
+}
+
+func maskBankCard(card string) string {
+	if len(card) < 8 {
+		return "***"
+	}
+	return card[:4] + "****" + card[len(card)-4:]
 }

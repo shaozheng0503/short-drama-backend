@@ -168,12 +168,19 @@ type Creator struct {
 	ID               uint64    `gorm:"primaryKey;column:id" json:"id"`
 	Phone            string    `gorm:"column:phone;size:32;uniqueIndex" json:"phone"`
 	Name             string    `gorm:"column:name;size:64" json:"name"`
+	Nickname         string    `gorm:"column:nickname;size:64" json:"nickname"`
+	AvatarURL        string    `gorm:"column:avatar_url;size:512" json:"avatar_url"`
+	AccountUID       string    `gorm:"column:account_uid;size:64;index" json:"account_uid"`
 	CreatorType      string    `gorm:"column:creator_type;size:20;default:personal" json:"creator_type"` // personal / organization
 	OrgName          string    `gorm:"column:org_name;size:128" json:"org_name"`                         // 机构名称（机构类型时填）
 	IDCardNoEnc      string    `gorm:"column:id_card_no_enc;size:512" json:"-"`
+	IDCardNoMasked   string    `gorm:"column:id_card_no_masked;size:32" json:"id_card_no_masked"`
 	BankName         string    `gorm:"column:bank_name;size:64" json:"bank_name"`
 	BankCardNoEnc    string    `gorm:"column:bank_card_no_enc;size:512" json:"-"`
 	BankCardLast4    string    `gorm:"column:bank_card_last4;size:8" json:"-"`
+	BankCardNoMasked string    `gorm:"column:bank_card_no_masked;size:32" json:"bank_card_no_masked"`
+	IdentityMID      string    `gorm:"column:identity_mid;size:64" json:"identity_mid"`   // 创作者身份信息 MID
+	IdentityRole     string    `gorm:"column:identity_role;size:32" json:"identity_role"` // 版权人 / 制作方等
 	VerifyStatus     string    `gorm:"column:verify_status;size:20;default:pending" json:"verify_status"`
 	TotalIncomeCents int64     `gorm:"column:total_income_cents;default:0" json:"total_income_cents"`
 	BalanceCents     int64     `gorm:"column:balance_cents;default:0" json:"balance_cents"`

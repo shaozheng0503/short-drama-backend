@@ -676,6 +676,31 @@
 - `/ready` → `database=ok` / `redis=ok`
 - 验收脚本 10 项全部 PASS
 
+### 3.39 创作者账号信息字段对齐截图（2026-05-27）
+
+> 目标：按「短剧创作者中心」截图补齐账号信息、实名信息、创作者身份信息字段，便于前端直接渲染。
+
+- `creators` 表新增：
+  - `nickname`：账号昵称
+  - `avatar_url`：账号头像
+  - `account_uid`：账号 UID
+  - `id_card_no_masked`：身份证脱敏展示，如 `350426****1035`
+  - `bank_card_no_masked`：银行卡脱敏展示，如 `6214****0462`
+  - `identity_mid`：创作者身份 MID
+  - `identity_role`：当前身份，如 `版权人`
+- `PUT /v1/creator/me/profile` 支持更新上述字段；身份证 / 银行卡仍只保存密文 + 脱敏值，不返回明文。
+- `GET /v1/creator/me` / `GET /v1/admin/creators/:id` 返回兼容扁平字段，并额外返回三个页面分组：
+  - `account_info`
+  - `real_name_info`
+  - `identity_info`
+- 线上验证：
+  - `account_info.nickname=吴建棉`
+  - `account_info.account_uid=3759948720511693`
+  - `real_name_info.id_card_no_masked=350426****1035`
+  - `real_name_info.bank_card_no_masked=6214****0462`
+  - `identity_info.identity_mid=1850716178296843`
+  - `identity_info.identity_role=版权人`
+
 ### 3.25 第四轮代码 Bug 修复与优化
 
 > 重点：支付回调 HTTP 语义、金额/渠道校验、账号封禁即时生效、SMS 防刷、并发下单、运营校验补全。
