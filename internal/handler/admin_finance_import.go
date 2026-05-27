@@ -44,7 +44,7 @@ func (s *Server) adminDownloadIncomeTemplate(c *gin.Context) {
 	defer xl.Close()
 
 	sheet := "Sheet1"
-	headers := []string{"短剧名称", "渠道", "收益金额(元)", "日期(YYYY-MM-DD)"}
+	headers := []string{"短剧名称", "渠道", "收益", "日期"}
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		_ = xl.SetCellValue(sheet, cell, h)
