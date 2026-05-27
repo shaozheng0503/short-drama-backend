@@ -601,6 +601,80 @@
 
 **新依赖**：`github.com/tencentyun/cos-go-sdk-v5 v0.7.73` + 4 个二级依赖（mxj / mapstructure / go-querystring / go-httpheader）。
 
+### 3.37 收益 Excel 导入 + 合同 Word 输出（2026-05-27）
+
+> 目标：按业务要求补齐「短剧名称 + 渠道 + 收益 + 日期」收益导入，以及「漫剧合作合同」Word 模板 / 具名合同输出。
+
+**收益 Excel 导入**：
+- `POST /v1/admin/finance/income/import` 导入格式改为 4 列：
+  - A：短剧名称
+  - B：渠道
+  - C：收益金额（元）
+  - D：日期（YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD）
+- 新增 `channel_income_daily` 表，唯一键 `(drama_id, channel, stat_date)`。
+- 重复导入按覆盖处理：同一短剧 + 渠道 + 日期以本次金额为准，按差额调整 `creator_stats_daily`、创作者 `total_income_cents` 和 `balance_cents`。
+- 新增 `GET /v1/admin/finance/income/template.xlsx`，后台可直接下载收益导入模板。
+- 本地 `cmd/gen-income-template` 同步为相同 4 列格式。
+
+**合同 Word 输出**：
+- 新增 `GET /v1/admin/contract-template.docx`：下载《漫剧合作合同模板.docx》。
+- 新增 `GET /v1/admin/contracts/:id/docx`：后台下载具名合同 Word，自动填合同编号、创作者姓名 / 手机号、短剧名称、日期。
+- 新增 `GET /v1/creator/contracts/:id/docx`：创作者下载自己的合同 Word；跨创作者访问返回 403。
+- `.docx` 由后端直接生成 Office OpenXML，无需第三方服务；腾讯电子签仍保持后续 P1 接入。
+
+**线上验证（43.132.168.84:18080）**：
+- `/v1/admin/finance/income/template.xlsx` → xlsx 文件，zip 结构正常。
+- `/v1/admin/finance/income/import` 上传模板 → `imported_rows=2`、`failed_rows=0`。
+- `/v1/admin/contract-template.docx` → docx 文件，zip 结构正常。
+- `/v1/admin/contracts/1/docx` → docx 文件，包含「漫剧合作合同」正文。
+- `go test ./...` 通过，已部署并重启 `drama-backend.service`。
+
+### 3.38 周五交付展示清单线上验收（2026-05-27）
+
+> 目标：按「App 端 / 创作者中台 / 管理中台」周五简单交付展示清单，在测试服务器 `43.132.168.84:18080` 逐项跑通。
+
+**中途发现并修复**：
+- 问题：管理端驳回短剧后，短剧仍处于 `reviewing + rejected`，创作者编辑接口只允许 `draft/offline`，导致退回后无法修改。
+- 修复：`creatorUpdateDrama` 放开 `audit_status=rejected` 的剧可编辑；编辑后自动回到 `draft`，清空驳回原因和审核人，前端再重新提交审核。
+- 已重新部署并验证：退回 → 创作者修改 → 重新提交 → 审核通过，全链路通过。
+
+**App 端**：
+- ✅ 用户登录
+- ✅ 短剧列表浏览
+- ✅ 首页视频流 / 视频播放
+
+**创作者中台**：
+- ✅ 个人 / 机构角色支持，机构 demo 认证通过
+- ✅ 剧集信息填写
+- ✅ 视频上传签名 `POST /v1/creator/uploads/vod-sign`
+- ✅ 提交审核后自动生成关联合同
+- ✅ 合同列表 / 合同 Word 下载
+- ✅ 剧集收益概览 / 明细
+- ✅ 发起提现申请
+- ✅ 提现记录
+- ✅ 消息通知（纯文本 + 可选链接）：提交审核、审核驳回、提现审核均可通知
+
+**管理中台**：
+- ✅ 短剧信息获取 / 列表 / 详情
+- ✅ 上传剧集审核通过 / 驳回
+- ✅ 驳回后创作者端展示驳回原因
+- ✅ 驳回操作发送消息
+- ✅ 财务 Excel 表格识别：短剧名称 + 渠道 + 收益 + 日期
+- ✅ 财务审核提现，审核后发送消息
+- ✅ 超管 / 财务 / 审核三角色权限
+  - finance 调内容审核 → `40301`
+  - auditor 调提现打款 → `40301`
+  - admin 可改全局配置
+- ✅ 全局免费集数 / 每集单价配置
+- ✅ 收益导入模板下载
+- ✅ 合同 Word 模板下载
+
+**线上验收结果**：
+- `go test ./...` 通过
+- `drama-backend.service` active
+- `/ready` → `database=ok` / `redis=ok`
+- 验收脚本 10 项全部 PASS
+
 ### 3.25 第四轮代码 Bug 修复与优化
 
 > 重点：支付回调 HTTP 语义、金额/渠道校验、账号封禁即时生效、SMS 防刷、并发下单、运营校验补全。

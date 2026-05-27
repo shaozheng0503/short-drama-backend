@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"bytes"
 	"fmt"
 	"math"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -16,16 +19,52 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// adminDownloadIncomeTemplate —— GET /v1/admin/finance/income/template.xlsx
+// 生成「短剧名称 + 渠道 + 收益 + 日期」四列收益导入模板。
+func (s *Server) adminDownloadIncomeTemplate(c *gin.Context) {
+	xl := excelize.NewFile()
+	defer xl.Close()
+
+	sheet := "Sheet1"
+	headers := []string{"短剧名称", "渠道", "收益金额(元)", "日期(YYYY-MM-DD)"}
+	for i, h := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		_ = xl.SetCellValue(sheet, cell, h)
+	}
+	samples := [][]interface{}{
+		{"总裁的逆袭新娘", "抖音", 123.45, "2026-05-26"},
+		{"总裁的逆袭新娘", "快手", 88.00, "2026-05-27"},
+	}
+	for r, row := range samples {
+		for col, v := range row {
+			cell, _ := excelize.CoordinatesToCellName(col+1, r+2)
+			_ = xl.SetCellValue(sheet, cell, v)
+		}
+	}
+	_ = xl.SetColWidth(sheet, "A", "A", 28)
+	_ = xl.SetColWidth(sheet, "B", "D", 20)
+
+	var buf bytes.Buffer
+	if err := xl.Write(&buf); err != nil {
+		response.ServerError(c, "生成收益导入模板失败")
+		return
+	}
+	filename := "收益导入模板.xlsx"
+	escaped := url.QueryEscape(filename)
+	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"income-template.xlsx\"; filename*=UTF-8''%s", escaped))
+	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buf.Bytes())
+}
+
 // adminImportDailyIncome —— POST /v1/admin/finance/income/import
-// 财务上传 xlsx，按「剧目 + 日期」导入每日收入，写入 creator_stats_daily 并同步创作者余额。
+// 财务上传 xlsx，导入**第三方渠道**每日收益。本平台自有付费收入走支付分账，无需导入。
 //
 // 表格列（第 1 行表头，从第 2 行起读）：
 //
-//	A 列：剧目ID（drama_id）
-//	B 列：日期（YYYY-MM-DD 或 YYYY/MM/DD）
-//	C 列：收入金额（元，支持小数）
+//	A 列：短剧名称   B 列：渠道(抖音/快手/腾讯/B站/视频号…)   C 列：收益金额(元)   D 列：日期(YYYY-MM-DD)
 //
-// 幂等：同一 (创作者, 剧目, 日期) 重复导入按「覆盖」处理——以本次值为准，按差额调整创作者账面。
+// 按短剧名称匹配剧目（名称不唯一的行会跳过并报错，建议保证标题唯一或后续改用 ID）。
+// 幂等：同一 (剧目, 渠道, 日期) 重复导入按「覆盖」处理——以本次值为准，按差额调整创作者账面。
 func (s *Server) adminImportDailyIncome(c *gin.Context) {
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
@@ -62,9 +101,10 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 	}
 
 	type parsedRow struct {
-		dramaID     uint64
-		statDate    string
+		title       string
+		channel     string
 		incomeCents int64
+		statDate    string
 	}
 	var parsed []parsedRow
 	rowErrors := make([]string, 0)
@@ -72,29 +112,31 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 	for i := 1; i < len(rows); i++ { // 跳过表头
 		row := rows[i]
 		lineNo := i + 1
-		if len(row) < 3 {
-			rowErrors = append(rowErrors, fmt.Sprintf("第%d行：列数不足（需 剧目ID/日期/收入）", lineNo))
+		if len(row) < 4 {
+			rowErrors = append(rowErrors, fmt.Sprintf("第%d行：列数不足（需 短剧名称/渠道/收益/日期）", lineNo))
 			continue
 		}
-		dramaID, e1 := strconv.ParseUint(strings.TrimSpace(row[0]), 10, 64)
-		if e1 != nil || dramaID == 0 {
-			rowErrors = append(rowErrors, fmt.Sprintf("第%d行：剧目ID 不合法", lineNo))
+		title := strings.TrimSpace(row[0])
+		channel := strings.TrimSpace(row[1])
+		if title == "" || channel == "" {
+			rowErrors = append(rowErrors, fmt.Sprintf("第%d行：短剧名称/渠道不能为空", lineNo))
 			continue
 		}
-		statDate, ok := normalizeDate(strings.TrimSpace(row[1]))
+		yuan, eInc := strconv.ParseFloat(strings.TrimSpace(row[2]), 64)
+		if eInc != nil || yuan < 0 {
+			rowErrors = append(rowErrors, fmt.Sprintf("第%d行：收益金额不合法", lineNo))
+			continue
+		}
+		statDate, ok := normalizeDate(strings.TrimSpace(row[3]))
 		if !ok {
 			rowErrors = append(rowErrors, fmt.Sprintf("第%d行：日期格式应为 YYYY-MM-DD", lineNo))
 			continue
 		}
-		yuan, e3 := strconv.ParseFloat(strings.TrimSpace(row[2]), 64)
-		if e3 != nil || yuan < 0 {
-			rowErrors = append(rowErrors, fmt.Sprintf("第%d行：收入金额不合法", lineNo))
-			continue
-		}
 		parsed = append(parsed, parsedRow{
-			dramaID:     dramaID,
-			statDate:    statDate,
+			title:       title,
+			channel:     channel,
 			incomeCents: int64(math.Round(yuan * 100)),
+			statDate:    statDate,
 		})
 	}
 
@@ -102,39 +144,42 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 	var totalDelta int64
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		for _, pr := range parsed {
-			var drama model.Drama
-			if err := tx.Select("id", "creator_id").First(&drama, pr.dramaID).Error; err != nil {
-				if isNotFound(err) {
-					rowErrors = append(rowErrors, fmt.Sprintf("剧目 %d 不存在，已跳过", pr.dramaID))
-					continue
-				}
+			// 按名称匹配剧目：要求唯一。
+			var dramas []model.Drama
+			if err := tx.Select("id", "creator_id").Where("title = ?", pr.title).Find(&dramas).Error; err != nil {
 				return err
 			}
+			if len(dramas) == 0 {
+				rowErrors = append(rowErrors, fmt.Sprintf("短剧《%s》不存在，已跳过", pr.title))
+				continue
+			}
+			if len(dramas) > 1 {
+				rowErrors = append(rowErrors, fmt.Sprintf("短剧《%s》名称不唯一(%d 部)，已跳过", pr.title, len(dramas)))
+				continue
+			}
+			drama := dramas[0]
 			if drama.CreatorID == nil {
-				rowErrors = append(rowErrors, fmt.Sprintf("剧目 %d 未绑定创作者，已跳过", pr.dramaID))
+				rowErrors = append(rowErrors, fmt.Sprintf("短剧《%s》未绑定创作者，已跳过", pr.title))
 				continue
 			}
 			creatorID := *drama.CreatorID
 
-			// 读现有当日记录，算差额（覆盖语义，保证可重复导入）。
-			var existing model.CreatorStatsDaily
-			errFind := tx.Where("creator_id = ? AND drama_id = ? AND stat_date = ?",
-				creatorID, pr.dramaID, pr.statDate).First(&existing).Error
+			// 渠道明细：覆盖语义，算差额。
+			var existing model.ChannelIncomeDaily
+			errFind := tx.Where("drama_id = ? AND channel = ? AND stat_date = ?",
+				drama.ID, pr.channel, pr.statDate).First(&existing).Error
 			var delta int64
 			if errFind == nil {
 				delta = pr.incomeCents - existing.IncomeCents
-				if err := tx.Model(&model.CreatorStatsDaily{}).
-					Where("id = ?", existing.ID).
-					Update("income_cents", pr.incomeCents).Error; err != nil {
+				if err := tx.Model(&model.ChannelIncomeDaily{}).Where("id = ?", existing.ID).
+					Updates(map[string]interface{}{"income_cents": pr.incomeCents, "creator_id": creatorID}).Error; err != nil {
 					return err
 				}
 			} else if isNotFound(errFind) {
 				delta = pr.incomeCents
-				if err := tx.Create(&model.CreatorStatsDaily{
-					CreatorID:   creatorID,
-					DramaID:     pr.dramaID,
-					StatDate:    pr.statDate,
-					IncomeCents: pr.incomeCents,
+				if err := tx.Create(&model.ChannelIncomeDaily{
+					DramaID: drama.ID, Channel: pr.channel, StatDate: pr.statDate,
+					CreatorID: creatorID, IncomeCents: pr.incomeCents,
 				}).Error; err != nil {
 					return err
 				}
@@ -143,6 +188,10 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 			}
 
 			if delta != 0 {
+				// creator_stats_daily 按 (creator,drama,date) 累加差额，保证创作者收益/看板含第三方收入。
+				if err := s.bumpCreatorStatsIncome(tx, creatorID, drama.ID, pr.statDate, delta); err != nil {
+					return err
+				}
 				if err := tx.Model(&model.Creator{}).
 					Clauses(clause.Locking{Strength: "UPDATE"}).
 					Where("id = ?", creatorID).
@@ -171,7 +220,23 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 	})
 }
 
-// normalizeDate 把 YYYY-MM-DD / YYYY/MM/DD 归一成 YYYY-MM-DD。
+// bumpCreatorStatsIncome 对 (creator,drama,date) 的 creator_stats_daily.income_cents 累加 delta；行不存在则建。
+func (s *Server) bumpCreatorStatsIncome(tx *gorm.DB, creatorID, dramaID uint64, statDate string, delta int64) error {
+	var row model.CreatorStatsDaily
+	err := tx.Where("creator_id = ? AND drama_id = ? AND stat_date = ?", creatorID, dramaID, statDate).First(&row).Error
+	if err == nil {
+		return tx.Model(&model.CreatorStatsDaily{}).Where("id = ?", row.ID).
+			Update("income_cents", gorm.Expr("income_cents + ?", delta)).Error
+	}
+	if !isNotFound(err) {
+		return err
+	}
+	return tx.Create(&model.CreatorStatsDaily{
+		CreatorID: creatorID, DramaID: dramaID, StatDate: statDate, IncomeCents: delta,
+	}).Error
+}
+
+// normalizeDate 把 YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD 归一成 YYYY-MM-DD。
 func normalizeDate(s string) (string, bool) {
 	for _, layout := range []string{"2006-01-02", "2006/01/02", "2006.01.02"} {
 		if t, err := time.Parse(layout, s); err == nil {

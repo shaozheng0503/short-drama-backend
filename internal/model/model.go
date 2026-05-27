@@ -429,6 +429,22 @@ type CreatorStatsDaily struct {
 
 func (CreatorStatsDaily) TableName() string { return "creator_stats_daily" }
 
+// ChannelIncomeDaily —— 第三方渠道每日收益明细（财务 Excel 导入）。
+// 本平台自有付费收入走支付分账写 creator_stats_daily，不进此表。
+// 唯一键 (drama_id, channel, stat_date)：同剧同渠道同日重复导入按覆盖处理。
+type ChannelIncomeDaily struct {
+	ID          uint64    `gorm:"primaryKey;column:id" json:"id"`
+	DramaID     uint64    `gorm:"column:drama_id;uniqueIndex:uniq_channel_income,priority:1" json:"drama_id"`
+	Channel     string    `gorm:"column:channel;size:32;uniqueIndex:uniq_channel_income,priority:2" json:"channel"`
+	StatDate    string    `gorm:"column:stat_date;size:10;uniqueIndex:uniq_channel_income,priority:3" json:"stat_date"`
+	CreatorID   uint64    `gorm:"column:creator_id;index" json:"creator_id"`
+	IncomeCents int64     `gorm:"column:income_cents;default:0" json:"income_cents"`
+	CreatedAt   time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt   time.Time `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (ChannelIncomeDaily) TableName() string { return "channel_income_daily" }
+
 // OperationLog —— 后台操作审计日志；不记录请求体，避免敏感信息落库。
 type OperationLog struct {
 	ID              uint64    `gorm:"primaryKey;column:id" json:"id"`
