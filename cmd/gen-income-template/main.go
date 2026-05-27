@@ -7,7 +7,7 @@
 //
 // 模板列与 POST /v1/admin/finance/income/import 解析逻辑一致：
 //
-//	A 列：短剧名称   B 列：渠道   C 列：收益金额(元)   D 列：日期(YYYY-MM-DD)
+//	A 列：短剧名称   B 列：渠道   C 列：收益   D 列：日期
 //
 // 说明：这里导入的是**第三方渠道**的收益数据；本平台自有付费收入走支付分账自动入账，无需人工导入。
 package main
@@ -29,7 +29,7 @@ func main() {
 	defer f.Close()
 	sheet := "Sheet1"
 
-	headers := []string{"短剧名称", "渠道", "收益金额(元)", "日期(YYYY-MM-DD)"}
+	headers := []string{"短剧名称", "渠道", "收益", "日期"}
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		_ = f.SetCellValue(sheet, cell, h)
