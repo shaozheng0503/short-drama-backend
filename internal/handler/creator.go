@@ -86,6 +86,10 @@ func (s *Server) findOrCreateCreator(phone string) (model.Creator, error) {
 	}
 	creator = model.Creator{
 		Phone:        phone,
+		Nickname:     defaultCreatorNickname(phone),
+		AccountUID:   defaultCreatorUID(phone),
+		IdentityMID:  defaultCreatorUID(phone),
+		IdentityRole: "版权人",
 		CreatorType:  model.CreatorTypePersonal,
 		VerifyStatus: model.CreatorVerifyPending,
 		Status:       model.StatusActive,
@@ -98,24 +102,75 @@ func (s *Server) findOrCreateCreator(phone string) (model.Creator, error) {
 
 func creatorBriefView(cr model.Creator) gin.H {
 	return gin.H{
-		"id":            cr.ID,
-		"phone":         sms.MaskPhone(cr.Phone),
-		"verify_status": cr.VerifyStatus,
+		"id":                  cr.ID,
+		"phone":               sms.MaskPhone(cr.Phone),
+		"login_phone":         sms.MaskPhone(cr.Phone),
+		"nickname":            cr.Nickname,
+		"avatar_url":          cr.AvatarURL,
+		"account_uid":         cr.AccountUID,
+		"identity_mid":        cr.IdentityMID,
+		"identity_role":       cr.IdentityRole,
+		"creator_type":        cr.CreatorType,
+		"verify_status":       cr.VerifyStatus,
+		"id_card_no_masked":   cr.IDCardNoMasked,
+		"bank_card_no_masked": cr.BankCardNoMasked,
 	}
 }
 
 func creatorDetailView(cr model.Creator) gin.H {
-	return gin.H{
-		"id":                 cr.ID,
-		"phone":              sms.MaskPhone(cr.Phone),
-		"name":               cr.Name,
-		"creator_type":       cr.CreatorType,
-		"org_name":           cr.OrgName,
-		"bank_name":          cr.BankName,
-		"verify_status":      cr.VerifyStatus,
-		"total_income_cents": cr.TotalIncomeCents,
-		"balance_cents":      cr.BalanceCents,
-		"frozen_cents":       cr.FrozenCents,
-		"status":             cr.Status,
+	maskedBank := cr.BankCardNoMasked
+	if maskedBank == "" && cr.BankCardLast4 != "" {
+		maskedBank = "***" + cr.BankCardLast4
 	}
+	return gin.H{
+		"id":                  cr.ID,
+		"phone":               sms.MaskPhone(cr.Phone),
+		"login_phone":         sms.MaskPhone(cr.Phone),
+		"name":                cr.Name,
+		"nickname":            cr.Nickname,
+		"avatar_url":          cr.AvatarURL,
+		"account_uid":         cr.AccountUID,
+		"creator_type":        cr.CreatorType,
+		"org_name":            cr.OrgName,
+		"identity_mid":        cr.IdentityMID,
+		"identity_role":       cr.IdentityRole,
+		"bank_name":           cr.BankName,
+		"id_card_no_masked":   cr.IDCardNoMasked,
+		"bank_card_no_masked": cr.BankCardNoMasked,
+		"verify_status":       cr.VerifyStatus,
+		"total_income_cents":  cr.TotalIncomeCents,
+		"balance_cents":       cr.BalanceCents,
+		"frozen_cents":        cr.FrozenCents,
+		"status":              cr.Status,
+		"account_info": gin.H{
+			"avatar_url":  cr.AvatarURL,
+			"nickname":    cr.Nickname,
+			"account_uid": cr.AccountUID,
+			"login_phone": sms.MaskPhone(cr.Phone),
+		},
+		"real_name_info": gin.H{
+			"real_name":           cr.Name,
+			"id_card_no_masked":   cr.IDCardNoMasked,
+			"bank_name":           cr.BankName,
+			"bank_card_no_masked": maskedBank,
+		},
+		"identity_info": gin.H{
+			"identity_mid":  cr.IdentityMID,
+			"identity_role": cr.IdentityRole,
+		},
+	}
+}
+
+func defaultCreatorNickname(phone string) string {
+	if len(phone) >= 4 {
+		return "创作者" + phone[len(phone)-4:]
+	}
+	return "创作者"
+}
+
+func defaultCreatorUID(phone string) string {
+	if phone == "" {
+		return ""
+	}
+	return "MID" + phone
 }

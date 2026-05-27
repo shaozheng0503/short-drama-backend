@@ -88,16 +88,26 @@ func (s *Server) adminListCreators(c *gin.Context) {
 	list := make([]gin.H, 0, len(creators))
 	for _, cr := range creators {
 		list = append(list, gin.H{
-			"id":                 cr.ID,
-			"phone":              sms.MaskPhone(cr.Phone),
-			"name":               cr.Name,
-			"bank_name":          cr.BankName,
-			"verify_status":      cr.VerifyStatus,
-			"status":             cr.Status,
-			"drama_count":        dramaCounts[cr.ID],
-			"total_income_cents": cr.TotalIncomeCents,
-			"balance_cents":      cr.BalanceCents,
-			"frozen_cents":       cr.FrozenCents,
+			"id":                  cr.ID,
+			"phone":               sms.MaskPhone(cr.Phone),
+			"login_phone":         sms.MaskPhone(cr.Phone),
+			"name":                cr.Name,
+			"nickname":            cr.Nickname,
+			"avatar_url":          cr.AvatarURL,
+			"account_uid":         cr.AccountUID,
+			"creator_type":        cr.CreatorType,
+			"org_name":            cr.OrgName,
+			"identity_mid":        cr.IdentityMID,
+			"identity_role":       cr.IdentityRole,
+			"bank_name":           cr.BankName,
+			"id_card_no_masked":   cr.IDCardNoMasked,
+			"bank_card_no_masked": cr.BankCardNoMasked,
+			"verify_status":       cr.VerifyStatus,
+			"status":              cr.Status,
+			"drama_count":         dramaCounts[cr.ID],
+			"total_income_cents":  cr.TotalIncomeCents,
+			"balance_cents":       cr.BalanceCents,
+			"frozen_cents":        cr.FrozenCents,
 		})
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
@@ -161,6 +171,13 @@ func (s *Server) adminGetCreator(c *gin.Context) {
 
 type adminUpdateCreatorRequest struct {
 	Name         *string `json:"name"`
+	Nickname     *string `json:"nickname"`
+	AvatarURL    *string `json:"avatar_url"`
+	AccountUID   *string `json:"account_uid"`
+	CreatorType  *string `json:"creator_type"`
+	OrgName      *string `json:"org_name"`
+	IdentityMID  *string `json:"identity_mid"`
+	IdentityRole *string `json:"identity_role"`
 	BankName     *string `json:"bank_name"`
 	VerifyStatus *string `json:"verify_status"`
 }
@@ -188,6 +205,31 @@ func (s *Server) adminUpdateCreator(c *gin.Context) {
 	updates := map[string]interface{}{}
 	if req.Name != nil {
 		updates["name"] = *req.Name
+	}
+	if req.Nickname != nil {
+		updates["nickname"] = *req.Nickname
+	}
+	if req.AvatarURL != nil {
+		updates["avatar_url"] = *req.AvatarURL
+	}
+	if req.AccountUID != nil {
+		updates["account_uid"] = *req.AccountUID
+	}
+	if req.CreatorType != nil && *req.CreatorType != "" {
+		if *req.CreatorType != model.CreatorTypePersonal && *req.CreatorType != model.CreatorTypeOrganization {
+			response.InvalidParam(c, "creator_type 只能是 personal / organization")
+			return
+		}
+		updates["creator_type"] = *req.CreatorType
+	}
+	if req.OrgName != nil {
+		updates["org_name"] = *req.OrgName
+	}
+	if req.IdentityMID != nil {
+		updates["identity_mid"] = *req.IdentityMID
+	}
+	if req.IdentityRole != nil {
+		updates["identity_role"] = *req.IdentityRole
 	}
 	if req.BankName != nil {
 		updates["bank_name"] = *req.BankName
