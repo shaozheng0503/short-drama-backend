@@ -732,6 +732,33 @@
   - enterprise 企业认证通过 ✅
   - 修改已绑定银行卡，无短信验证码返回 `40001`；带验证码可修改 ✅
 
+### 3.41 创作者账号 / 认证 / 渠道账号独立接口（2026-05-27）
+
+> 目标：不再只依赖 `/creator/me/profile` 兼容大接口，按页面完整接入拆出独立接口。
+
+- 新增账号信息独立接口：
+  - `GET /v1/creator/account`
+  - `PUT /v1/creator/account`
+  - 仅允许改 `nickname` / `avatar_url`
+  - `account_uid` / `login_phone` 只读
+- 新增认证独立接口：
+  - `GET /v1/creator/verification`
+  - `PUT /v1/creator/verification/personal`
+  - `PUT /v1/creator/verification/enterprise`
+  - `POST /v1/creator/bank-card/change`
+- 新增渠道账号 CRUD：
+  - `GET /v1/creator/channel-accounts`
+  - `POST /v1/creator/channel-accounts`
+  - `PUT /v1/creator/channel-accounts/:id`
+  - `DELETE /v1/creator/channel-accounts/:id`
+  - `GET /v1/admin/creator-channel-accounts`
+- 新增表：`creator_channel_accounts`
+- 线上验证：
+  - 账号独立接口 ✅
+  - personal 实名接口 + 银行卡短信改绑 ✅
+  - enterprise 企业认证接口 ✅
+  - douyin 渠道账号 CRUD ✅
+
 ### 3.25 第四轮代码 Bug 修复与优化
 
 > 重点：支付回调 HTTP 语义、金额/渠道校验、账号封禁即时生效、SMS 防刷、并发下单、运营校验补全。

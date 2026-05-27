@@ -194,6 +194,22 @@ type Creator struct {
 
 func (Creator) TableName() string { return "creators" }
 
+// CreatorChannelAccount —— 创作者绑定的外部渠道账号（抖音 / 快手 / 视频号等）。
+type CreatorChannelAccount struct {
+	ID          uint64    `gorm:"primaryKey;column:id" json:"id"`
+	CreatorID   uint64    `gorm:"column:creator_id;uniqueIndex:uniq_creator_channel_uid,priority:1;index" json:"creator_id"`
+	Platform    string    `gorm:"column:platform;size:32;uniqueIndex:uniq_creator_channel_uid,priority:2" json:"platform"`
+	AccountUID  string    `gorm:"column:account_uid;size:128;uniqueIndex:uniq_creator_channel_uid,priority:3" json:"account_uid"`
+	Nickname    string    `gorm:"column:nickname;size:128" json:"nickname"`
+	AvatarURL   string    `gorm:"column:avatar_url;size:512" json:"avatar_url"`
+	HomepageURL string    `gorm:"column:homepage_url;size:512" json:"homepage_url"`
+	Status      string    `gorm:"column:status;size:20;default:active;index" json:"status"`
+	CreatedAt   time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt   time.Time `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (CreatorChannelAccount) TableName() string { return "creator_channel_accounts" }
+
 // Category —— 短剧分类（MVP 数据库设计 3.5）
 // Type 见 CategoryType* 常量：theme / setting / background / audience。
 // 老库迁移：缺省 'theme'，存量行 AutoMigrate 后默认值会自动回填。
