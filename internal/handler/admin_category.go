@@ -140,3 +140,37 @@ func (s *Server) adminUpdateCategory(c *gin.Context) {
 	s.db.First(&cat, id)
 	response.OK(c, categoryView(cat))
 }
+
+func (s *Server) adminDeleteCategory(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var cat model.Category
+	if err := s.db.First(&cat, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "分类不存在")
+			return
+		}
+		response.ServerError(c, "查询分类失败")
+		return
+	}
+	var dramaCnt int64
+	s.db.Model(&model.Drama{}).Where("category_id = ?", id).Count(&dramaCnt)
+	if dramaCnt > 0 {
+		response.Conflict(c, "分类仍被短剧引用，无法删除")
+		return
+	}
+	var tagCnt int64
+	s.db.Model(&model.DramaTag{}).Where("category_id = ?", id).Count(&tagCnt)
+	if tagCnt > 0 {
+		response.Conflict(c, "分类仍被短剧标签引用，无法删除")
+		return
+	}
+	if err := s.db.Delete(&cat).Error; err != nil {
+		response.ServerError(c, "删除分类失败")
+		return
+	}
+	response.OK(c, gin.H{"id": id, "deleted": true})
+}

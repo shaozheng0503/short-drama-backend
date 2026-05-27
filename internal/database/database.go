@@ -40,6 +40,7 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		&model.Withdrawal{},
 		&model.CreatorStatsDaily{},
 		&model.ChannelIncomeDaily{},
+		&model.ChannelIncomeImportBatch{},
 		&model.OperationLog{},
 		&model.Notification{},
 		&model.GlobalConfig{},

@@ -216,6 +216,109 @@ func (s *Server) adminGetContract(c *gin.Context) {
 	response.OK(c, contractView(ct, title))
 }
 
+type adminUpdateContractRequest struct {
+	FileURL     *string `json:"file_url"`
+	Status      *string `json:"status"`
+	EsignFlowID *string `json:"esign_flow_id"`
+}
+
+func (s *Server) adminUpdateContract(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var ct model.Contract
+	if err := s.db.First(&ct, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "合同不存在")
+			return
+		}
+		response.ServerError(c, "查询失败")
+		return
+	}
+	var req adminUpdateContractRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "请求体不合法")
+		return
+	}
+	updates := map[string]interface{}{}
+	if req.FileURL != nil {
+		updates["file_url"] = *req.FileURL
+	}
+	if req.EsignFlowID != nil {
+		updates["esign_flow_id"] = *req.EsignFlowID
+	}
+	if req.Status != nil && *req.Status != "" {
+		switch *req.Status {
+		case model.ContractStatusPending, model.ContractStatusSigning,
+			model.ContractStatusSigned, model.ContractStatusCancelled:
+			updates["status"] = *req.Status
+		default:
+			response.InvalidParam(c, "status 非法")
+			return
+		}
+	}
+	if len(updates) == 0 {
+		title := ""
+		if ct.DramaID != nil {
+			var d model.Drama
+			if err := s.db.Select("title").First(&d, *ct.DramaID).Error; err == nil {
+				title = d.Title
+			}
+		}
+		response.OK(c, contractView(ct, title))
+		return
+	}
+	if err := s.db.Model(&ct).Updates(updates).Error; err != nil {
+		response.ServerError(c, "更新合同失败")
+		return
+	}
+	s.db.First(&ct, id)
+	title := ""
+	if ct.DramaID != nil {
+		var d model.Drama
+		if err := s.db.Select("title").First(&d, *ct.DramaID).Error; err == nil {
+			title = d.Title
+		}
+	}
+	response.OK(c, contractView(ct, title))
+}
+
+func (s *Server) adminCancelContract(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var ct model.Contract
+	if err := s.db.First(&ct, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "合同不存在")
+			return
+		}
+		response.ServerError(c, "查询失败")
+		return
+	}
+	if ct.Status == model.ContractStatusSigned {
+		response.Conflict(c, "已签署合同不能作废")
+		return
+	}
+	if err := s.db.Model(&ct).Update("status", model.ContractStatusCancelled).Error; err != nil {
+		response.ServerError(c, "作废合同失败")
+		return
+	}
+	ct.Status = model.ContractStatusCancelled
+	title := ""
+	if ct.DramaID != nil {
+		var d model.Drama
+		if err := s.db.Select("title").First(&d, *ct.DramaID).Error; err == nil {
+			title = d.Title
+		}
+	}
+	response.OK(c, contractView(ct, title))
+}
+
 // adminEsignContract 腾讯电子签接入位（stub）。
 // 真接入路径：用 github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/ess 创建签署流程，
 // 把 ess_flow_id 写回合同；webhook 端在 /v1/webhooks/esign 接收 signed 事件再切 status。

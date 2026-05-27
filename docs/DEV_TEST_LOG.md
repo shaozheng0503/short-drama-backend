@@ -759,6 +759,36 @@
   - enterprise 企业认证接口 ✅
   - douyin 渠道账号 CRUD ✅
 
+### 3.42 Admin 运营侧 CRUD 补全（2026-05-27）
+
+> 目标：补齐后台运营日常所需的增删改查能力。
+
+- 渠道账号 Admin CRUD：
+  - `POST /v1/admin/creator-channel-accounts`（代绑）
+  - `PUT /v1/admin/creator-channel-accounts/:id`
+  - `DELETE /v1/admin/creator-channel-accounts/:id`
+- 财务收益查询 / 修正：
+  - `GET /v1/admin/finance/income/imports`（批次列表）
+  - `GET /v1/admin/finance/income/imports/:batch_no`（批次详情 + row_reports）
+  - `GET /v1/admin/finance/channel-incomes`（明细列表）
+  - `PUT /v1/admin/finance/channel-incomes/:id`（按差额修正）
+  - `DELETE /v1/admin/finance/channel-incomes/:id`（删除并回滚收益）
+  - 导入时持久化 `channel_income_import_batches`，明细记录 `batch_no`
+- 创作者治理：
+  - `POST /v1/admin/creators/:id/unban`
+  - `POST /v1/admin/creators/:id/verification/approve`
+  - `POST /v1/admin/creators/:id/verification/reject`
+  - 创作者提交认证后改为 `verify_status=pending`，需 Admin 审核通过方可提现
+  - 新增字段 `verify_reject_reason`
+- 评论管理：
+  - `GET /v1/admin/comments`
+  - `DELETE /v1/admin/comments/:id`（软删除）
+- 分类 / 合同：
+  - `DELETE /v1/admin/categories/:id`
+  - `PUT /v1/admin/contracts/:id`
+  - `POST /v1/admin/contracts/:id/cancel`
+- OpenAPI 已同步上述全部接口
+
 ### 3.25 第四轮代码 Bug 修复与优化
 
 > 重点：支付回调 HTTP 语义、金额/渠道校验、账号封禁即时生效、SMS 防刷、并发下单、运营校验补全。
@@ -840,8 +870,8 @@
 - ✅ Webhook 告警：已接入过期订单关闭 / 后台任务异常 / 支付回调失败事件
 - ✅ HTTPS / Nginx / 部署脚本：已完成 `docs/DEPLOYMENT.md` 示例文档；真实服务器配置待联调 / 上线时执行
 - ❌ 退款（MVP 范围外，文档 7.2 明确「refunded 仅运营手工标记，不开放 API」）
-- ❌ 评论接口（API 文档 4.14 / 4.15，按"可砍"清单暂未做）
-- ❌ 图片上传签名 `POST /v1/common/uploads/image-sign`（依赖 COS / 云点播账号）
+- ✅ 评论接口（APP 4.14/4.15 + Admin 列表/删除）
+- ✅ 图片上传签名 `POST /v1/common/uploads/image-sign`（依赖 COS 配置）
 - ✅ 后台操作日志：已完成 `operation_logs`，消息中心、VIP、Banner、推荐算法等仍按 MVP 文档第十四节不做
 
 ### 5.3 安全 & 部署

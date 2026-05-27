@@ -22,9 +22,9 @@ import (
 
 // imageSignRequest：业务方可以提示用途（avatar / cover / banner），决定上传到哪个子目录。
 type imageSignRequest struct {
-	Scene    string `json:"scene"`     // avatar / cover / banner / generic
-	Ext      string `json:"ext"`       // 文件后缀，不带点：jpg / png / webp …
-	Filename string `json:"filename"`  // 仅作日志参考，不参与签名
+	Scene    string `json:"scene"`    // avatar / cover / banner / generic
+	Ext      string `json:"ext"`      // 文件后缀，不带点：jpg / png / webp …
+	Filename string `json:"filename"` // 仅作日志参考，不参与签名
 }
 
 // allowedImageExt：限制后缀，避免被当上传通道传任意文件。
@@ -157,7 +157,7 @@ func (s *Server) creatorVODUploadSign(c *gin.Context) {
 // FileUploadEvent.MediaUrl 真实路径是 MediaBasicInfo.MediaUrl（首次联调被坑过）；
 // 同时保留顶层 MediaUrl 兼容旧/精简 payload，handler 解析时优先取 MediaBasicInfo。
 type vodCallbackEnvelope struct {
-	EventType string `json:"EventType"`
+	EventType       string `json:"EventType"`
 	FileUploadEvent *struct {
 		FileID         string `json:"FileId"`
 		MediaURL       string `json:"MediaUrl"`
@@ -172,12 +172,12 @@ type vodCallbackEnvelope struct {
 		} `json:"MetaData"`
 	} `json:"FileUploadEvent,omitempty"`
 	ProcedureStateChangeEvent *struct {
-		TaskID                string                  `json:"TaskId"`
-		Status                string                  `json:"Status"` // PROCESSING / FINISH / ERROR
-		ErrCode               int                     `json:"ErrCode"`
-		Message               string                  `json:"Message"`
-		FileID                string                  `json:"FileId"`
-		FileName              string                  `json:"FileName"`
+		TaskID                string                   `json:"TaskId"`
+		Status                string                   `json:"Status"` // PROCESSING / FINISH / ERROR
+		ErrCode               int                      `json:"ErrCode"`
+		Message               string                   `json:"Message"`
+		FileID                string                   `json:"FileId"`
+		FileName              string                   `json:"FileName"`
 		MediaProcessResultSet []mediaProcessResultItem `json:"MediaProcessResultSet,omitempty"`
 	} `json:"ProcedureStateChangeEvent,omitempty"`
 }
@@ -383,4 +383,3 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "...(truncated)"
 }
-
