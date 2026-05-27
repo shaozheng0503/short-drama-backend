@@ -7,9 +7,9 @@
 //
 // 模板列与 POST /v1/admin/finance/income/import 解析逻辑一致：
 //
-//	A 列：剧目ID      B 列：日期(YYYY-MM-DD)   C 列：收入金额(元)
+//	A 列：短剧名称   B 列：渠道   C 列：收益金额(元)   D 列：日期(YYYY-MM-DD)
 //
-// 说明：这里导入的是**第三方平台**的收益数据；本平台自有付费收入走支付分账自动入账，无需人工导入。
+// 说明：这里导入的是**第三方渠道**的收益数据；本平台自有付费收入走支付分账自动入账，无需人工导入。
 package main
 
 import (
@@ -29,15 +29,15 @@ func main() {
 	defer f.Close()
 	sheet := "Sheet1"
 
-	headers := []string{"剧目ID", "日期(YYYY-MM-DD)", "收入金额(元)"}
+	headers := []string{"短剧名称", "渠道", "收益金额(元)", "日期(YYYY-MM-DD)"}
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		_ = f.SetCellValue(sheet, cell, h)
 	}
 	// 两行示例，方便财务照着填（正式导入前请删除示例行或替换为真实数据）。
 	samples := [][]interface{}{
-		{1, "2026-05-26", 123.45},
-		{1, "2026-05-27", 88.00},
+		{"总裁的逆袭新娘", "抖音", 123.45, "2026-05-26"},
+		{"总裁的逆袭新娘", "快手", 88.00, "2026-05-27"},
 	}
 	for r, row := range samples {
 		for col, v := range row {
@@ -45,7 +45,8 @@ func main() {
 			_ = f.SetCellValue(sheet, cell, v)
 		}
 	}
-	_ = f.SetColWidth(sheet, "A", "C", 20)
+	_ = f.SetColWidth(sheet, "A", "A", 28)
+	_ = f.SetColWidth(sheet, "B", "D", 20)
 
 	if err := f.SaveAs(out); err != nil {
 		fmt.Fprintln(os.Stderr, "生成失败:", err)

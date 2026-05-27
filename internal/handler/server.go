@@ -208,6 +208,7 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.POST("/withdrawals", s.idempotencyMiddleware("creator"), s.creatorCreateWithdrawal)
 	creatorAuth.GET("/withdrawals", s.creatorListWithdrawals)
 	creatorAuth.GET("/contracts", s.creatorListContracts)
+	creatorAuth.GET("/contracts/:id/docx", s.creatorDownloadContractDocx)
 	creatorAuth.GET("/contracts/:id", s.creatorGetContract)
 
 	creatorAuth.GET("/notifications", s.creatorListNotifications)
@@ -270,14 +271,17 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/withdrawals/:id/mark-paid", s.requireAdminRole(model.AdminRoleFinance), s.adminMarkWithdrawalPaid)
 
 	// 财务 Excel 导入每日收入（财务角色）
+	adminAuth.GET("/finance/income/template.xlsx", s.requireAdminRole(model.AdminRoleFinance), s.adminDownloadIncomeTemplate)
 	adminAuth.POST("/finance/income/import", s.requireAdminRole(model.AdminRoleFinance), s.adminImportDailyIncome)
 
 	// 全局价格配置：读对所有 admin 开放，写仅超管。
 	adminAuth.GET("/config/pricing", s.adminGetPricingConfig)
 	adminAuth.PUT("/config/pricing", s.requireAdminRole(), s.adminUpdatePricingConfig)
 
+	adminAuth.GET("/contract-template.docx", s.adminDownloadContractTemplate)
 	adminAuth.GET("/contracts", s.adminListContracts)
 	adminAuth.POST("/contracts", s.adminCreateContract)
+	adminAuth.GET("/contracts/:id/docx", s.adminDownloadContractDocx)
 	adminAuth.GET("/contracts/:id", s.adminGetContract)
 	adminAuth.POST("/contracts/:id/esign", s.adminEsignContract)
 

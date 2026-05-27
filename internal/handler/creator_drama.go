@@ -360,8 +360,8 @@ func (s *Server) creatorGetDrama(c *gin.Context) {
 	response.OK(c, view)
 }
 
-// creatorUpdateDrama —— 仅 draft 状态可编辑。
-// 若当前 audit_status=rejected，编辑视为重新提审，自动回到 approved。
+// creatorUpdateDrama —— draft/offline 可编辑；被审核驳回的 reviewing 也必须能编辑后重新提交。
+// 若当前 audit_status=rejected，编辑视为重新修改：回到 draft，清掉驳回原因，等待再次 submit。
 func (s *Server) creatorUpdateDrama(c *gin.Context) {
 	id := parseUint(c.Param("id"))
 	if id == 0 {
@@ -372,9 +372,9 @@ func (s *Server) creatorUpdateDrama(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// draft / offline 都允许编辑；offline 是被驳回或主动下架的"待修剪"状态，必须能改。
+	// draft / offline 都允许编辑；rejected 即使仍处于 reviewing，也允许编辑。
 	// published 仍禁止改，避免动了用户已购的核心字段（price/free_episodes）。
-	if d.Status != model.DramaStatusDraft && d.Status != model.DramaStatusOffline {
+	if d.Status != model.DramaStatusDraft && d.Status != model.DramaStatusOffline && d.AuditStatus != model.DramaAuditRejected {
 		response.Conflict(c, "仅草稿/已下架状态可编辑，请先下架")
 		return
 	}
@@ -396,8 +396,9 @@ func (s *Server) creatorUpdateDrama(c *gin.Context) {
 	}
 
 	updates := buildDramaUpdates(&req)
-	// 被驳回的剧创作者改完，视为重新提交：audit_status 回 approved，清掉 reason/审核痕迹。
+	// 被驳回的剧创作者改完，视为重新修改：回到 draft，清掉 reason/审核痕迹，前端再调 submit。
 	if d.AuditStatus == model.DramaAuditRejected {
+		updates["status"] = model.DramaStatusDraft
 		updates["audit_status"] = model.DramaAuditApproved
 		updates["audit_reason"] = ""
 		updates["reviewer_id"] = nil
