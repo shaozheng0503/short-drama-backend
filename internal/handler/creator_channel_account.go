@@ -172,6 +172,131 @@ func (s *Server) adminListCreatorChannelAccounts(c *gin.Context) {
 	response.OK(c, pageResp(list, page, pageSize, total))
 }
 
+type adminChannelAccountRequest struct {
+	CreatorID uint64 `json:"creator_id"`
+	channelAccountRequest
+}
+
+func (s *Server) adminCreateChannelAccount(c *gin.Context) {
+	var req adminChannelAccountRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "creator_id、platform 与 account_uid 必填")
+		return
+	}
+	if req.CreatorID == 0 {
+		response.InvalidParam(c, "creator_id 必填")
+		return
+	}
+	if msg := validateChannelAccountRequest(req.channelAccountRequest, true); msg != "" {
+		response.InvalidParam(c, msg)
+		return
+	}
+	var cnt int64
+	if err := s.db.Model(&model.Creator{}).Where("id = ?", req.CreatorID).Count(&cnt).Error; err != nil || cnt == 0 {
+		response.NotFound(c, "创作者不存在")
+		return
+	}
+	status := req.Status
+	if status == "" {
+		status = model.StatusActive
+	}
+	item := model.CreatorChannelAccount{
+		CreatorID:   req.CreatorID,
+		Platform:    strings.TrimSpace(req.Platform),
+		AccountUID:  strings.TrimSpace(req.AccountUID),
+		Nickname:    strings.TrimSpace(req.Nickname),
+		AvatarURL:   strings.TrimSpace(req.AvatarURL),
+		HomepageURL: strings.TrimSpace(req.HomepageURL),
+		Status:      status,
+	}
+	if err := s.db.Create(&item).Error; err != nil {
+		if isUniqueViolation(err) {
+			response.Conflict(c, "该渠道账号已绑定")
+			return
+		}
+		response.ServerError(c, "创建渠道账号失败")
+		return
+	}
+	response.OK(c, channelAccountView(item))
+}
+
+func (s *Server) adminUpdateChannelAccount(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var item model.CreatorChannelAccount
+	if err := s.db.First(&item, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "渠道账号不存在")
+			return
+		}
+		response.ServerError(c, "查询渠道账号失败")
+		return
+	}
+	var req channelAccountRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "请求体不合法")
+		return
+	}
+	if msg := validateChannelAccountRequest(req, false); msg != "" {
+		response.InvalidParam(c, msg)
+		return
+	}
+	updates := map[string]interface{}{}
+	if req.Platform != "" {
+		updates["platform"] = strings.TrimSpace(req.Platform)
+	}
+	if req.AccountUID != "" {
+		updates["account_uid"] = strings.TrimSpace(req.AccountUID)
+	}
+	if req.Nickname != "" {
+		updates["nickname"] = strings.TrimSpace(req.Nickname)
+	}
+	if req.AvatarURL != "" {
+		updates["avatar_url"] = strings.TrimSpace(req.AvatarURL)
+	}
+	if req.HomepageURL != "" {
+		updates["homepage_url"] = strings.TrimSpace(req.HomepageURL)
+	}
+	if req.Status != "" {
+		updates["status"] = req.Status
+	}
+	if len(updates) == 0 {
+		response.OK(c, channelAccountView(item))
+		return
+	}
+	if err := s.db.Model(&item).Updates(updates).Error; err != nil {
+		if isUniqueViolation(err) {
+			response.Conflict(c, "该渠道账号已绑定")
+			return
+		}
+		response.ServerError(c, "更新渠道账号失败")
+		return
+	}
+	s.db.First(&item, id)
+	response.OK(c, channelAccountView(item))
+}
+
+func (s *Server) adminDeleteChannelAccount(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	res := s.db.Delete(&model.CreatorChannelAccount{}, id)
+	if res.Error != nil {
+		response.ServerError(c, "删除渠道账号失败")
+		return
+	}
+	if res.RowsAffected == 0 {
+		response.NotFound(c, "渠道账号不存在")
+		return
+	}
+	response.OK(c, gin.H{"id": id, "deleted": true})
+}
+
 func validateChannelAccountRequest(req channelAccountRequest, create bool) string {
 	if create && strings.TrimSpace(req.Platform) == "" {
 		return "platform 必填"

@@ -241,7 +241,12 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 					unchangedRows++
 				} else {
 					if err := tx.Model(&model.ChannelIncomeDaily{}).Where("id = ?", existing.ID).
-						Updates(map[string]interface{}{"income_cents": pr.incomeCents, "creator_id": creatorID}).Error; err != nil {
+						Updates(map[string]interface{}{
+							"income_cents":  pr.incomeCents,
+							"creator_id":    creatorID,
+							"batch_no":      batchNo,
+							"import_row_no": pr.rowNo,
+						}).Error; err != nil {
 						return err
 					}
 					report.Status = "updated"
@@ -253,6 +258,7 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 				newRow := model.ChannelIncomeDaily{
 					DramaID: drama.ID, Channel: pr.channel, StatDate: pr.statDate,
 					CreatorID: creatorID, IncomeCents: pr.incomeCents,
+					BatchNo: batchNo, ImportRowNo: pr.rowNo,
 				}
 				if err := tx.Create(&newRow).Error; err != nil {
 					return err
@@ -300,7 +306,7 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 		}
 	}
 
-	response.OK(c, gin.H{
+	result := gin.H{
 		"batch_no":           batchNo,
 		"processed_rows":     len(rowReports),
 		"imported_rows":      createdRows + updatedRows,
@@ -312,7 +318,12 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 		"income_delta_cents": totalDelta,
 		"row_reports":        rowReports,
 		"errors":             incomeImportErrors(rowReports),
-	})
+	}
+	if err := s.saveIncomeImportBatch(c, batchNo, fileHeader.Filename, result, rowReports); err != nil {
+		response.ServerError(c, "导入成功但批次记录保存失败")
+		return
+	}
+	response.OK(c, result)
 }
 
 func incomeImportKey(title, channel, statDate string) string {

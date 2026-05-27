@@ -106,12 +106,12 @@ func dramaAdminView(d model.Drama, categoryName, creatorName string) gin.H {
 		"non_infringement_url":  d.NonInfringementURL,
 		"publish_type":          d.PublishType,
 		"scheduled_publish_at":  d.ScheduledPublishAt,
-		"play_count":     d.PlayCount,
-		"like_count":     d.LikeCount,
-		"favorite_count": d.FavoriteCount,
-		"published_at":   d.PublishedAt,
-		"created_at":     d.CreatedAt,
-		"updated_at":     d.UpdatedAt,
+		"play_count":            d.PlayCount,
+		"like_count":            d.LikeCount,
+		"favorite_count":        d.FavoriteCount,
+		"published_at":          d.PublishedAt,
+		"created_at":            d.CreatedAt,
+		"updated_at":            d.UpdatedAt,
 	}
 	return view
 }

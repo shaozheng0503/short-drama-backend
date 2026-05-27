@@ -238,6 +238,7 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.GET("/categories", s.adminListCategories)
 	adminAuth.POST("/categories", s.adminCreateCategory)
 	adminAuth.PUT("/categories/:id", s.adminUpdateCategory)
+	adminAuth.DELETE("/categories/:id", s.adminDeleteCategory)
 
 	adminAuth.GET("/dramas", s.adminListDramas)
 	adminAuth.POST("/dramas", s.adminCreateDrama)
@@ -266,12 +267,21 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.GET("/creators/:id", s.adminGetCreator)
 	adminAuth.PUT("/creators/:id", s.adminUpdateCreator)
 	adminAuth.POST("/creators/:id/ban", s.adminBanCreator)
+	adminAuth.POST("/creators/:id/unban", s.adminUnbanCreator)
+	adminAuth.POST("/creators/:id/verification/approve", s.adminApproveCreatorVerification)
+	adminAuth.POST("/creators/:id/verification/reject", s.adminRejectCreatorVerification)
 	adminAuth.GET("/creator-channel-accounts", s.adminListCreatorChannelAccounts)
+	adminAuth.POST("/creator-channel-accounts", s.adminCreateChannelAccount)
+	adminAuth.PUT("/creator-channel-accounts/:id", s.adminUpdateChannelAccount)
+	adminAuth.DELETE("/creator-channel-accounts/:id", s.adminDeleteChannelAccount)
 
 	adminAuth.GET("/users", s.adminListUsers)
 	adminAuth.GET("/users/:id", s.adminGetUser)
 	adminAuth.POST("/users/:id/ban", s.adminBanUser)
 	adminAuth.POST("/users/:id/unban", s.adminUnbanUser)
+
+	adminAuth.GET("/comments", s.adminListComments)
+	adminAuth.DELETE("/comments/:id", s.adminDeleteComment)
 
 	adminAuth.GET("/orders", s.adminListOrders)
 	adminAuth.GET("/orders/:order_no", s.adminGetOrder)
@@ -283,7 +293,12 @@ func (s *Server) Router() *gin.Engine {
 
 	// 财务 Excel 导入每日收入（财务角色）
 	adminAuth.GET("/finance/income/template.xlsx", s.requireAdminRole(model.AdminRoleFinance), s.adminDownloadIncomeTemplate)
+	adminAuth.GET("/finance/income/imports", s.requireAdminRole(model.AdminRoleFinance), s.adminListIncomeImports)
+	adminAuth.GET("/finance/income/imports/:batch_no", s.requireAdminRole(model.AdminRoleFinance), s.adminGetIncomeImport)
 	adminAuth.POST("/finance/income/import", s.requireAdminRole(model.AdminRoleFinance), s.adminImportDailyIncome)
+	adminAuth.GET("/finance/channel-incomes", s.requireAdminRole(model.AdminRoleFinance), s.adminListChannelIncomes)
+	adminAuth.PUT("/finance/channel-incomes/:id", s.requireAdminRole(model.AdminRoleFinance), s.adminUpdateChannelIncome)
+	adminAuth.DELETE("/finance/channel-incomes/:id", s.requireAdminRole(model.AdminRoleFinance), s.adminDeleteChannelIncome)
 
 	// 全局价格配置：读对所有 admin 开放，写仅超管。
 	adminAuth.GET("/config/pricing", s.adminGetPricingConfig)
@@ -294,6 +309,8 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/contracts", s.adminCreateContract)
 	adminAuth.GET("/contracts/:id/docx", s.adminDownloadContractDocx)
 	adminAuth.GET("/contracts/:id", s.adminGetContract)
+	adminAuth.PUT("/contracts/:id", s.adminUpdateContract)
+	adminAuth.POST("/contracts/:id/cancel", s.adminCancelContract)
 	adminAuth.POST("/contracts/:id/esign", s.adminEsignContract)
 
 	// === Webhooks（公开，由 provider 自己验签）===

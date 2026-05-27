@@ -95,9 +95,10 @@ const (
 )
 
 const (
-	ContractStatusPending = "pending"
-	ContractStatusSigning = "signing"
-	ContractStatusSigned  = "signed"
+	ContractStatusPending   = "pending"
+	ContractStatusSigning   = "signing"
+	ContractStatusSigned    = "signed"
+	ContractStatusCancelled = "cancelled"
 )
 
 // 男女频：申报字段，与 audience 分类维度并存，这里用独立字段方便上传表单直接选。
@@ -184,6 +185,7 @@ type Creator struct {
 	IdentityMID        string    `gorm:"column:identity_mid;size:64" json:"identity_mid"`   // 创作者身份信息 MID
 	IdentityRole       string    `gorm:"column:identity_role;size:32" json:"identity_role"` // 版权人 / 制作方等
 	VerifyStatus       string    `gorm:"column:verify_status;size:20;default:pending" json:"verify_status"`
+	VerifyRejectReason string    `gorm:"column:verify_reject_reason;size:255" json:"verify_reject_reason"`
 	TotalIncomeCents   int64     `gorm:"column:total_income_cents;default:0" json:"total_income_cents"`
 	BalanceCents       int64     `gorm:"column:balance_cents;default:0" json:"balance_cents"`
 	FrozenCents        int64     `gorm:"column:frozen_cents;default:0" json:"frozen_cents"`
@@ -464,11 +466,32 @@ type ChannelIncomeDaily struct {
 	StatDate    string    `gorm:"column:stat_date;size:10;uniqueIndex:uniq_channel_income,priority:3" json:"stat_date"`
 	CreatorID   uint64    `gorm:"column:creator_id;index" json:"creator_id"`
 	IncomeCents int64     `gorm:"column:income_cents;default:0" json:"income_cents"`
+	BatchNo     string    `gorm:"column:batch_no;size:32;index" json:"batch_no"`
+	ImportRowNo int       `gorm:"column:import_row_no;default:0" json:"import_row_no"`
 	CreatedAt   time.Time `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt   time.Time `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (ChannelIncomeDaily) TableName() string { return "channel_income_daily" }
+
+// ChannelIncomeImportBatch —— 财务 Excel 导入批次记录，便于后台查历史与逐行报告。
+type ChannelIncomeImportBatch struct {
+	ID               uint64    `gorm:"primaryKey;column:id" json:"id"`
+	BatchNo          string    `gorm:"column:batch_no;size:32;uniqueIndex" json:"batch_no"`
+	AdminID          uint64    `gorm:"column:admin_id;index" json:"admin_id"`
+	FileName         string    `gorm:"column:file_name;size:255" json:"file_name"`
+	ProcessedRows    int       `gorm:"column:processed_rows;default:0" json:"processed_rows"`
+	CreatedRows      int       `gorm:"column:created_rows;default:0" json:"created_rows"`
+	UpdatedRows      int       `gorm:"column:updated_rows;default:0" json:"updated_rows"`
+	UnchangedRows    int       `gorm:"column:unchanged_rows;default:0" json:"unchanged_rows"`
+	DuplicateRows    int       `gorm:"column:duplicate_rows;default:0" json:"duplicate_rows"`
+	FailedRows       int       `gorm:"column:failed_rows;default:0" json:"failed_rows"`
+	IncomeDeltaCents int64     `gorm:"column:income_delta_cents;default:0" json:"income_delta_cents"`
+	RowReportsJSON   string    `gorm:"column:row_reports_json;type:text" json:"-"`
+	CreatedAt        time.Time `gorm:"column:created_at;index" json:"created_at"`
+}
+
+func (ChannelIncomeImportBatch) TableName() string { return "channel_income_import_batches" }
 
 // OperationLog —— 后台操作审计日志；不记录请求体，避免敏感信息落库。
 type OperationLog struct {

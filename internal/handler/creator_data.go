@@ -422,7 +422,8 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 	if creator.VerifyStatus != model.CreatorVerifyVerified &&
 		((submittedCompleteProfile && willName != "" && willIDCard != "" && willBankCard != "" && willBankName != "") ||
 			(submittedEnterpriseProfile && willBankCard != "" && willBankName != "")) {
-		updates["verify_status"] = model.CreatorVerifyVerified
+		updates["verify_status"] = model.CreatorVerifyPending
+		updates["verify_reject_reason"] = ""
 	}
 
 	if len(updates) > 0 {
@@ -464,6 +465,7 @@ func creatorFullView(cr model.Creator) gin.H {
 		"id_card_no_masked":    cr.IDCardNoMasked,
 		"bank_card_no_masked":  maskedBank,
 		"verify_status":        cr.VerifyStatus,
+		"verify_reject_reason": cr.VerifyRejectReason,
 		"total_income_cents":   cr.TotalIncomeCents,
 		"balance_cents":        cr.BalanceCents,
 		"frozen_cents":         cr.FrozenCents,

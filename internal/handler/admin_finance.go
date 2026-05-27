@@ -282,6 +282,90 @@ func (s *Server) adminBanCreator(c *gin.Context) {
 	response.OK(c, gin.H{"id": id, "status": model.StatusBanned})
 }
 
+func (s *Server) adminUnbanCreator(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	res := s.db.Model(&model.Creator{}).Where("id = ?", id).
+		Update("status", model.StatusActive)
+	if res.Error != nil {
+		response.ServerError(c, "解封失败")
+		return
+	}
+	if res.RowsAffected == 0 {
+		response.NotFound(c, "创作者不存在")
+		return
+	}
+	response.OK(c, gin.H{"id": id, "status": model.StatusActive})
+}
+
+func (s *Server) adminApproveCreatorVerification(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var cr model.Creator
+	if err := s.db.First(&cr, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "创作者不存在")
+			return
+		}
+		response.ServerError(c, "查询失败")
+		return
+	}
+	if cr.VerifyStatus == model.CreatorVerifyVerified {
+		response.Conflict(c, "创作者已通过实名认证")
+		return
+	}
+	if err := s.db.Model(&cr).Updates(map[string]interface{}{
+		"verify_status":        model.CreatorVerifyVerified,
+		"verify_reject_reason": "",
+	}).Error; err != nil {
+		response.ServerError(c, "审核通过失败")
+		return
+	}
+	s.db.First(&cr, id)
+	response.OK(c, creatorFullView(cr))
+}
+
+type adminRejectCreatorVerificationRequest struct {
+	Reason string `json:"reason" binding:"required"`
+}
+
+func (s *Server) adminRejectCreatorVerification(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var req adminRejectCreatorVerificationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "reason 必填")
+		return
+	}
+	var cr model.Creator
+	if err := s.db.First(&cr, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "创作者不存在")
+			return
+		}
+		response.ServerError(c, "查询失败")
+		return
+	}
+	if err := s.db.Model(&cr).Updates(map[string]interface{}{
+		"verify_status":        model.CreatorVerifyRejected,
+		"verify_reject_reason": strings.TrimSpace(req.Reason),
+	}).Error; err != nil {
+		response.ServerError(c, "审核驳回失败")
+		return
+	}
+	s.db.First(&cr, id)
+	response.OK(c, creatorFullView(cr))
+}
+
 // === APP 用户管理 ===
 //
 // MVP 阶段只暴露列表 / 详情 / ban / unban；恶意用户场景必备，无 ban 接口运维只能 SQL。
