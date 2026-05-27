@@ -28,14 +28,54 @@ func (s *Server) requireActiveCreator() gin.HandlerFunc {
 	}, "创作者不存在", "账号已被封禁或禁用")
 }
 
+const ctxAdminRole = "admin.role"
+
+// requireActiveAdmin 校验管理员账号正常，并把角色写入 context 供 requireAdminRole 使用。
 func (s *Server) requireActiveAdmin() gin.HandlerFunc {
-	return s.requireActiveAccount(middleware.SubjectAdmin, func(id uint64) (string, error) {
-		var admin model.Admin
-		if err := s.db.Select("status").First(&admin, id).Error; err != nil {
-			return "", err
+	return func(c *gin.Context) {
+		if middleware.CurrentSubject(c) != middleware.SubjectAdmin {
+			c.Next()
+			return
 		}
-		return admin.Status, nil
-	}, "管理员不存在", "账号已被封禁或禁用")
+		id := middleware.CurrentID(c)
+		var admin model.Admin
+		if err := s.db.Select("status", "role").First(&admin, id).Error; err != nil {
+			if isNotFound(err) {
+				response.NotFound(c, "管理员不存在")
+			} else {
+				response.ServerError(c, "账号状态校验失败")
+			}
+			c.Abort()
+			return
+		}
+		if admin.Status != model.StatusActive {
+			response.Forbidden(c, "账号已被封禁或禁用")
+			c.Abort()
+			return
+		}
+		c.Set(ctxAdminRole, admin.Role)
+		c.Next()
+	}
+}
+
+// requireAdminRole 限定只有指定角色（或超管 admin）可访问。挂在 requireActiveAdmin 之后。
+func (s *Server) requireAdminRole(allowed ...string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role, _ := c.Get(ctxAdminRole)
+		r, _ := role.(string)
+		if r == model.AdminRoleAdmin { // 超管放行一切
+			c.Next()
+			return
+		}
+		for _, a := range allowed {
+			if r == a {
+				c.Next()
+				return
+			}
+		}
+		response.Forbidden(c, "当前角色无权执行该操作")
+		c.Abort()
+	}
 }
 
 func (s *Server) requireActiveAccount(

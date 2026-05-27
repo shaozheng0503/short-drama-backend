@@ -130,6 +130,27 @@ func (s *Server) adminVODUploadSign(c *gin.Context) {
 	response.OK(c, result)
 }
 
+// creatorVODUploadSign —— 创作者拿 VOD 客户端上传签名。
+// 与 admin 版同源；分两套接口的目的是审计/限流维度更清楚，未来如要按创作者维度做配额时不用改入口。
+// 路径：POST /v1/creator/uploads/vod-sign
+func (s *Server) creatorVODUploadSign(c *gin.Context) {
+	if !s.vod.Configured() {
+		response.Fail(c, response.CodeThirdPartyError, "VOD 未配置，无法生成上传签名")
+		return
+	}
+	result, err := s.vod.ClientUploadSignature()
+	if err != nil {
+		if errors.Is(err, vod.ErrNotConfigured) {
+			response.Fail(c, response.CodeThirdPartyError, "VOD 未配置")
+			return
+		}
+		log.Printf("[vod] creator sign err=%v", err)
+		response.ServerError(c, "签名失败")
+		return
+	}
+	response.OK(c, result)
+}
+
 // vodCallbackEnvelope —— 节点回调的最常见字段子集。
 // 实际腾讯 VOD 节点回调 schema 较复杂，本结构只挑业务关心的字段；其它由 raw body 经签名校验后透传到日志。
 //

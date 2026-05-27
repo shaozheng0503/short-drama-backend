@@ -26,6 +26,8 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		&model.Category{},
 		&model.DramaTag{},
 		&model.Drama{},
+		&model.DramaCover{},
+		&model.DramaCharacter{},
 		&model.Episode{},
 		&model.PlayHistory{},
 		&model.UserAction{},
@@ -37,10 +39,15 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		&model.Withdrawal{},
 		&model.CreatorStatsDaily{},
 		&model.OperationLog{},
+		&model.Notification{},
+		&model.GlobalConfig{},
 	); err != nil {
 		return nil, err
 	}
 	if err := ensureInitialAdmin(db, cfg); err != nil {
+		return nil, err
+	}
+	if err := seed.EnsureThemeCategories(db); err != nil {
 		return nil, err
 	}
 	if err := ensureDefaultProduct(db); err != nil {

@@ -165,6 +165,35 @@ var (
 	audienceNames = []string{"男频", "女频"} // 注：原文「男率」按红果命名习惯纠正为「男频」
 )
 
+// fridayThemeNames —— 2026-05-27 会议确定的漫剧分类（type=theme，可多选）。
+// 与 themeNames 有重叠（悬疑/喜剧/青春/武侠/民国/年代），按 (type,name) 唯一键幂等写入，重复项跳过。
+//
+//nolint:gochecknoglobals
+var fridayThemeNames = []string{
+	"都市脑洞", "都市日常", "乡村", "职场婚恋", "青春", "家庭", "悬疑", "剧情", "武侠",
+	"抗战谍战", "逆袭", "年代", "反转", "喜剧", "时空之旅", "民国", "古风", "校园",
+}
+
+// EnsureThemeCategories 在每次启动时幂等确保会议确定的 18 个漫剧分类存在。
+// 与 mock 数据无关，故不受 SEED_MOCK_DATA 开关控制，由 database.Connect 直接调用。
+func EnsureThemeCategories(db *gorm.DB) error {
+	for i, name := range fridayThemeNames {
+		c := model.Category{
+			Type:      model.CategoryTypeTheme,
+			Name:      name,
+			SortOrder: i + 1,
+			Status:    model.StatusActive,
+		}
+		if _, _, err := firstOrCreateByUnique(db, map[string]interface{}{
+			"type": model.CategoryTypeTheme,
+			"name": name,
+		}, c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // seedCategories 把 4 个维度一次性写进 categories；返回的 map 用 (type,name) 复合键索引。
 func seedCategories(db *gorm.DB) (map[catKey]uint64, int, error) {
 	dims := []struct {

@@ -13,6 +13,7 @@ import (
 	"ai-drama-platform/internal/cos"
 	"ai-drama-platform/internal/idempotency"
 	"ai-drama-platform/internal/middleware"
+	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/payment"
 	"ai-drama-platform/internal/ratelimit"
 	"ai-drama-platform/internal/redisclient"
@@ -182,12 +183,36 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.PUT("/me/profile", s.creatorUpdateProfile)
 	creatorAuth.GET("/dashboard", s.creatorDashboard)
 	creatorAuth.GET("/dramas", s.creatorListDramas)
+	creatorAuth.POST("/dramas", s.creatorCreateDrama)
+	creatorAuth.GET("/dramas/:id", s.creatorGetDrama)
+	creatorAuth.PUT("/dramas/:id", s.creatorUpdateDrama)
+	creatorAuth.DELETE("/dramas/:id", s.creatorDeleteDrama)
+	creatorAuth.POST("/dramas/:id/submit", s.creatorSubmitDrama)
+	creatorAuth.POST("/dramas/:id/publish", s.creatorPublishDrama)
+	creatorAuth.POST("/dramas/:id/offline", s.creatorOfflineDrama)
 	creatorAuth.GET("/dramas/:id/stats", s.creatorDramaStats)
+
+	creatorAuth.GET("/dramas/:id/episodes", s.creatorListEpisodes)
+	creatorAuth.POST("/dramas/:id/episodes", s.creatorCreateEpisode)
+	creatorAuth.POST("/dramas/:id/episodes/batch", s.creatorBatchCreateEpisodes)
+	creatorAuth.PUT("/dramas/:id/episodes/reorder", s.creatorReorderEpisodes)
+	creatorAuth.PUT("/episodes/:id", s.creatorUpdateEpisode)
+	creatorAuth.DELETE("/episodes/:id", s.creatorDeleteEpisode)
+	creatorAuth.POST("/episodes/:id/refresh-vod", s.creatorRefreshEpisodeVOD)
+	creatorAuth.POST("/episodes/:id/retry", s.creatorRetryEpisode)
+	creatorAuth.GET("/episodes/:id/preview", s.creatorPreviewEpisode)
+
+	creatorAuth.POST("/uploads/vod-sign", s.creatorVODUploadSign)
+
 	creatorAuth.GET("/income", s.creatorIncome)
 	creatorAuth.POST("/withdrawals", s.idempotencyMiddleware("creator"), s.creatorCreateWithdrawal)
 	creatorAuth.GET("/withdrawals", s.creatorListWithdrawals)
 	creatorAuth.GET("/contracts", s.creatorListContracts)
 	creatorAuth.GET("/contracts/:id", s.creatorGetContract)
+
+	creatorAuth.GET("/notifications", s.creatorListNotifications)
+	creatorAuth.POST("/notifications/read-all", s.creatorMarkAllNotificationsRead)
+	creatorAuth.POST("/notifications/:id/read", s.creatorMarkNotificationRead)
 
 	// === Admin ===
 	admin := v1.Group("/admin")
@@ -207,12 +232,21 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/dramas", s.adminCreateDrama)
 	adminAuth.GET("/dramas/:id", s.adminGetDrama)
 	adminAuth.PUT("/dramas/:id", s.adminUpdateDrama)
+	adminAuth.DELETE("/dramas/:id", s.adminDeleteDrama)
 	adminAuth.POST("/dramas/:id/publish", s.adminPublishDrama)
 	adminAuth.POST("/dramas/:id/offline", s.adminOfflineDrama)
+	adminAuth.POST("/dramas/:id/approve", s.requireAdminRole(model.AdminRoleAuditor), s.adminApproveDrama)
+	adminAuth.POST("/dramas/:id/reject", s.requireAdminRole(model.AdminRoleAuditor), s.adminRejectDrama)
 
 	adminAuth.GET("/dramas/:id/episodes", s.adminListEpisodes)
 	adminAuth.POST("/dramas/:id/episodes", s.adminCreateEpisode)
+	adminAuth.POST("/dramas/:id/episodes/batch", s.adminBatchCreateEpisodes)
+	adminAuth.PUT("/dramas/:id/episodes/reorder", s.adminReorderEpisodes)
 	adminAuth.PUT("/episodes/:id", s.adminUpdateEpisode)
+	adminAuth.DELETE("/episodes/:id", s.adminDeleteEpisode)
+	adminAuth.POST("/episodes/:id/refresh-vod", s.adminRefreshEpisodeVOD)
+	adminAuth.POST("/episodes/:id/retry", s.adminRetryEpisode)
+	adminAuth.GET("/episodes/:id/preview", s.adminPreviewEpisode)
 
 	adminAuth.POST("/uploads/vod-sign", s.adminVODUploadSign)
 
@@ -231,9 +265,16 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.GET("/orders/:order_no", s.adminGetOrder)
 
 	adminAuth.GET("/withdrawals", s.adminListWithdrawals)
-	adminAuth.POST("/withdrawals/:id/approve", s.adminApproveWithdrawal)
-	adminAuth.POST("/withdrawals/:id/reject", s.adminRejectWithdrawal)
-	adminAuth.POST("/withdrawals/:id/mark-paid", s.adminMarkWithdrawalPaid)
+	adminAuth.POST("/withdrawals/:id/approve", s.requireAdminRole(model.AdminRoleFinance), s.adminApproveWithdrawal)
+	adminAuth.POST("/withdrawals/:id/reject", s.requireAdminRole(model.AdminRoleFinance), s.adminRejectWithdrawal)
+	adminAuth.POST("/withdrawals/:id/mark-paid", s.requireAdminRole(model.AdminRoleFinance), s.adminMarkWithdrawalPaid)
+
+	// 财务 Excel 导入每日收入（财务角色）
+	adminAuth.POST("/finance/income/import", s.requireAdminRole(model.AdminRoleFinance), s.adminImportDailyIncome)
+
+	// 全局价格配置：读对所有 admin 开放，写仅超管。
+	adminAuth.GET("/config/pricing", s.adminGetPricingConfig)
+	adminAuth.PUT("/config/pricing", s.requireAdminRole(), s.adminUpdatePricingConfig)
 
 	adminAuth.GET("/contracts", s.adminListContracts)
 	adminAuth.POST("/contracts", s.adminCreateContract)

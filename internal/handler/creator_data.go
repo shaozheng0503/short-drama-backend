@@ -195,10 +195,12 @@ func (s *Server) creatorIncome(c *gin.Context) {
 }
 
 type creatorProfileRequest struct {
-	Name       *string `json:"name"`
-	IDCardNo   *string `json:"id_card_no"`
-	BankName   *string `json:"bank_name"`
-	BankCardNo *string `json:"bank_card_no"`
+	Name        *string `json:"name"`
+	CreatorType *string `json:"creator_type"` // personal / organization
+	OrgName     *string `json:"org_name"`     // 机构名称（机构类型）
+	IDCardNo    *string `json:"id_card_no"`
+	BankName    *string `json:"bank_name"`
+	BankCardNo  *string `json:"bank_card_no"`
 }
 
 // idCardRegex / bankCardRegex 入参做最小可用本地校验。
@@ -263,9 +265,21 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 		return
 	}
 
+	if req.CreatorType != nil && *req.CreatorType != "" &&
+		*req.CreatorType != model.CreatorTypePersonal && *req.CreatorType != model.CreatorTypeOrganization {
+		response.InvalidParam(c, "creator_type 只能是 personal / organization")
+		return
+	}
+
 	updates := map[string]interface{}{}
 	if req.Name != nil && *req.Name != "" {
 		updates["name"] = *req.Name
+	}
+	if req.CreatorType != nil && *req.CreatorType != "" {
+		updates["creator_type"] = *req.CreatorType
+	}
+	if req.OrgName != nil {
+		updates["org_name"] = *req.OrgName
 	}
 	if req.BankName != nil {
 		if *req.BankName == "" && creator.VerifyStatus == model.CreatorVerifyVerified {
@@ -341,6 +355,8 @@ func creatorFullView(cr model.Creator) gin.H {
 		"id":                  cr.ID,
 		"phone":               sms.MaskPhone(cr.Phone),
 		"name":                cr.Name,
+		"creator_type":        cr.CreatorType,
+		"org_name":            cr.OrgName,
 		"bank_name":           cr.BankName,
 		"bank_card_no_masked": maskedBank,
 		"verify_status":       cr.VerifyStatus,
