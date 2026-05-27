@@ -23,6 +23,7 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		&model.SMSCode{},
 		&model.Admin{},
 		&model.Creator{},
+		&model.CreatorChannelAccount{},
 		&model.Category{},
 		&model.DramaTag{},
 		&model.Drama{},
