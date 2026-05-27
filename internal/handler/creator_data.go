@@ -195,17 +195,20 @@ func (s *Server) creatorIncome(c *gin.Context) {
 }
 
 type creatorProfileRequest struct {
-	Name         *string `json:"name"`
-	Nickname     *string `json:"nickname"`
-	AvatarURL    *string `json:"avatar_url"`
-	AccountUID   *string `json:"account_uid"`
-	CreatorType  *string `json:"creator_type"`  // personal / organization
-	OrgName      *string `json:"org_name"`      // 机构名称（机构类型）
-	IdentityMID  *string `json:"identity_mid"`  // 创作者身份信息 MID
-	IdentityRole *string `json:"identity_role"` // 版权人 / 制作方等
-	IDCardNo     *string `json:"id_card_no"`
-	BankName     *string `json:"bank_name"`
-	BankCardNo   *string `json:"bank_card_no"`
+	Name               *string `json:"name"`
+	Nickname           *string `json:"nickname"`
+	AvatarURL          *string `json:"avatar_url"`
+	AccountUID         *string `json:"account_uid"`
+	CreatorType        *string `json:"creator_type"`         // personal / organization
+	OrgName            *string `json:"org_name"`             // 机构名称（机构类型）
+	OrgCreditCode      *string `json:"org_credit_code"`      // 统一社会信用代码
+	BusinessLicenseURL *string `json:"business_license_url"` // 营业执照图片 URL
+	IdentityMID        *string `json:"identity_mid"`         // 创作者身份信息 MID
+	IdentityRole       *string `json:"identity_role"`        // 版权人 / 制作方等
+	IDCardNo           *string `json:"id_card_no"`
+	BankName           *string `json:"bank_name"`
+	BankCardNo         *string `json:"bank_card_no"`
+	SMSCode            *string `json:"sms_code"` // 修改已绑定银行卡时必填，scene=creator_login
 }
 
 // idCardRegex / bankCardRegex 入参做最小可用本地校验。
@@ -213,8 +216,9 @@ type creatorProfileRequest struct {
 //   - 脏数据落库后接入实人认证时全部失败
 //   - 太长字符串直接吃 DB column 长度上限报 500
 var (
-	idCardRegex   = regexp.MustCompile(`^[1-9]\d{16}[\dXx]$`) // 18 位，末位允许 X/x
-	bankCardRegex = regexp.MustCompile(`^\d{16,19}$`)
+	idCardRegex     = regexp.MustCompile(`^[1-9]\d{16}[\dXx]$`) // 18 位，末位允许 X/x
+	bankCardRegex   = regexp.MustCompile(`^\d{16,19}$`)
+	creditCodeRegex = regexp.MustCompile(`^[0-9A-Z]{18}$`)
 )
 
 const (
@@ -251,9 +255,19 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 		response.InvalidParam(c, "avatar_url 过长")
 		return
 	}
-	if req.AccountUID != nil && len(*req.AccountUID) > 64 {
-		response.InvalidParam(c, "account_uid 过长")
+	if req.BusinessLicenseURL != nil && len(*req.BusinessLicenseURL) > 512 {
+		response.InvalidParam(c, "business_license_url 过长")
 		return
+	}
+	if req.AccountUID != nil {
+		response.InvalidParam(c, "account_uid 不允许修改")
+		return
+	}
+	if req.OrgCreditCode != nil && *req.OrgCreditCode != "" {
+		if !creditCodeRegex.MatchString(*req.OrgCreditCode) {
+			response.InvalidParam(c, "org_credit_code 必须是 18 位大写字母/数字统一社会信用代码")
+			return
+		}
 	}
 	if req.IdentityMID != nil && len(*req.IdentityMID) > 64 {
 		response.InvalidParam(c, "identity_mid 过长")
@@ -295,6 +309,25 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 		response.InvalidParam(c, "creator_type 只能是 personal / organization")
 		return
 	}
+	targetCreatorType := creator.CreatorType
+	if req.CreatorType != nil && *req.CreatorType != "" {
+		targetCreatorType = *req.CreatorType
+	}
+	if targetCreatorType == "" {
+		targetCreatorType = model.CreatorTypePersonal
+	}
+	hasPersonalPayload := (req.Name != nil && *req.Name != "") || (req.IDCardNo != nil && *req.IDCardNo != "")
+	hasEnterprisePayload := (req.OrgName != nil && *req.OrgName != "") ||
+		(req.OrgCreditCode != nil && *req.OrgCreditCode != "") ||
+		(req.BusinessLicenseURL != nil && *req.BusinessLicenseURL != "")
+	if targetCreatorType == model.CreatorTypePersonal && hasEnterprisePayload {
+		response.InvalidParam(c, "个人实名与企业认证二选一，personal 类型不能提交企业认证字段")
+		return
+	}
+	if targetCreatorType == model.CreatorTypeOrganization && hasPersonalPayload {
+		response.InvalidParam(c, "个人实名与企业认证二选一，organization 类型不能提交真实姓名/身份证字段")
+		return
+	}
 
 	updates := map[string]interface{}{}
 	if req.Name != nil && *req.Name != "" {
@@ -306,14 +339,17 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 	if req.AvatarURL != nil {
 		updates["avatar_url"] = *req.AvatarURL
 	}
-	if req.AccountUID != nil {
-		updates["account_uid"] = *req.AccountUID
-	}
 	if req.CreatorType != nil && *req.CreatorType != "" {
 		updates["creator_type"] = *req.CreatorType
 	}
 	if req.OrgName != nil {
 		updates["org_name"] = *req.OrgName
+	}
+	if req.OrgCreditCode != nil {
+		updates["org_credit_code"] = *req.OrgCreditCode
+	}
+	if req.BusinessLicenseURL != nil {
+		updates["business_license_url"] = *req.BusinessLicenseURL
 	}
 	if req.IdentityMID != nil {
 		updates["identity_mid"] = *req.IdentityMID
@@ -338,6 +374,16 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 		updates["id_card_no_masked"] = maskIDCard(*req.IDCardNo)
 	}
 	if req.BankCardNo != nil && *req.BankCardNo != "" {
+		if creator.BankCardNoEnc != "" && creator.BankCardNoMasked != "" && maskBankCard(*req.BankCardNo) != creator.BankCardNoMasked {
+			if req.SMSCode == nil || *req.SMSCode == "" {
+				response.InvalidParam(c, "修改银行卡号需先获取并提交短信验证码 sms_code")
+				return
+			}
+			if err := s.sms.Verify(creator.Phone, model.SMSSceneCreatorLogin, *req.SMSCode); err != nil {
+				response.InvalidParam(c, "短信验证码错误或已过期")
+				return
+			}
+		}
 		enc, err := s.cryptor.Encrypt(*req.BankCardNo)
 		if err != nil {
 			response.ServerError(c, "银行卡加密失败")
@@ -368,9 +414,14 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 		req.IDCardNo != nil && *req.IDCardNo != "" &&
 		req.BankName != nil && *req.BankName != "" &&
 		req.BankCardNo != nil && *req.BankCardNo != ""
+	submittedEnterpriseProfile := req.OrgName != nil && *req.OrgName != "" &&
+		req.OrgCreditCode != nil && *req.OrgCreditCode != "" &&
+		req.BusinessLicenseURL != nil && *req.BusinessLicenseURL != "" &&
+		req.BankName != nil && *req.BankName != "" &&
+		req.BankCardNo != nil && *req.BankCardNo != ""
 	if creator.VerifyStatus != model.CreatorVerifyVerified &&
-		submittedCompleteProfile &&
-		willName != "" && willIDCard != "" && willBankCard != "" && willBankName != "" {
+		((submittedCompleteProfile && willName != "" && willIDCard != "" && willBankCard != "" && willBankName != "") ||
+			(submittedEnterpriseProfile && willBankCard != "" && willBankName != "")) {
 		updates["verify_status"] = model.CreatorVerifyVerified
 	}
 
@@ -396,27 +447,29 @@ func creatorFullView(cr model.Creator) gin.H {
 		maskedBank = "***" + cr.BankCardLast4
 	}
 	return gin.H{
-		"id":                  cr.ID,
-		"phone":               sms.MaskPhone(cr.Phone),
-		"login_phone":         sms.MaskPhone(cr.Phone),
-		"name":                cr.Name,
-		"nickname":            cr.Nickname,
-		"avatar_url":          cr.AvatarURL,
-		"account_uid":         cr.AccountUID,
-		"creator_type":        cr.CreatorType,
-		"org_name":            cr.OrgName,
-		"identity_mid":        cr.IdentityMID,
-		"identity_role":       cr.IdentityRole,
-		"bank_name":           cr.BankName,
-		"id_card_no_masked":   cr.IDCardNoMasked,
-		"bank_card_no_masked": maskedBank,
-		"verify_status":       cr.VerifyStatus,
-		"total_income_cents":  cr.TotalIncomeCents,
-		"balance_cents":       cr.BalanceCents,
-		"frozen_cents":        cr.FrozenCents,
-		"status":              cr.Status,
+		"id":                   cr.ID,
+		"phone":                sms.MaskPhone(cr.Phone),
+		"login_phone":          sms.MaskPhone(cr.Phone),
+		"name":                 cr.Name,
+		"nickname":             cr.Nickname,
+		"avatar_url":           creatorAvatarURL(cr),
+		"account_uid":          cr.AccountUID,
+		"creator_type":         cr.CreatorType,
+		"org_name":             cr.OrgName,
+		"org_credit_code":      cr.OrgCreditCode,
+		"business_license_url": cr.BusinessLicenseURL,
+		"identity_mid":         cr.IdentityMID,
+		"identity_role":        cr.IdentityRole,
+		"bank_name":            cr.BankName,
+		"id_card_no_masked":    cr.IDCardNoMasked,
+		"bank_card_no_masked":  maskedBank,
+		"verify_status":        cr.VerifyStatus,
+		"total_income_cents":   cr.TotalIncomeCents,
+		"balance_cents":        cr.BalanceCents,
+		"frozen_cents":         cr.FrozenCents,
+		"status":               cr.Status,
 		"account_info": gin.H{
-			"avatar_url":  cr.AvatarURL,
+			"avatar_url":  creatorAvatarURL(cr),
 			"nickname":    cr.Nickname,
 			"account_uid": cr.AccountUID,
 			"login_phone": sms.MaskPhone(cr.Phone),
@@ -426,6 +479,11 @@ func creatorFullView(cr model.Creator) gin.H {
 			"id_card_no_masked":   cr.IDCardNoMasked,
 			"bank_card_no_masked": maskedBank,
 			"bank_name":           cr.BankName,
+		},
+		"enterprise_info": gin.H{
+			"org_name":             cr.OrgName,
+			"org_credit_code":      cr.OrgCreditCode,
+			"business_license_url": cr.BusinessLicenseURL,
 		},
 		"identity_info": gin.H{
 			"identity_mid":  cr.IdentityMID,

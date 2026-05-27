@@ -88,26 +88,28 @@ func (s *Server) adminListCreators(c *gin.Context) {
 	list := make([]gin.H, 0, len(creators))
 	for _, cr := range creators {
 		list = append(list, gin.H{
-			"id":                  cr.ID,
-			"phone":               sms.MaskPhone(cr.Phone),
-			"login_phone":         sms.MaskPhone(cr.Phone),
-			"name":                cr.Name,
-			"nickname":            cr.Nickname,
-			"avatar_url":          cr.AvatarURL,
-			"account_uid":         cr.AccountUID,
-			"creator_type":        cr.CreatorType,
-			"org_name":            cr.OrgName,
-			"identity_mid":        cr.IdentityMID,
-			"identity_role":       cr.IdentityRole,
-			"bank_name":           cr.BankName,
-			"id_card_no_masked":   cr.IDCardNoMasked,
-			"bank_card_no_masked": cr.BankCardNoMasked,
-			"verify_status":       cr.VerifyStatus,
-			"status":              cr.Status,
-			"drama_count":         dramaCounts[cr.ID],
-			"total_income_cents":  cr.TotalIncomeCents,
-			"balance_cents":       cr.BalanceCents,
-			"frozen_cents":        cr.FrozenCents,
+			"id":                   cr.ID,
+			"phone":                sms.MaskPhone(cr.Phone),
+			"login_phone":          sms.MaskPhone(cr.Phone),
+			"name":                 cr.Name,
+			"nickname":             cr.Nickname,
+			"avatar_url":           creatorAvatarURL(cr),
+			"account_uid":          cr.AccountUID,
+			"creator_type":         cr.CreatorType,
+			"org_name":             cr.OrgName,
+			"org_credit_code":      cr.OrgCreditCode,
+			"business_license_url": cr.BusinessLicenseURL,
+			"identity_mid":         cr.IdentityMID,
+			"identity_role":        cr.IdentityRole,
+			"bank_name":            cr.BankName,
+			"id_card_no_masked":    cr.IDCardNoMasked,
+			"bank_card_no_masked":  cr.BankCardNoMasked,
+			"verify_status":        cr.VerifyStatus,
+			"status":               cr.Status,
+			"drama_count":          dramaCounts[cr.ID],
+			"total_income_cents":   cr.TotalIncomeCents,
+			"balance_cents":        cr.BalanceCents,
+			"frozen_cents":         cr.FrozenCents,
 		})
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
@@ -170,16 +172,18 @@ func (s *Server) adminGetCreator(c *gin.Context) {
 }
 
 type adminUpdateCreatorRequest struct {
-	Name         *string `json:"name"`
-	Nickname     *string `json:"nickname"`
-	AvatarURL    *string `json:"avatar_url"`
-	AccountUID   *string `json:"account_uid"`
-	CreatorType  *string `json:"creator_type"`
-	OrgName      *string `json:"org_name"`
-	IdentityMID  *string `json:"identity_mid"`
-	IdentityRole *string `json:"identity_role"`
-	BankName     *string `json:"bank_name"`
-	VerifyStatus *string `json:"verify_status"`
+	Name               *string `json:"name"`
+	Nickname           *string `json:"nickname"`
+	AvatarURL          *string `json:"avatar_url"`
+	AccountUID         *string `json:"account_uid"`
+	CreatorType        *string `json:"creator_type"`
+	OrgName            *string `json:"org_name"`
+	OrgCreditCode      *string `json:"org_credit_code"`
+	BusinessLicenseURL *string `json:"business_license_url"`
+	IdentityMID        *string `json:"identity_mid"`
+	IdentityRole       *string `json:"identity_role"`
+	BankName           *string `json:"bank_name"`
+	VerifyStatus       *string `json:"verify_status"`
 }
 
 func (s *Server) adminUpdateCreator(c *gin.Context) {
@@ -224,6 +228,12 @@ func (s *Server) adminUpdateCreator(c *gin.Context) {
 	}
 	if req.OrgName != nil {
 		updates["org_name"] = *req.OrgName
+	}
+	if req.OrgCreditCode != nil {
+		updates["org_credit_code"] = *req.OrgCreditCode
+	}
+	if req.BusinessLicenseURL != nil {
+		updates["business_license_url"] = *req.BusinessLicenseURL
 	}
 	if req.IdentityMID != nil {
 		updates["identity_mid"] = *req.IdentityMID
