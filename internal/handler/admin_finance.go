@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -454,7 +455,27 @@ func (s *Server) adminApproveWithdrawal(c *gin.Context) {
 			"reviewed_at": now,
 		}).Error
 	})
+	if err == nil {
+		s.notifyWithdrawal(id, "提现申请已通过", "您的提现申请（%s）已通过审核，等待打款。")
+	}
 	s.respondWithdrawalResult(c, id, err)
+}
+
+// notifyWithdrawal 按 withdrawal id 读取创作者与金额，给创作者发一条提现状态消息。
+// tmpl 中的 %s 会被替换成金额（¥x.xx）。
+func (s *Server) notifyWithdrawal(id uint64, title, tmpl string) {
+	var w model.Withdrawal
+	if err := s.db.First(&w, id).Error; err != nil {
+		return
+	}
+	content := tmpl
+	if strings.Contains(tmpl, "%s") {
+		content = fmt.Sprintf(tmpl, yuanStr(w.AmountCents))
+	}
+	if w.Remark != "" {
+		content += "备注：" + w.Remark
+	}
+	s.sendNotification(w.CreatorID, title, content, "")
 }
 
 func (s *Server) adminRejectWithdrawal(c *gin.Context) {
@@ -499,6 +520,9 @@ func (s *Server) adminRejectWithdrawal(c *gin.Context) {
 			"reviewed_at": now,
 		}).Error
 	})
+	if err == nil {
+		s.notifyWithdrawal(id, "提现申请被驳回", "您的提现申请（%s）被驳回，金额已退回可用余额。")
+	}
 	s.respondWithdrawalResult(c, id, err)
 }
 
@@ -542,6 +566,9 @@ func (s *Server) adminMarkWithdrawalPaid(c *gin.Context) {
 			"paid_at":        now,
 		}).Error
 	})
+	if err == nil {
+		s.notifyWithdrawal(id, "提现已打款", "您的提现（%s）已完成打款，请注意查收。")
+	}
 	s.respondWithdrawalResult(c, id, err)
 }
 

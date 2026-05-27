@@ -1,12 +1,22 @@
 package handler
 
 import (
+	"fmt"
+	"math/rand"
+	"time"
+
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/response"
 
 	"github.com/gin-gonic/gin"
 )
+
+// generateContractNo 生成合同编号，与订单 / 提现编号同风格。
+func generateContractNo() string {
+	now := time.Now()
+	return fmt.Sprintf("CT%s%05d", now.Format("20060102150405"), rand.Intn(100000))
+}
 
 func contractView(ct model.Contract, dramaTitle string) gin.H {
 	return gin.H{

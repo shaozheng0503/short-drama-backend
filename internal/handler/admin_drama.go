@@ -4,10 +4,12 @@ import (
 	"strings"
 	"time"
 
+	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/response"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type dramaUpsertRequest struct {
@@ -303,6 +305,134 @@ func (s *Server) adminOfflineDrama(c *gin.Context) {
 	}
 	s.db.First(&drama, id)
 	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
+}
+
+// adminRejectDrama —— 管理员驳回。audit_status → rejected；
+// 若 drama 当前为 published 强制 offline（涉及合规风险，立即下架优先于通知 creator）。
+type adminRejectDramaRequest struct {
+	Reason string `json:"reason"`
+}
+
+func (s *Server) adminRejectDrama(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var req adminRejectDramaRequest
+	_ = c.ShouldBindJSON(&req)
+	if len(req.Reason) > 255 {
+		response.InvalidParam(c, "reason 不能超过 255 字符")
+		return
+	}
+	var drama model.Drama
+	if err := s.db.First(&drama, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "短剧不存在")
+			return
+		}
+		response.ServerError(c, "查询短剧失败")
+		return
+	}
+	now := time.Now()
+	reviewerID := middleware.CurrentID(c)
+	updates := map[string]interface{}{
+		"audit_status": model.DramaAuditRejected,
+		"audit_reason": req.Reason,
+		"reviewer_id":  reviewerID,
+		"reviewed_at":  now,
+	}
+	if drama.Status == model.DramaStatusPublished {
+		updates["status"] = model.DramaStatusOffline
+	}
+	if err := s.db.Model(&drama).Updates(updates).Error; err != nil {
+		response.ServerError(c, "驳回失败")
+		return
+	}
+	s.db.First(&drama, id)
+	if drama.CreatorID != nil {
+		content := "您的作品《" + drama.Title + "》审核未通过，请修改后重新提交。"
+		if req.Reason != "" {
+			content += "驳回原因：" + req.Reason
+		}
+		s.sendNotification(*drama.CreatorID, "作品审核未通过", content, "")
+	}
+	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
+}
+
+// adminApproveDrama —— 管理员审核通过（多用于把先前 rejected 的剧恢复）。
+// 只动 audit_status 与审计字段，不动 status；要上线由创作者自助 publish 或 admin publish。
+func (s *Server) adminApproveDrama(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var drama model.Drama
+	if err := s.db.First(&drama, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "短剧不存在")
+			return
+		}
+		response.ServerError(c, "查询短剧失败")
+		return
+	}
+	now := time.Now()
+	reviewerID := middleware.CurrentID(c)
+	updates := map[string]interface{}{
+		"audit_status": model.DramaAuditApproved,
+		"audit_reason": "",
+		"reviewer_id":  reviewerID,
+		"reviewed_at":  now,
+	}
+	if err := s.db.Model(&drama).Updates(updates).Error; err != nil {
+		response.ServerError(c, "审核通过失败")
+		return
+	}
+	s.db.First(&drama, id)
+	if drama.CreatorID != nil {
+		s.sendNotification(*drama.CreatorID, "作品审核通过",
+			"您的作品《"+drama.Title+"》已审核通过，可以发布上架。", "")
+	}
+	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
+}
+
+// adminDeleteDrama —— 仅 draft 状态允许删除，避免误删已上架/曾发布过的剧。
+// 同事务里级联 episodes + drama_tags；订单/解锁等用户已产生的数据不动（理论上 draft 不可能有这些）。
+func (s *Server) adminDeleteDrama(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var drama model.Drama
+	if err := s.db.First(&drama, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "短剧不存在")
+			return
+		}
+		response.ServerError(c, "查询短剧失败")
+		return
+	}
+	if drama.Status != model.DramaStatusDraft {
+		response.Conflict(c, "仅草稿状态可删除，请先下架并改回草稿")
+		return
+	}
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("drama_id = ?", id).Delete(&model.Episode{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("drama_id = ?", id).Delete(&model.DramaTag{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&model.Drama{}, id).Error
+	})
+	if err != nil {
+		response.ServerError(c, "删除短剧失败")
+		return
+	}
+	response.OK(c, gin.H{"deleted": true, "id": id})
 }
 
 func (s *Server) collectCategoryNames(dramas []model.Drama) map[uint64]string {

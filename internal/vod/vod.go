@@ -11,15 +11,21 @@
 package vod
 
 import (
+	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -32,6 +38,7 @@ var (
 	ErrNotConfigured       = errors.New("vod not configured")
 	ErrCallbackKeyMissing  = errors.New("vod callback key missing")
 	ErrCallbackBadSignature = errors.New("vod callback signature mismatch")
+	ErrMediaNotFound       = errors.New("vod media not found")
 )
 
 type Signer struct {
@@ -123,6 +130,217 @@ func (s *Signer) VerifyCallback(query url.Values, rawBody []byte) error {
 		return ErrCallbackBadSignature
 	}
 	return nil
+}
+
+// MediaInfo —— DescribeMediaInfos 返回里业务关心的字段子集。
+// VideoURL 选取规则与 webhook 里 pickTranscodeOutput 一致：优先 HLS → 退回任意转码输出 → 否则原始 MediaUrl。
+type MediaInfo struct {
+	FileID          string
+	Name            string
+	VideoURL        string
+	CoverURL        string
+	DurationSeconds int
+	Container       string
+}
+
+// describeMediaInfosResp —— 只挑 admin 兜底刷新需要的字段，其余忽略。
+type describeMediaInfosResp struct {
+	Response struct {
+		Error *struct {
+			Code    string `json:"Code"`
+			Message string `json:"Message"`
+		} `json:"Error,omitempty"`
+		MediaInfoSet []struct {
+			FileID    string `json:"FileId"`
+			BasicInfo *struct {
+				Name     string `json:"Name"`
+				MediaURL string `json:"MediaUrl"`
+				CoverURL string `json:"CoverUrl"`
+			} `json:"BasicInfo,omitempty"`
+			MetaData *struct {
+				Duration  float64 `json:"Duration"`
+				Container string  `json:"Container"`
+			} `json:"MetaData,omitempty"`
+			TranscodeInfo *struct {
+				TranscodeSet []struct {
+					URL       string  `json:"Url"`
+					Container string  `json:"Container"`
+					Duration  float64 `json:"Duration"`
+				} `json:"TranscodeSet"`
+			} `json:"TranscodeInfo,omitempty"`
+		} `json:"MediaInfoSet"`
+	} `json:"Response"`
+}
+
+// DescribeMediaInfo 调腾讯云 VOD DescribeMediaInfos V3 接口拉单文件的元信息。
+// 用于 webhook 丢失时 admin 在后台手动刷新 episode 的兜底路径。
+// 文档：https://cloud.tencent.com/document/product/266/31763
+func (s *Signer) DescribeMediaInfo(ctx context.Context, fileID string) (*MediaInfo, error) {
+	if !s.Configured() {
+		return nil, ErrNotConfigured
+	}
+	if fileID == "" {
+		return nil, errors.New("empty fileID")
+	}
+
+	payload := map[string]interface{}{
+		"FileIds": []string{fileID},
+		"Filters": []string{"basicInfo", "metaData", "transcodeInfo"},
+	}
+	if s.cfg.VODSubAppID != 0 {
+		payload["SubAppId"] = s.cfg.VODSubAppID
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal payload: %w", err)
+	}
+
+	auth, timestamp := s.tc3Auth("DescribeMediaInfos", body)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://vod.tencentcloudapi.com/", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("Host", "vod.tencentcloudapi.com")
+	req.Header.Set("X-TC-Action", "DescribeMediaInfos")
+	req.Header.Set("X-TC-Version", "2018-07-17")
+	req.Header.Set("X-TC-Timestamp", fmt.Sprintf("%d", timestamp))
+	if s.cfg.VODRegion != "" {
+		req.Header.Set("X-TC-Region", s.cfg.VODRegion)
+	}
+	req.Header.Set("Authorization", auth)
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("call vod api: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("vod api status=%d body=%s", resp.StatusCode, truncate(string(raw), 200))
+	}
+
+	var parsed describeMediaInfosResp
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w body=%s", err, truncate(string(raw), 200))
+	}
+	if parsed.Response.Error != nil && parsed.Response.Error.Code != "" {
+		return nil, fmt.Errorf("vod api error: %s %s", parsed.Response.Error.Code, parsed.Response.Error.Message)
+	}
+	if len(parsed.Response.MediaInfoSet) == 0 {
+		return nil, ErrMediaNotFound
+	}
+	m := parsed.Response.MediaInfoSet[0]
+
+	info := &MediaInfo{FileID: m.FileID}
+	if m.BasicInfo != nil {
+		info.Name = m.BasicInfo.Name
+		info.VideoURL = m.BasicInfo.MediaURL
+		info.CoverURL = m.BasicInfo.CoverURL
+	}
+	if m.MetaData != nil {
+		info.DurationSeconds = int(m.MetaData.Duration)
+		info.Container = m.MetaData.Container
+	}
+	// 优先用转码输出 URL，HLS > 其它；与 webhook 选 URL 的策略一致，避免前端拿到原始 mp4。
+	if m.TranscodeInfo != nil {
+		var fallbackURL, fallbackContainer string
+		var fallbackDuration float64
+		for _, t := range m.TranscodeInfo.TranscodeSet {
+			if t.URL == "" {
+				continue
+			}
+			if t.Container == "hls" {
+				info.VideoURL = t.URL
+				info.Container = t.Container
+				if t.Duration > 0 {
+					info.DurationSeconds = int(t.Duration)
+				}
+				fallbackURL = ""
+				break
+			}
+			if fallbackURL == "" {
+				fallbackURL = t.URL
+				fallbackContainer = t.Container
+				fallbackDuration = t.Duration
+			}
+		}
+		if fallbackURL != "" && info.VideoURL == "" {
+			info.VideoURL = fallbackURL
+			info.Container = fallbackContainer
+			if fallbackDuration > 0 {
+				info.DurationSeconds = int(fallbackDuration)
+			}
+		}
+	}
+	return info, nil
+}
+
+// tc3Auth 生成腾讯云 V3 Authorization header（TC3-HMAC-SHA256）。
+// 文档：https://cloud.tencent.com/document/api/213/30654
+// 仅覆盖本包用得到的最简形式：POST / 无 query / signed headers = content-type;host;x-tc-action。
+func (s *Signer) tc3Auth(action string, body []byte) (auth string, timestamp int64) {
+	const (
+		host        = "vod.tencentcloudapi.com"
+		service     = "vod"
+		algorithm   = "TC3-HMAC-SHA256"
+		contentType = "application/json; charset=utf-8"
+	)
+	timestamp = time.Now().Unix()
+	date := time.Unix(timestamp, 0).UTC().Format("2006-01-02")
+
+	signedHeaders := "content-type;host;x-tc-action"
+	canonicalHeaders := fmt.Sprintf("content-type:%s\nhost:%s\nx-tc-action:%s\n",
+		contentType, host, strings.ToLower(action))
+	payloadHash := sha256Hex(body)
+	canonicalRequest := strings.Join([]string{
+		"POST",
+		"/",
+		"",
+		canonicalHeaders,
+		signedHeaders,
+		payloadHash,
+	}, "\n")
+
+	credentialScope := fmt.Sprintf("%s/%s/tc3_request", date, service)
+	stringToSign := strings.Join([]string{
+		algorithm,
+		fmt.Sprintf("%d", timestamp),
+		credentialScope,
+		sha256Hex([]byte(canonicalRequest)),
+	}, "\n")
+
+	secretDate := hmacSHA256([]byte("TC3"+s.cfg.VODSecretKey), date)
+	secretService := hmacSHA256(secretDate, service)
+	secretSigning := hmacSHA256(secretService, "tc3_request")
+	signature := hex.EncodeToString(hmacSHA256(secretSigning, stringToSign))
+
+	auth = fmt.Sprintf("%s Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+		algorithm, s.cfg.VODSecretID, credentialScope, signedHeaders, signature)
+	return auth, timestamp
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func hmacSHA256(key []byte, s string) []byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(s))
+	return mac.Sum(nil)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "...(truncated)"
 }
 
 // PlaySignConfigured 判断是否启用且配置完备；未启用时调用方应直接返回原 URL。

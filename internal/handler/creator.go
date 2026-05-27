@@ -86,6 +86,7 @@ func (s *Server) findOrCreateCreator(phone string) (model.Creator, error) {
 	}
 	creator = model.Creator{
 		Phone:        phone,
+		CreatorType:  model.CreatorTypePersonal,
 		VerifyStatus: model.CreatorVerifyPending,
 		Status:       model.StatusActive,
 	}
@@ -108,6 +109,8 @@ func creatorDetailView(cr model.Creator) gin.H {
 		"id":                 cr.ID,
 		"phone":              sms.MaskPhone(cr.Phone),
 		"name":               cr.Name,
+		"creator_type":       cr.CreatorType,
+		"org_name":           cr.OrgName,
 		"bank_name":          cr.BankName,
 		"verify_status":      cr.VerifyStatus,
 		"total_income_cents": cr.TotalIncomeCents,

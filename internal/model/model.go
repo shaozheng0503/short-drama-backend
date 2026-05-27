@@ -18,8 +18,15 @@ const (
 )
 
 const (
-	AdminRoleAdmin   = "admin"
+	AdminRoleAdmin   = "admin" // 超管：全部权限
 	AdminRoleFinance = "finance"
+	AdminRoleAuditor = "auditor" // 审核：内容审核相关
+)
+
+// 创作者主体类型：个人 / 机构。
+const (
+	CreatorTypePersonal     = "personal"
+	CreatorTypeOrganization = "organization"
 )
 
 const (
@@ -33,6 +40,14 @@ const (
 	DramaStatusReviewing = "reviewing"
 	DramaStatusPublished = "published"
 	DramaStatusOffline   = "offline"
+)
+
+// Drama.AuditStatus —— 简化审核：默认 approved，admin 驳回置 rejected。
+// rejected 后 creator 改 drama 字段会自动回到 approved（视为重新提审）。
+// rejected 状态禁止 publish；已 published 被驳回的剧会被强制 offline。
+const (
+	DramaAuditApproved = "approved"
+	DramaAuditRejected = "rejected"
 )
 
 const (
@@ -85,6 +100,27 @@ const (
 	ContractStatusSigned  = "signed"
 )
 
+// 男女频：申报字段，与 audience 分类维度并存，这里用独立字段方便上传表单直接选。
+const (
+	AudienceMale    = "男频"
+	AudienceFemale  = "女频"
+	AudienceGeneral = "通用"
+)
+
+// 发布类型：自主发布（发在创作者自己平台号下）/ 平台发布（发在官方号下）。
+const (
+	PublishTypeSelf     = "self"
+	PublishTypePlatform = "platform"
+)
+
+func ValidAudience(v string) bool {
+	return v == AudienceMale || v == AudienceFemale || v == AudienceGeneral
+}
+
+func ValidPublishType(v string) bool {
+	return v == PublishTypeSelf || v == PublishTypePlatform
+}
+
 // User —— APP 用户表（MVP 数据库设计 3.1）
 type User struct {
 	ID        uint64    `gorm:"primaryKey;column:id" json:"id"`
@@ -132,6 +168,8 @@ type Creator struct {
 	ID               uint64    `gorm:"primaryKey;column:id" json:"id"`
 	Phone            string    `gorm:"column:phone;size:32;uniqueIndex" json:"phone"`
 	Name             string    `gorm:"column:name;size:64" json:"name"`
+	CreatorType      string    `gorm:"column:creator_type;size:20;default:personal" json:"creator_type"` // personal / organization
+	OrgName          string    `gorm:"column:org_name;size:128" json:"org_name"`                         // 机构名称（机构类型时填）
 	IDCardNoEnc      string    `gorm:"column:id_card_no_enc;size:512" json:"-"`
 	BankName         string    `gorm:"column:bank_name;size:64" json:"bank_name"`
 	BankCardNoEnc    string    `gorm:"column:bank_card_no_enc;size:512" json:"-"`
@@ -176,16 +214,38 @@ func (DramaTag) TableName() string { return "drama_tags" }
 
 // Drama —— 短剧（MVP 数据库设计 3.6）
 type Drama struct {
-	ID            uint64     `gorm:"primaryKey;column:id" json:"id"`
-	Title         string     `gorm:"column:title;size:128;index" json:"title"`
-	Description   string     `gorm:"column:description;type:text" json:"description"`
-	CoverURL      string     `gorm:"column:cover_url;size:512" json:"cover_url"`
-	CategoryID    *uint64    `gorm:"column:category_id;index" json:"category_id"`
-	CreatorID     *uint64    `gorm:"column:creator_id;index" json:"creator_id"`
-	TotalEpisodes int        `gorm:"column:total_episodes;default:0" json:"total_episodes"`
-	FreeEpisodes  int        `gorm:"column:free_episodes;default:0" json:"free_episodes"`
-	PriceCents    int64      `gorm:"column:price_cents;default:0" json:"price_cents"`
-	Status        string     `gorm:"column:status;size:20;default:draft;index" json:"status"`
+	ID            uint64  `gorm:"primaryKey;column:id" json:"id"`
+	Title         string  `gorm:"column:title;size:128;index" json:"title"`
+	Description   string  `gorm:"column:description;type:text" json:"description"`
+	CoverURL      string  `gorm:"column:cover_url;size:512" json:"cover_url"`
+	CategoryID    *uint64 `gorm:"column:category_id;index" json:"category_id"`
+	CreatorID     *uint64 `gorm:"column:creator_id;index" json:"creator_id"`
+	TotalEpisodes int     `gorm:"column:total_episodes;default:0" json:"total_episodes"`
+	FreeEpisodes  int     `gorm:"column:free_episodes;default:0" json:"free_episodes"`
+	PriceCents    int64   `gorm:"column:price_cents;default:0" json:"price_cents"`
+	Status        string  `gorm:"column:status;size:20;default:draft;index" json:"status"`
+	AuditStatus   string  `gorm:"column:audit_status;size:20;default:approved;index" json:"audit_status"`
+	AuditReason   string  `gorm:"column:audit_reason;size:255" json:"audit_reason"`
+
+	// === 申报级扩展字段（2026-05-27 漫剧上传规格）===
+	IsAI                bool       `gorm:"column:is_ai;default:false" json:"is_ai"`                             // 是否 AI 作品
+	Audience            string     `gorm:"column:audience;size:20" json:"audience"`                             // 男频/女频/通用
+	AliasPaid           string     `gorm:"column:alias_paid;size:64" json:"alias_paid"`                         // 站外付费别名（选填）
+	AliasFree           string     `gorm:"column:alias_free;size:64" json:"alias_free"`                         // 站外免费别名（选填）
+	ProductionOrg       string     `gorm:"column:production_org;size:128" json:"production_org"`                // 制作机构
+	Producer            string     `gorm:"column:producer;size:64" json:"producer"`                             // 制片人
+	Director            string     `gorm:"column:director;size:64" json:"director"`                             // 导演
+	Screenwriter        string     `gorm:"column:screenwriter;size:64" json:"screenwriter"`                     // 编剧（选填）
+	ProductionCostCents int64      `gorm:"column:production_cost_cents;default:0" json:"production_cost_cents"` // 备案制作金额
+	CostConfigURL       string     `gorm:"column:cost_config_url;size:512" json:"cost_config_url"`              // 成本配置（图片）
+	IsIPAdaptation      bool       `gorm:"column:is_ip_adaptation;default:false" json:"is_ip_adaptation"`       // 版权专区 IP 改编
+	CopyrightFileURL    string     `gorm:"column:copyright_file_url;size:512" json:"copyright_file_url"`        // 权署文件（图片）
+	NonInfringementURL  string     `gorm:"column:non_infringement_url;size:512" json:"non_infringement_url"`    // 不侵权承诺函
+	PublishType         string     `gorm:"column:publish_type;size:20" json:"publish_type"`                     // self/platform
+	ScheduledPublishAt  *time.Time `gorm:"column:scheduled_publish_at" json:"scheduled_publish_at"`             // 计划发布时间
+
+	ReviewerID    *uint64    `gorm:"column:reviewer_id" json:"reviewer_id"`
+	ReviewedAt    *time.Time `gorm:"column:reviewed_at" json:"reviewed_at"`
 	PlayCount     int64      `gorm:"column:play_count;default:0" json:"play_count"`
 	LikeCount     int64      `gorm:"column:like_count;default:0" json:"like_count"`
 	FavoriteCount int64      `gorm:"column:favorite_count;default:0" json:"favorite_count"`
@@ -196,6 +256,30 @@ type Drama struct {
 }
 
 func (Drama) TableName() string { return "dramas" }
+
+// DramaCover —— 漫剧封面多图（≤5）。Drama.CoverURL 始终存第一张作为主封面，向后兼容老接口。
+type DramaCover struct {
+	ID        uint64    `gorm:"primaryKey;column:id" json:"id"`
+	DramaID   uint64    `gorm:"column:drama_id;index" json:"drama_id"`
+	URL       string    `gorm:"column:url;size:512" json:"url"`
+	SortOrder int       `gorm:"column:sort_order;default:0" json:"sort_order"`
+	CreatedAt time.Time `gorm:"column:created_at" json:"created_at"`
+}
+
+func (DramaCover) TableName() string { return "drama_covers" }
+
+// DramaCharacter —— 角色信息（至少 1 位）。姓名必填，照片/简介选填。
+type DramaCharacter struct {
+	ID        uint64    `gorm:"primaryKey;column:id" json:"id"`
+	DramaID   uint64    `gorm:"column:drama_id;index" json:"drama_id"`
+	Name      string    `gorm:"column:name;size:64" json:"name"`
+	PhotoURL  string    `gorm:"column:photo_url;size:512" json:"photo_url"`
+	Intro     string    `gorm:"column:intro;type:text" json:"intro"`
+	SortOrder int       `gorm:"column:sort_order;default:0" json:"sort_order"`
+	CreatedAt time.Time `gorm:"column:created_at" json:"created_at"`
+}
+
+func (DramaCharacter) TableName() string { return "drama_characters" }
 
 // Episode —— 剧集（MVP 数据库设计 3.7）
 type Episode struct {
@@ -365,3 +449,31 @@ type OperationLog struct {
 }
 
 func (OperationLog) TableName() string { return "operation_logs" }
+
+// Notification —— 创作者站内消息。MVP 只做纯文本 + 可选跳转链接。
+type Notification struct {
+	ID        uint64    `gorm:"primaryKey;column:id" json:"id"`
+	CreatorID uint64    `gorm:"column:creator_id;index" json:"creator_id"`
+	Title     string    `gorm:"column:title;size:128" json:"title"`
+	Content   string    `gorm:"column:content;type:text" json:"content"`
+	LinkURL   string    `gorm:"column:link_url;size:512" json:"link_url"`
+	IsRead    bool      `gorm:"column:is_read;default:false;index" json:"is_read"`
+	CreatedAt time.Time `gorm:"column:created_at;index" json:"created_at"`
+}
+
+func (Notification) TableName() string { return "notifications" }
+
+// GlobalConfig —— 全局键值配置。MVP 用于统一管理免费集数 / 每集单价。
+type GlobalConfig struct {
+	Key       string    `gorm:"primaryKey;column:key;size:64" json:"key"`
+	Value     string    `gorm:"column:value;size:255" json:"value"`
+	UpdatedAt time.Time `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (GlobalConfig) TableName() string { return "global_configs" }
+
+// 全局配置键。
+const (
+	ConfigKeyFreeEpisodes = "pricing.free_episodes" // 全局默认免费集数
+	ConfigKeyPriceCents   = "pricing.price_cents"   // 全局默认每集单价（分）
+)
