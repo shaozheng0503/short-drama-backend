@@ -609,8 +609,9 @@
 - `POST /v1/admin/finance/income/import` 导入格式改为 4 列：
   - A：短剧名称
   - B：渠道
-  - C：收益金额（元）
-  - D：日期（YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD）
+  - C：收益
+  - D：日期
+- 收益按「元」填写，支持小数；日期支持 `YYYY-MM-DD` / `YYYY/MM/DD` / `YYYY.MM.DD`。
 - 新增 `channel_income_daily` 表，唯一键 `(drama_id, channel, stat_date)`。
 - 重复导入按覆盖处理：同一短剧 + 渠道 + 日期以本次金额为准，按差额调整 `creator_stats_daily`、创作者 `total_income_cents` 和 `balance_cents`。
 - 新增 `GET /v1/admin/finance/income/template.xlsx`，后台可直接下载收益导入模板。
