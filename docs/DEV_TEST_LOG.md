@@ -701,6 +701,37 @@
   - `identity_info.identity_mid=1850716178296843`
   - `identity_info.identity_role=版权人`
 
+### 3.40 创作者账号认证最终口径补齐（2026-05-27）
+
+> 目标：按产品口径补齐「账号信息 / 实名信息 / 企业认证」字段与修改规则。
+
+- 账号信息：
+  - `account_uid`：系统生成，不允许修改
+  - `nickname`：可修改，限制 50 字符
+  - `avatar_url`：可修改，未设置时返回默认头像
+  - `login_phone`：登录手机号，只读不可改
+- 实名信息（与企业认证二选一）：
+  - `name`
+  - `id_card_no`（仅入参，落库密文 + `id_card_no_masked`）
+  - `bank_card_no`（仅入参，落库密文 + `bank_card_no_masked`）
+- 企业认证（与实名信息二选一）：
+  - `org_name`
+  - `org_credit_code`
+  - `business_license_url`
+  - `bank_card_no`（同样落库密文 + 脱敏）
+- 银行卡修改规则：
+  - 首次填写不需要验证码
+  - 已绑定后更换银行卡号必须提交 `sms_code`，验证码场景 `creator_login`
+- 线上验证：
+  - 默认头像 / UID / 登录手机号只读 ✅
+  - 账号昵称 / 头像可改 ✅
+  - `account_uid` 传入修改返回 `40001` ✅
+  - personal 提交企业字段返回 `40001` ✅
+  - organization 提交真实姓名 / 身份证返回 `40001` ✅
+  - personal 实名认证通过 ✅
+  - enterprise 企业认证通过 ✅
+  - 修改已绑定银行卡，无短信验证码返回 `40001`；带验证码可修改 ✅
+
 ### 3.25 第四轮代码 Bug 修复与优化
 
 > 重点：支付回调 HTTP 语义、金额/渠道校验、账号封禁即时生效、SMS 防刷、并发下单、运营校验补全。
