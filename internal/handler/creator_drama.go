@@ -396,13 +396,11 @@ func (s *Server) creatorUpdateDrama(c *gin.Context) {
 	}
 
 	updates := buildDramaUpdates(&req)
-	// 被驳回的剧创作者改完，视为重新修改：回到 draft，清掉 reason/审核痕迹，前端再调 submit。
+	// 被驳回的剧创作者改完，只把 status 推回 draft（按 adminRejectDrama 的新语义，driver 端通常已经是 draft，这里兜底）；
+	// audit_status / audit_reason / reviewer_id / reviewed_at 保留——让创作者改东西期间一直能看到驳回原因，
+	// 也让中台 / 合规能追溯审核历史。等创作者显式调 creatorSubmitDrama 重新提审时，那一步会把审核字段统一回收为 approved。
 	if d.AuditStatus == model.DramaAuditRejected {
 		updates["status"] = model.DramaStatusDraft
-		updates["audit_status"] = model.DramaAuditApproved
-		updates["audit_reason"] = ""
-		updates["reviewer_id"] = nil
-		updates["reviewed_at"] = nil
 	}
 
 	covers, hasCovers := effectiveCovers(&req)
