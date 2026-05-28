@@ -254,8 +254,6 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/dramas/:id/offline", s.adminOfflineDrama)
 	adminAuth.POST("/dramas/:id/approve", s.requireAdminRole(model.AdminRoleAuditor), s.adminApproveDrama)
 	adminAuth.POST("/dramas/:id/reject", s.requireAdminRole(model.AdminRoleAuditor), s.adminRejectDrama)
-	adminAuth.POST("/dramas/:id/video/approve", s.requireAdminRole(model.AdminRoleAuditor), s.adminApproveDramaVideo)
-	adminAuth.POST("/dramas/:id/video/reject", s.requireAdminRole(model.AdminRoleAuditor), s.adminRejectDramaVideo)
 
 	adminAuth.GET("/dramas/:id/episodes", s.adminListEpisodes)
 	adminAuth.POST("/dramas/:id/episodes", s.adminCreateEpisode)

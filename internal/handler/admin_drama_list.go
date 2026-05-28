@@ -14,13 +14,9 @@ func adminDramaListItemView(
 	publishAccounts []gin.H,
 	contractStatus string,
 ) gin.H {
-	shellStatus := d.AuditStatus
-	if shellStatus == "" {
-		shellStatus = model.DramaAuditApproved
-	}
-	videoStatus := d.VideoAuditStatus
-	if videoStatus == "" && d.TotalEpisodes > 0 {
-		videoStatus = model.DramaAuditPending
+	auditStatus := d.AuditStatus
+	if auditStatus == "" {
+		auditStatus = model.DramaAuditApproved
 	}
 	contractAudit := contractStatusToAudit(contractStatus)
 
@@ -37,15 +33,11 @@ func adminDramaListItemView(
 		"cover_url":      d.CoverURL,
 		"total_episodes": d.TotalEpisodes,
 
-		"shell_audit_status": shellStatus,
-		"shell_audit_reason": d.AuditReason,
-		"audit_status":       d.AuditStatus,
+		"audit_status":       auditStatus,
 		"audit_reason":       d.AuditReason,
 		"audit_submitted_at": d.AuditSubmittedAt,
-
-		"video_audit_status": videoStatus,
-		"video_audit_reason": d.VideoAuditReason,
-		"video_submitted_at": d.VideoSubmittedAt,
+		"reviewer_id":        d.ReviewerID,
+		"reviewed_at":        d.ReviewedAt,
 
 		"publish_accounts": publishAccounts,
 
@@ -160,15 +152,4 @@ func (s *Server) collectCreatorPublishAccounts(creatorIDs []uint64) map[uint64][
 		})
 	}
 	return out
-}
-
-// markDramaVideoAuditPending 有新正片上传/变更时，正片审核回到 pending。
-func (s *Server) markDramaVideoAuditPending(dramaID uint64) {
-	s.db.Model(&model.Drama{}).Where("id = ?", dramaID).Updates(map[string]interface{}{
-		"video_audit_status": model.DramaAuditPending,
-		"video_audit_reason": "",
-		"video_submitted_at": nowTimePtr(),
-		"video_reviewer_id":  nil,
-		"video_reviewed_at":  nil,
-	})
 }

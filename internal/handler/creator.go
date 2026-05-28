@@ -86,15 +86,11 @@ func (s *Server) findOrCreateCreator(phone string) (model.Creator, error) {
 	}
 	creator = model.Creator{
 		Phone:        phone,
-		Nickname:     defaultCreatorNickname(phone),
-		AvatarURL:    defaultCreatorAvatarURL,
-		AccountUID:   defaultCreatorUID(phone),
-		IdentityMID:  defaultCreatorUID(phone),
-		IdentityRole: "版权人",
 		CreatorType:  model.CreatorTypePersonal,
 		VerifyStatus: model.CreatorVerifyPending,
 		Status:       model.StatusActive,
 	}
+	applyCreatorDefaults(&creator)
 	if err := s.db.Create(&creator).Error; err != nil {
 		return creator, err
 	}
@@ -193,4 +189,36 @@ func defaultCreatorUID(phone string) string {
 		return ""
 	}
 	return "MID" + phone
+}
+
+// applyCreatorDefaults 补齐创作者注册时的账号 UID / 昵称等默认值。
+func applyCreatorDefaults(cr *model.Creator) {
+	if cr.Nickname == "" {
+		cr.Nickname = defaultCreatorNickname(cr.Phone)
+	}
+	if cr.AvatarURL == "" {
+		cr.AvatarURL = defaultCreatorAvatarURL
+	}
+	if cr.AccountUID == "" {
+		cr.AccountUID = defaultCreatorUID(cr.Phone)
+	}
+	if cr.IdentityMID == "" {
+		cr.IdentityMID = defaultCreatorUID(cr.Phone)
+	}
+	if cr.IdentityRole == "" {
+		cr.IdentityRole = "版权人"
+	}
+	if cr.CreatorType == "" {
+		cr.CreatorType = model.CreatorTypePersonal
+	}
+}
+
+func creatorDisplayUID(cr model.Creator) string {
+	if cr.IdentityMID != "" {
+		return cr.IdentityMID
+	}
+	if cr.AccountUID != "" {
+		return cr.AccountUID
+	}
+	return defaultCreatorUID(cr.Phone)
 }

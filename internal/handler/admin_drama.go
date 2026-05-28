@@ -51,15 +51,6 @@ func (s *Server) adminListDramas(c *gin.Context) {
 			return
 		}
 	}
-	if v := c.Query("video_audit_status"); v != "" {
-		switch v {
-		case model.DramaAuditPending, model.DramaAuditApproved, model.DramaAuditRejected:
-			q = q.Where("video_audit_status = ?", v)
-		default:
-			response.InvalidParam(c, "video_audit_status 只能是 pending/approved/rejected")
-			return
-		}
-	}
 	if v := strings.TrimSpace(c.Query("keyword")); v != "" {
 		like := "%" + v + "%"
 		q = q.Where("title ILIKE ? OR description ILIKE ?", like, like)
@@ -80,8 +71,6 @@ func (s *Server) adminListDramas(c *gin.Context) {
 	orderClause := "updated_at desc"
 	if v := c.Query("audit_status"); v == model.DramaAuditPending {
 		orderClause = "audit_submitted_at desc NULLS LAST, updated_at desc"
-	} else if v := c.Query("video_audit_status"); v == model.DramaAuditPending {
-		orderClause = "video_submitted_at desc NULLS LAST, updated_at desc"
 	}
 	var list []model.Drama
 	if err := q.Order(orderClause).
@@ -401,7 +390,7 @@ func (s *Server) adminRejectDrama(c *gin.Context) {
 	switch drama.Status {
 	case model.DramaStatusPublished:
 		updates["status"] = model.DramaStatusOffline
-	case model.DramaStatusAwaitingPublish:
+	case model.DramaStatusAwaitingPublish, model.DramaStatusReviewing:
 		updates["status"] = model.DramaStatusDraft
 	}
 	if err := s.db.Model(&drama).Updates(updates).Error; err != nil {
@@ -446,10 +435,16 @@ func (s *Server) adminApproveDrama(c *gin.Context) {
 		"reviewed_at":  now,
 	}
 	// 通过审核 → 进入"待上架"。已经在发布队列 / 已上架的不再动 status，保持幂等。
-	if drama.Status == model.DramaStatusDraft || drama.Status == model.DramaStatusOffline {
+	if drama.Status == model.DramaStatusDraft || drama.Status == model.DramaStatusReviewing || drama.Status == model.DramaStatusOffline {
 		updates["status"] = model.DramaStatusAwaitingPublish
 	}
-	if err := s.db.Model(&drama).Updates(updates).Error; err != nil {
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&drama).Updates(updates).Error; err != nil {
+			return err
+		}
+		return s.signDramaContractsOnApprove(tx, drama.ID)
+	})
+	if err != nil {
 		response.ServerError(c, "审核通过失败")
 		return
 	}
@@ -461,89 +456,14 @@ func (s *Server) adminApproveDrama(c *gin.Context) {
 	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
 }
 
-// adminApproveDramaVideo —— 正片（视频内容）审核通过。
-func (s *Server) adminApproveDramaVideo(c *gin.Context) {
-	id := parseUint(c.Param("id"))
-	if id == 0 {
-		response.InvalidParam(c, "id 不合法")
-		return
-	}
-	var drama model.Drama
-	if err := s.db.First(&drama, id).Error; err != nil {
-		if isNotFound(err) {
-			response.NotFound(c, "短剧不存在")
-			return
-		}
-		response.ServerError(c, "查询短剧失败")
-		return
-	}
-	var epCnt int64
-	s.db.Model(&model.Episode{}).Where("drama_id = ?", id).Count(&epCnt)
-	if epCnt == 0 {
-		response.InvalidParam(c, "尚无正片剧集，无法审核")
-		return
-	}
-	now := time.Now()
-	reviewerID := middleware.CurrentID(c)
-	if err := s.db.Model(&drama).Updates(map[string]interface{}{
-		"video_audit_status": model.DramaAuditApproved,
-		"video_audit_reason": "",
-		"video_reviewer_id":  reviewerID,
-		"video_reviewed_at":  now,
-	}).Error; err != nil {
-		response.ServerError(c, "正片审核通过失败")
-		return
-	}
-	s.db.First(&drama, id)
-	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
-}
-
-type adminRejectDramaVideoRequest struct {
-	Reason string `json:"reason"`
-}
-
-// adminRejectDramaVideo —— 正片（视频内容）审核驳回。
-func (s *Server) adminRejectDramaVideo(c *gin.Context) {
-	id := parseUint(c.Param("id"))
-	if id == 0 {
-		response.InvalidParam(c, "id 不合法")
-		return
-	}
-	var req adminRejectDramaVideoRequest
-	_ = c.ShouldBindJSON(&req)
-	if len(req.Reason) > 255 {
-		response.InvalidParam(c, "reason 不能超过 255 字符")
-		return
-	}
-	var drama model.Drama
-	if err := s.db.First(&drama, id).Error; err != nil {
-		if isNotFound(err) {
-			response.NotFound(c, "短剧不存在")
-			return
-		}
-		response.ServerError(c, "查询短剧失败")
-		return
-	}
-	now := time.Now()
-	reviewerID := middleware.CurrentID(c)
-	if err := s.db.Model(&drama).Updates(map[string]interface{}{
-		"video_audit_status": model.DramaAuditRejected,
-		"video_audit_reason": req.Reason,
-		"video_reviewer_id":  reviewerID,
-		"video_reviewed_at":  now,
-	}).Error; err != nil {
-		response.ServerError(c, "正片审核驳回失败")
-		return
-	}
-	s.db.First(&drama, id)
-	if drama.CreatorID != nil {
-		content := "您的作品《" + drama.Title + "》正片审核未通过，请修改后重新提交。"
-		if req.Reason != "" {
-			content += "驳回原因：" + req.Reason
-		}
-		s.sendNotification(*drama.CreatorID, "正片审核未通过", content, "")
-	}
-	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
+// signDramaContractsOnApprove 短剧审核通过时，同步将该 drama 下 pending/signing 合同置为 signed。
+func (s *Server) signDramaContractsOnApprove(tx *gorm.DB, dramaID uint64) error {
+	return tx.Model(&model.Contract{}).
+		Where("drama_id = ? AND status IN ?", dramaID, []string{
+			model.ContractStatusPending,
+			model.ContractStatusSigning,
+		}).
+		Update("status", model.ContractStatusSigned).Error
 }
 
 // adminDeleteDrama —— 仅 draft 状态允许删除，避免误删已上架/曾发布过的剧。
