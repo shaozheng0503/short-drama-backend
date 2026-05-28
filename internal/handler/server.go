@@ -192,6 +192,7 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.PUT("/channel-accounts/:id", s.creatorUpdateChannelAccount)
 	creatorAuth.DELETE("/channel-accounts/:id", s.creatorDeleteChannelAccount)
 	creatorAuth.GET("/dashboard", s.creatorDashboard)
+	creatorAuth.GET("/categories", s.creatorListCategories)
 	creatorAuth.GET("/dramas", s.creatorListDramas)
 	creatorAuth.POST("/dramas", s.creatorCreateDrama)
 	creatorAuth.GET("/dramas/:id", s.creatorGetDrama)
