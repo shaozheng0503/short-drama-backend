@@ -40,6 +40,17 @@ func (s *Server) adminListDramas(c *gin.Context) {
 	if v := c.Query("status"); v != "" {
 		q = q.Where("status = ?", v)
 	}
+	// audit_status 过滤：与 status 字段独立——中台「是否通过审核」筛选用这个。
+	// 取值：pending / approved / rejected；非法值直接 400，避免静默返空。
+	if v := c.Query("audit_status"); v != "" {
+		switch v {
+		case model.DramaAuditPending, model.DramaAuditApproved, model.DramaAuditRejected:
+			q = q.Where("audit_status = ?", v)
+		default:
+			response.InvalidParam(c, "audit_status 只能是 pending/approved/rejected")
+			return
+		}
+	}
 	if v := strings.TrimSpace(c.Query("keyword")); v != "" {
 		like := "%" + v + "%"
 		q = q.Where("title ILIKE ? OR description ILIKE ?", like, like)
