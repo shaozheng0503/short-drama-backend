@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"strings"
 
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
@@ -175,6 +176,16 @@ func defaultCreatorNickname(phone string) string {
 		return "创作者" + phone[len(phone)-4:]
 	}
 	return "创作者"
+}
+
+func creatorDisplayName(cr model.Creator) string {
+	if nickname := strings.TrimSpace(cr.Nickname); nickname != "" {
+		return nickname
+	}
+	if name := strings.TrimSpace(cr.Name); name != "" {
+		return name
+	}
+	return defaultCreatorNickname(cr.Phone)
 }
 
 func creatorAvatarURL(cr model.Creator) string {

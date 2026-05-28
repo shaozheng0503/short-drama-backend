@@ -109,9 +109,10 @@ func (s *Server) adminListChannelIncomes(c *gin.Context) {
 		return
 	}
 	dramaTitles := s.attachDramaTitlesForIncomes(items)
+	creatorNames := s.attachCreatorNamesForIncomes(items)
 	list := make([]gin.H, 0, len(items))
 	for _, item := range items {
-		list = append(list, channelIncomeView(item, dramaTitles[item.DramaID]))
+		list = append(list, channelIncomeView(item, dramaTitles[item.DramaID], creatorNames[item.CreatorID]))
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
 }
@@ -140,7 +141,29 @@ func (s *Server) attachDramaTitlesForIncomes(items []model.ChannelIncomeDaily) m
 	return titles
 }
 
-func channelIncomeView(item model.ChannelIncomeDaily, dramaTitle string) gin.H {
+func (s *Server) attachCreatorNamesForIncomes(items []model.ChannelIncomeDaily) map[uint64]string {
+	ids := make([]uint64, 0)
+	seen := map[uint64]bool{}
+	for _, item := range items {
+		if item.CreatorID == 0 || seen[item.CreatorID] {
+			continue
+		}
+		ids = append(ids, item.CreatorID)
+		seen[item.CreatorID] = true
+	}
+	names := map[uint64]string{}
+	if len(ids) == 0 {
+		return names
+	}
+	var creators []model.Creator
+	s.db.Where("id IN ?", ids).Find(&creators)
+	for _, cr := range creators {
+		names[cr.ID] = creatorDisplayName(cr)
+	}
+	return names
+}
+
+func channelIncomeView(item model.ChannelIncomeDaily, dramaTitle, creatorName string) gin.H {
 	return gin.H{
 		"id":            item.ID,
 		"drama_id":      item.DramaID,
@@ -148,6 +171,7 @@ func channelIncomeView(item model.ChannelIncomeDaily, dramaTitle string) gin.H {
 		"channel":       item.Channel,
 		"stat_date":     item.StatDate,
 		"creator_id":    item.CreatorID,
+		"creator_name":  creatorName,
 		"income_cents":  item.IncomeCents,
 		"batch_no":      item.BatchNo,
 		"import_row_no": item.ImportRowNo,
@@ -216,7 +240,8 @@ func (s *Server) adminUpdateChannelIncome(c *gin.Context) {
 		return
 	}
 	titles := s.attachDramaTitlesForIncomes([]model.ChannelIncomeDaily{updated})
-	response.OK(c, channelIncomeView(updated, titles[updated.DramaID]))
+	creatorNames := s.attachCreatorNamesForIncomes([]model.ChannelIncomeDaily{updated})
+	response.OK(c, channelIncomeView(updated, titles[updated.DramaID], creatorNames[updated.CreatorID]))
 }
 
 func (s *Server) adminDeleteChannelIncome(c *gin.Context) {
