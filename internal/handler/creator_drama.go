@@ -540,8 +540,7 @@ func (s *Server) creatorDeleteDrama(c *gin.Context) {
 }
 
 // creatorPublishDrama —— 创作者自助上架。
-// 校验：audit_status=approved + 至少 1 集 ready + 存在付费集时 price_cents>0。
-// 这套规则与 adminPublishDrama 一致；admin 那条没卡 audit_status，按"运营兜底"留出口子。
+// 校验：audit_status=approved + 至少 1 集 ready。
 func (s *Server) creatorPublishDrama(c *gin.Context) {
 	id := parseUint(c.Param("id"))
 	if id == 0 {
@@ -574,12 +573,6 @@ func (s *Server) creatorPublishDrama(c *gin.Context) {
 		Count(&readyCount)
 	if readyCount == 0 {
 		response.InvalidParam(c, "至少需要 1 集 ready 状态剧集才能上架")
-		return
-	}
-	var totalEpisodes int64
-	s.db.Model(&model.Episode{}).Where("drama_id = ?", d.ID).Count(&totalEpisodes)
-	if totalEpisodes > int64(d.FreeEpisodes) && d.PriceCents <= 0 {
-		response.InvalidParam(c, "存在付费剧集时 price_cents 必须大于 0")
 		return
 	}
 

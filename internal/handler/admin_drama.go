@@ -305,13 +305,6 @@ func (s *Server) adminPublishDrama(c *gin.Context) {
 		return
 	}
 
-	var totalEpisodes int64
-	s.db.Model(&model.Episode{}).Where("drama_id = ?", drama.ID).Count(&totalEpisodes)
-	if totalEpisodes > int64(drama.FreeEpisodes) && drama.PriceCents <= 0 {
-		response.InvalidParam(c, "存在付费剧集时 price_cents 必须大于 0")
-		return
-	}
-
 	now := time.Now()
 	updates := map[string]interface{}{
 		"status":       model.DramaStatusPublished,
