@@ -68,31 +68,87 @@ func (s *Server) creatorListDramas(c *gin.Context) {
 	for _, d := range dramas {
 		dramaIDs = append(dramaIDs, d.ID)
 	}
+
+	// 一次性预取列表渲染需要的关联：收益 / 多分类 / 合同绑定。
+	// 都用 IN 批查，避免 N+1。
 	incomes := map[uint64]int64{}
+	categoriesByDrama := map[uint64][]gin.H{}
+	contractStatus := map[uint64]string{}
 	if len(dramaIDs) > 0 {
-		var rows []struct {
+		// 收益
+		var incomeRows []struct {
 			DramaID uint64
 			Income  int64
 		}
 		s.db.Table("creator_stats_daily").
 			Select("drama_id, COALESCE(SUM(income_cents),0) as income").
 			Where("creator_id = ? AND drama_id IN ?", cid, dramaIDs).
-			Group("drama_id").Scan(&rows)
-		for _, r := range rows {
+			Group("drama_id").Scan(&incomeRows)
+		for _, r := range incomeRows {
 			incomes[r.DramaID] = r.Income
+		}
+
+		// 多分类：drama_tags JOIN categories 拿名字+维度，按 sort_order 排
+		var catRows []struct {
+			DramaID    uint64
+			CategoryID uint64
+			Name       string
+			Type       string
+		}
+		s.db.Table("drama_tags").
+			Select("drama_tags.drama_id, categories.id as category_id, categories.name, categories.type").
+			Joins("JOIN categories ON categories.id = drama_tags.category_id").
+			Where("drama_tags.drama_id IN ?", dramaIDs).
+			Order("categories.type asc, categories.sort_order asc").
+			Scan(&catRows)
+		for _, r := range catRows {
+			categoriesByDrama[r.DramaID] = append(categoriesByDrama[r.DramaID], gin.H{
+				"id":   r.CategoryID,
+				"name": r.Name,
+				"type": r.Type,
+			})
+		}
+
+		// 合同状态：当前 creator 名下、绑该剧的最近一份合同的 status；没绑 → 空串（前端展示"未绑定"）
+		var contractRows []struct {
+			DramaID uint64
+			Status  string
+		}
+		s.db.Table("contracts").
+			Select("drama_id, status").
+			Where("creator_id = ? AND drama_id IN ?", cid, dramaIDs).
+			Order("updated_at desc").
+			Scan(&contractRows)
+		for _, r := range contractRows {
+			if _, ok := contractStatus[r.DramaID]; !ok { // 最近一份覆盖
+				contractStatus[r.DramaID] = r.Status
+			}
 		}
 	}
 
 	list := make([]gin.H, 0, len(dramas))
 	for _, d := range dramas {
+		cats := categoriesByDrama[d.ID]
+		if cats == nil {
+			cats = []gin.H{} // 前端遍历友好：永远是数组，不出现 null
+		}
 		list = append(list, gin.H{
-			"id":             d.ID,
-			"title":          d.Title,
-			"cover_url":      d.CoverURL,
-			"status":         d.Status,
-			"total_episodes": d.TotalEpisodes,
-			"play_count":     d.PlayCount,
-			"income_cents":   incomes[d.ID],
+			"id":                   d.ID,
+			"title":                d.Title,
+			"cover_url":            d.CoverURL,
+			"status":               d.Status,
+			"audit_status":         d.AuditStatus,
+			"audit_reason":         d.AuditReason,
+			"total_episodes":       d.TotalEpisodes,
+			"audience":             d.Audience,
+			"categories":           cats,            // [{id,name,type}...]，含 theme/setting/background/audience 四维全部命中标签
+			"contract_status":      contractStatus[d.ID], // pending/signing/signed/cancelled；空串=未绑定
+			"publish_type":         d.PublishType,
+			"scheduled_publish_at": d.ScheduledPublishAt,
+			"play_count":           d.PlayCount,
+			"income_cents":         incomes[d.ID],
+			"created_at":           d.CreatedAt,
+			"updated_at":           d.UpdatedAt,
 		})
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
