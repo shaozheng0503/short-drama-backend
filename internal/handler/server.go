@@ -146,6 +146,7 @@ func (s *Server) Router() *gin.Engine {
 	// === APP ===
 	app := v1.Group("/app")
 	app.POST("/auth/login", s.appLogin)
+	app.GET("/categories", s.appListCategories)
 	app.GET("/home", s.appHome)
 	app.GET("/dramas", s.appListDramas)
 	app.GET("/dramas/:id", s.appDramaDetail)
@@ -193,6 +194,7 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.DELETE("/channel-accounts/:id", s.creatorDeleteChannelAccount)
 	creatorAuth.GET("/dashboard", s.creatorDashboard)
 	creatorAuth.GET("/categories", s.creatorListCategories)
+	creatorAuth.GET("/config/pricing", s.creatorGetPricingConfig)
 	creatorAuth.GET("/dramas", s.creatorListDramas)
 	creatorAuth.POST("/dramas", s.creatorCreateDrama)
 	creatorAuth.GET("/dramas/:id", s.creatorGetDrama)
