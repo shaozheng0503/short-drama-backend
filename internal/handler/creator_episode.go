@@ -94,7 +94,6 @@ func (s *Server) creatorCreateEpisode(c *gin.Context) {
 		response.ServerError(c, "创建剧集失败")
 		return
 	}
-	s.markDramaVideoAuditPending(dramaID)
 	response.OK(c, episodeAdminView(ep))
 }
 
@@ -160,7 +159,6 @@ func (s *Server) creatorBatchCreateEpisodes(c *gin.Context) {
 		response.ServerError(c, "批量创建剧集失败")
 		return
 	}
-	s.markDramaVideoAuditPending(dramaID)
 	views := make([]gin.H, 0, len(eps))
 	for _, ep := range eps {
 		views = append(views, episodeAdminView(ep))

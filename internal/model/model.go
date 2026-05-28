@@ -35,41 +35,39 @@ const (
 	CreatorVerifyRejected = "rejected"
 )
 
-// Drama.Status —— 整体发布阶段，与 audit_status 严格解耦：
-//   - draft            ：草稿（含未提交、提交中、驳回后等"未通过审核的剧"）
-//   - awaiting_publish ：审核通过、等待上架
+// Drama.Status —— 发布阶段（与 audit_status 配合）：
+//   - draft            ：草稿，未提交审核
+//   - reviewing        ：已提交，待审核
+//   - awaiting_publish ：审核通过，等待上架
 //   - published        ：已上架
 //   - offline          ：已下架
 //
-// 注意：取消了历史的 "reviewing" 这个值——审核进度只由 audit_status 表达，
-// status 字段不再混入审核语义。"reviewing" 是已废弃的兼容名，新代码勿用。
+// audit_status 仍保留：pending / approved / rejected，表达审核结论。
 const (
-	DramaStatusDraft            = "draft"
-	DramaStatusAwaitingPublish  = "awaiting_publish"
-	DramaStatusPublished        = "published"
-	DramaStatusOffline          = "offline"
+	DramaStatusDraft           = "draft"
+	DramaStatusReviewing       = "reviewing"
+	DramaStatusAwaitingPublish = "awaiting_publish"
+	DramaStatusPublished       = "published"
+	DramaStatusOffline         = "offline"
 )
 
-// Drama.AuditStatus —— 审核子状态，与整体 status 解耦：
-//   - pending  ：创作者已提交，等待 admin 审核
-//   - approved ：admin 审核通过
-//   - rejected ：admin 驳回，需创作者修改后重新提审
+// Drama.AuditStatus —— 审核结论：
+//   - pending  ：等待 admin 审核
+//   - approved ：审核通过
+//   - rejected ：审核驳回
 //
-// 完整状态机（status × audit_status，二者正交）：
-//   draft × (空)                   首次新建，还没提交过
-//   draft × pending                已提交，等审核中
-//   draft × rejected               审核驳回，等创作者改后重新提审
-//   awaiting_publish × approved    审核通过，等上架（手动 publish 触发上架）
+// 典型组合：
+//   draft × approved/default     纯草稿，未提交
+//   reviewing × pending            已提交，待审核
+//   draft × rejected               驳回后回到草稿
+//   awaiting_publish × approved    审核通过，待上架
 //   published × approved           已上架
-//   offline   × *                  已下架（保留最近一次审核结论）
 //
 // 转换规则：
-//   - submit             ：audit_status → pending（status 不变）
-//   - admin approve      ：audit_status → approved；status: draft/offline → awaiting_publish
-//   - admin reject       ：audit_status → rejected；status: awaiting_publish → draft；published → offline
-//   - creator edit       ：status / audit_status 都不动，保留驳回理由
-//   - creator publish    ：audit_status 必须 approved，status: awaiting_publish/offline → published
-//   - creator offline    ：status → offline（audit_status 保留）
+//   - submit        ：status → reviewing；audit_status → pending
+//   - admin approve ：audit_status → approved；status: reviewing/draft/offline → awaiting_publish
+//   - admin reject  ：audit_status → rejected；status: reviewing/awaiting_publish → draft；published → offline
+//   - creator publish：audit_status 必须 approved；status: awaiting_publish/offline → published
 const (
 	DramaAuditPending  = "pending"
 	DramaAuditApproved = "approved"
@@ -281,12 +279,12 @@ type Drama struct {
 	AuditStatus   string  `gorm:"column:audit_status;size:20;default:approved;index" json:"audit_status"`
 	AuditReason   string  `gorm:"column:audit_reason;size:255" json:"audit_reason"`
 	AuditSubmittedAt *time.Time `gorm:"column:audit_submitted_at;index" json:"audit_submitted_at"`
-	// 正片（视频内容）审核，与剧壳 audit_status 独立。
-	VideoAuditStatus string     `gorm:"column:video_audit_status;size:20;default:'';index" json:"video_audit_status"`
-	VideoAuditReason string     `gorm:"column:video_audit_reason;size:255" json:"video_audit_reason"`
-	VideoSubmittedAt *time.Time `gorm:"column:video_submitted_at;index" json:"video_submitted_at"`
-	VideoReviewerID  *uint64    `gorm:"column:video_reviewer_id" json:"video_reviewer_id"`
-	VideoReviewedAt  *time.Time `gorm:"column:video_reviewed_at" json:"video_reviewed_at"`
+	// MVP 整剧一次审核，仅用 audit_status；以下 video_* 列保留兼容老库，接口不再暴露。
+	VideoAuditStatus string     `gorm:"column:video_audit_status;size:20;default:'';index" json:"-"`
+	VideoAuditReason string     `gorm:"column:video_audit_reason;size:255" json:"-"`
+	VideoSubmittedAt *time.Time `gorm:"column:video_submitted_at;index" json:"-"`
+	VideoReviewerID  *uint64    `gorm:"column:video_reviewer_id" json:"-"`
+	VideoReviewedAt  *time.Time `gorm:"column:video_reviewed_at" json:"-"`
 
 	// === 申报级扩展字段（2026-05-27 漫剧上传规格）===
 	IsAI                bool       `gorm:"column:is_ai;default:false" json:"is_ai"`                             // 是否 AI 作品

@@ -27,7 +27,7 @@ func (s *Server) adminDashboard(c *gin.Context) {
 	s.db.Model(&model.User{}).Count(&userCount)
 	s.db.Model(&model.Creator{}).Count(&creatorCount)
 	s.db.Model(&model.Drama{}).Count(&dramaCount)
-	s.db.Model(&model.Drama{}).Where("status IN ?", []string{model.DramaStatusDraft, model.DramaStatusAwaitingPublish}).Count(&pendingDramaCount)
+	s.db.Model(&model.Drama{}).Where("status IN ?", []string{model.DramaStatusReviewing, model.DramaStatusAwaitingPublish}).Count(&pendingDramaCount)
 	s.db.Model(&model.Withdrawal{}).Where("status = ?", model.WithdrawalStatusPending).Count(&pendingWithdrawCount)
 	today := time.Now().Format("2006-01-02")
 	s.db.Model(&model.CreatorStatsDaily{}).Where("stat_date = ?", today).
@@ -91,19 +91,24 @@ func (s *Server) adminListCreators(c *gin.Context) {
 
 	list := make([]gin.H, 0, len(creators))
 	for _, cr := range creators {
+		uid := creatorDisplayUID(cr)
+		nickname := cr.Nickname
+		if nickname == "" {
+			nickname = defaultCreatorNickname(cr.Phone)
+		}
 		list = append(list, gin.H{
 			"id":                   cr.ID,
 			"phone":                sms.MaskPhone(cr.Phone),
 			"login_phone":          sms.MaskPhone(cr.Phone),
 			"name":                 cr.Name,
-			"nickname":             cr.Nickname,
+			"nickname":             nickname,
 			"avatar_url":           creatorAvatarURL(cr),
-			"account_uid":          cr.AccountUID,
+			"account_uid":          uid,
 			"creator_type":         cr.CreatorType,
 			"org_name":             cr.OrgName,
 			"org_credit_code":      cr.OrgCreditCode,
 			"business_license_url": cr.BusinessLicenseURL,
-			"identity_mid":         cr.IdentityMID,
+			"identity_mid":         uid,
 			"identity_role":        cr.IdentityRole,
 			"bank_name":            cr.BankName,
 			"id_card_no_masked":    cr.IDCardNoMasked,
@@ -142,6 +147,7 @@ func (s *Server) adminCreateCreator(c *gin.Context) {
 		VerifyStatus: model.CreatorVerifyPending,
 		Status:       model.StatusActive,
 	}
+	applyCreatorDefaults(&creator)
 	if err := s.db.Create(&creator).Error; err != nil {
 		if isUniqueViolation(err) {
 			response.Conflict(c, "手机号已存在")
