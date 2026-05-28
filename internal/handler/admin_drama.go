@@ -342,15 +342,12 @@ func (s *Server) adminRejectDrama(c *gin.Context) {
 		"reviewer_id":  reviewerID,
 		"reviewed_at":  now,
 	}
-	// 驳回时同步推进 status，避免 reviewing+rejected 这种"还在审核中又被驳回"的语义矛盾态：
-	//   - published → offline（立即下架）
-	//   - reviewing → draft（等创作者改完重新提审）
-	//   - draft / offline 不动（边界情况兜底，例如对 draft 标驳回作为"硬卡"）
-	switch drama.Status {
-	case model.DramaStatusPublished:
+	// 驳回只动 audit_status，status 由各自的整体状态决定：
+	//   - reviewing 驳回后仍是 reviewing，audit_status=rejected 自己表达"驳回中"；
+	//     等创作者改完调 submit，audit_status 才回到 pending。
+	//   - published 被驳回时强制 offline（已上线 + 驳回必须立即下架）。
+	if drama.Status == model.DramaStatusPublished {
 		updates["status"] = model.DramaStatusOffline
-	case model.DramaStatusReviewing:
-		updates["status"] = model.DramaStatusDraft
 	}
 	if err := s.db.Model(&drama).Updates(updates).Error; err != nil {
 		response.ServerError(c, "驳回失败")
