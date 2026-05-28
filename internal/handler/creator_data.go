@@ -480,6 +480,7 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 			(submittedEnterpriseProfile && willBankCard != "" && willBankName != "")) {
 		updates["verify_status"] = model.CreatorVerifyPending
 		updates["verify_reject_reason"] = ""
+		updates["verify_submitted_at"] = nowTimePtr()
 	}
 
 	if len(updates) > 0 {
@@ -522,6 +523,7 @@ func creatorFullView(cr model.Creator) gin.H {
 		"bank_card_no_masked":  maskedBank,
 		"verify_status":        cr.VerifyStatus,
 		"verify_reject_reason": cr.VerifyRejectReason,
+		"verify_submitted_at":  cr.VerifySubmittedAt,
 		"total_income_cents":   cr.TotalIncomeCents,
 		"balance_cents":        cr.BalanceCents,
 		"frozen_cents":         cr.FrozenCents,

@@ -217,6 +217,7 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.GET("/episodes/:id/preview", s.creatorPreviewEpisode)
 
 	creatorAuth.POST("/uploads/vod-sign", s.creatorVODUploadSign)
+	creatorAuth.POST("/uploads/image-sign", s.creatorImageUploadSign)
 
 	creatorAuth.GET("/income", s.creatorIncome)
 	creatorAuth.POST("/withdrawals", s.idempotencyMiddleware("creator"), s.creatorCreateWithdrawal)
@@ -253,6 +254,8 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/dramas/:id/offline", s.adminOfflineDrama)
 	adminAuth.POST("/dramas/:id/approve", s.requireAdminRole(model.AdminRoleAuditor), s.adminApproveDrama)
 	adminAuth.POST("/dramas/:id/reject", s.requireAdminRole(model.AdminRoleAuditor), s.adminRejectDrama)
+	adminAuth.POST("/dramas/:id/video/approve", s.requireAdminRole(model.AdminRoleAuditor), s.adminApproveDramaVideo)
+	adminAuth.POST("/dramas/:id/video/reject", s.requireAdminRole(model.AdminRoleAuditor), s.adminRejectDramaVideo)
 
 	adminAuth.GET("/dramas/:id/episodes", s.adminListEpisodes)
 	adminAuth.POST("/dramas/:id/episodes", s.adminCreateEpisode)

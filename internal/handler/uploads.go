@@ -108,6 +108,13 @@ func (s *Server) commonImageUploadSign(c *gin.Context) {
 	})
 }
 
+// creatorImageUploadSign —— 创作者拿 COS 图片上传签名（需 creator JWT）。
+// 与 common 版同源；路径前缀会写入 creator_{id}，便于审计。
+// 路径：POST /v1/creator/uploads/image-sign
+func (s *Server) creatorImageUploadSign(c *gin.Context) {
+	s.commonImageUploadSign(c)
+}
+
 // adminVODUploadSign 返回 VOD 客户端上传签名；admin 鉴权过的才能拿。
 // 路径：POST /v1/admin/uploads/vod-sign
 //

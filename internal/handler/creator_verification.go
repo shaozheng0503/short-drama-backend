@@ -51,6 +51,7 @@ func (s *Server) creatorGetVerification(c *gin.Context) {
 		"creator_type":         creator.CreatorType,
 		"verify_status":        creator.VerifyStatus,
 		"verify_reject_reason": creator.VerifyRejectReason,
+		"verify_submitted_at":  creator.VerifySubmittedAt,
 		"real_name_info":       creatorFullView(creator)["real_name_info"],
 		"enterprise_info":      creatorFullView(creator)["enterprise_info"],
 	})
@@ -95,6 +96,7 @@ func (s *Server) creatorUpdatePersonalVerification(c *gin.Context) {
 		"business_license_url": "",
 		"verify_status":        model.CreatorVerifyPending,
 		"verify_reject_reason": "",
+		"verify_submitted_at":  nowTimePtr(),
 	}
 	if err := s.db.Model(&model.Creator{}).Where("id = ?", cid).Updates(updates).Error; err != nil {
 		response.ServerError(c, "保存个人实名失败")
@@ -141,6 +143,7 @@ func (s *Server) creatorUpdateEnterpriseVerification(c *gin.Context) {
 		"bank_card_no_masked":  maskBankCard(req.BankCardNo),
 		"verify_status":        model.CreatorVerifyPending,
 		"verify_reject_reason": "",
+		"verify_submitted_at":  nowTimePtr(),
 	}
 	if err := s.db.Model(&model.Creator{}).Where("id = ?", cid).Updates(updates).Error; err != nil {
 		response.ServerError(c, "保存企业认证失败")
