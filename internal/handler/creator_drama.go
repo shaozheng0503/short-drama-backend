@@ -590,6 +590,60 @@ func (s *Server) creatorPublishDrama(c *gin.Context) {
 	response.OK(c, dramaAdminView(fresh, s.nameOfCategory(fresh.CategoryID), s.nameOfCreator(fresh.CreatorID)))
 }
 
+// creatorDramaPublishConfigRequest —— 发布配置精简载荷。
+// 发布配置步骤只填两项：发布类型 + 计划发布时间，其它申报字段在「基本信息」步骤里维护。
+type creatorDramaPublishConfigRequest struct {
+	PublishType        *string    `json:"publish_type"`         // self/platform
+	ScheduledPublishAt *time.Time `json:"scheduled_publish_at"` // 计划发布时间
+}
+
+// creatorUpdateDramaPublishConfig —— 填写 / 修改发布配置。
+// 只接收发布类型 + 计划发布时间，不动其它字段；用于发布向导第 3 步「填写发布配置」。
+// 路径：PUT /v1/creator/dramas/:id/publish-config
+func (s *Server) creatorUpdateDramaPublishConfig(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	d, ok := s.requireCreatorOwnsDrama(c, id)
+	if !ok {
+		return
+	}
+
+	var req creatorDramaPublishConfigRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "请求体不合法")
+		return
+	}
+	if req.PublishType == nil || *req.PublishType == "" {
+		response.InvalidParam(c, "publish_type 必填")
+		return
+	}
+	if !model.ValidPublishType(*req.PublishType) {
+		response.InvalidParam(c, "publish_type 只能是 self/platform")
+		return
+	}
+	if req.ScheduledPublishAt == nil {
+		response.InvalidParam(c, "scheduled_publish_at 必填")
+		return
+	}
+
+	updates := map[string]interface{}{
+		"publish_type":         *req.PublishType,
+		"scheduled_publish_at": req.ScheduledPublishAt,
+	}
+	if err := s.db.Model(d).Updates(updates).Error; err != nil {
+		response.ServerError(c, "保存发布配置失败")
+		return
+	}
+	var fresh model.Drama
+	s.db.First(&fresh, id)
+	view := dramaAdminView(fresh, s.nameOfCategory(fresh.CategoryID), s.nameOfCreator(fresh.CreatorID))
+	view["covers"], view["characters"] = s.loadDramaExtras(fresh.ID)
+	response.OK(c, view)
+}
+
 // creatorSubmitDrama —— 创作者提交审核。
 // 置 status=reviewing；并为该剧自动生成一份关联的 demo 合同（若尚无），合同名即剧名（视图按 drama_title 展示）。
 // MVP 从宽：不强制必须有剧集，先把"提交 → 审核 → 合同"流程跑通。

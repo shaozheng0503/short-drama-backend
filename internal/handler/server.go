@@ -198,6 +198,7 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.PUT("/dramas/:id", s.creatorUpdateDrama)
 	creatorAuth.DELETE("/dramas/:id", s.creatorDeleteDrama)
 	creatorAuth.POST("/dramas/:id/submit", s.creatorSubmitDrama)
+	creatorAuth.PUT("/dramas/:id/publish-config", s.creatorUpdateDramaPublishConfig)
 	creatorAuth.POST("/dramas/:id/publish", s.creatorPublishDrama)
 	creatorAuth.POST("/dramas/:id/offline", s.creatorOfflineDrama)
 	creatorAuth.GET("/dramas/:id/stats", s.creatorDramaStats)
