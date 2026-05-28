@@ -396,12 +396,10 @@ func (s *Server) creatorUpdateDrama(c *gin.Context) {
 	}
 
 	updates := buildDramaUpdates(&req)
-	// 被驳回的剧创作者改完，只把 status 推回 draft（按 adminRejectDrama 的新语义，driver 端通常已经是 draft，这里兜底）；
-	// audit_status / audit_reason / reviewer_id / reviewed_at 保留——让创作者改东西期间一直能看到驳回原因，
-	// 也让中台 / 合规能追溯审核历史。等创作者显式调 creatorSubmitDrama 重新提审时，那一步会把审核字段统一回收为 approved。
-	if d.AuditStatus == model.DramaAuditRejected {
-		updates["status"] = model.DramaStatusDraft
-	}
+	// 被驳回的剧创作者改字段时 status 保持不变（按"没发布前 status 都在 reviewing"的语义）：
+	// audit_status=rejected / audit_reason / reviewer_id / reviewed_at 全部保留——让创作者改字段期间
+	// 一直能看到驳回原因，也让中台 / 合规能追溯审核历史。等创作者显式调 creatorSubmitDrama 重新提审，
+	// 那一步会把 audit_status 切回 pending 并清掉旧的驳回痕迹。
 
 	covers, hasCovers := effectiveCovers(&req)
 	err := s.db.Transaction(func(tx *gorm.DB) error {
@@ -554,7 +552,12 @@ func (s *Server) creatorPublishDrama(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if d.AuditStatus == model.DramaAuditRejected {
+	// 通过审核才能进入发布环节：明确要求 audit_status=approved，pending / rejected 都拒。
+	switch d.AuditStatus {
+	case model.DramaAuditPending:
+		response.Forbidden(c, "该剧正在审核中，待审核通过后才能上架")
+		return
+	case model.DramaAuditRejected:
 		response.Forbidden(c, "该剧已被驳回，请先修改后重新提审")
 		return
 	}
@@ -668,10 +671,10 @@ func (s *Server) creatorSubmitDrama(c *gin.Context) {
 
 	var contractCreated bool
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		// 提交审核：status → reviewing；audit_status 回 approved（清掉历史驳回痕迹，等待 admin 复核）。
+		// 提交审核：status → reviewing；audit_status → pending（明确"在队列等审"）；清掉历史驳回痕迹。
 		if err := tx.Model(d).Updates(map[string]interface{}{
 			"status":       model.DramaStatusReviewing,
-			"audit_status": model.DramaAuditApproved,
+			"audit_status": model.DramaAuditPending,
 			"audit_reason": "",
 			"reviewer_id":  nil,
 			"reviewed_at":  nil,

@@ -42,10 +42,23 @@ const (
 	DramaStatusOffline   = "offline"
 )
 
-// Drama.AuditStatus —— 简化审核：默认 approved，admin 驳回置 rejected。
-// rejected 后 creator 改 drama 字段会自动回到 approved（视为重新提审）。
-// rejected 状态禁止 publish；已 published 被驳回的剧会被强制 offline。
+// Drama.AuditStatus —— 审核状态，与整体 status 解耦：
+//   - pending  ：创作者已提交，等待 admin 审核
+//   - approved ：admin 审核通过，达到可发布前置条件
+//   - rejected ：admin 驳回，需创作者修改后重新提审
+//
+// 状态机示意（status × audit_status）：
+//   draft × *                       创作者还没提交过
+//   reviewing × pending             已提交，待审核
+//   reviewing × approved            审核通过，待发布
+//   reviewing × rejected            审核驳回，等创作者改
+//   published × approved            已上架
+//   offline   × *                   已下架（保留最近一次审核结论）
+//
+// 提交审核 → audit_status=pending；审核通过 → approved；驳回 → rejected。
+// 只有 audit_status=approved 才允许 publish；已 published 被驳回的剧会被强制 offline。
 const (
+	DramaAuditPending  = "pending"
 	DramaAuditApproved = "approved"
 	DramaAuditRejected = "rejected"
 )
