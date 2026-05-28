@@ -63,8 +63,12 @@ func (s *Server) adminListCreators(c *gin.Context) {
 	}
 	var total int64
 	q.Count(&total)
+	orderClause := "created_at desc"
+	if v := c.Query("verify_status"); v == model.CreatorVerifyPending {
+		orderClause = "verify_submitted_at desc NULLS LAST, created_at desc"
+	}
 	var creators []model.Creator
-	q.Order("created_at desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&creators)
+	q.Order(orderClause).Offset((page - 1) * pageSize).Limit(pageSize).Find(&creators)
 
 	ids := make([]uint64, 0, len(creators))
 	for _, cr := range creators {
@@ -105,6 +109,8 @@ func (s *Server) adminListCreators(c *gin.Context) {
 			"id_card_no_masked":    cr.IDCardNoMasked,
 			"bank_card_no_masked":  cr.BankCardNoMasked,
 			"verify_status":        cr.VerifyStatus,
+			"verify_reject_reason": cr.VerifyRejectReason,
+			"verify_submitted_at":  cr.VerifySubmittedAt,
 			"status":               cr.Status,
 			"drama_count":          dramaCounts[cr.ID],
 			"total_income_cents":   cr.TotalIncomeCents,

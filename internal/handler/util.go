@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"strconv"
+	"time"
 
 	"ai-drama-platform/internal/model"
 
@@ -37,6 +38,11 @@ func paginate(c *gin.Context) (page, pageSize int) {
 func parseUint(s string) uint64 {
 	n, _ := strconv.ParseUint(s, 10, 64)
 	return n
+}
+
+func nowTimePtr() *time.Time {
+	t := time.Now()
+	return &t
 }
 
 // dramaIDFromPath 兼容 :drama_id / :id 两种命名（路由分组里都可能用）。
@@ -88,6 +94,12 @@ func dramaAdminView(d model.Drama, categoryName, creatorName string) gin.H {
 		"status":         d.Status,
 		"audit_status":   d.AuditStatus,
 		"audit_reason":   d.AuditReason,
+		"audit_submitted_at": d.AuditSubmittedAt,
+		"video_audit_status": d.VideoAuditStatus,
+		"video_audit_reason": d.VideoAuditReason,
+		"video_submitted_at": d.VideoSubmittedAt,
+		"video_reviewer_id":  d.VideoReviewerID,
+		"video_reviewed_at":  d.VideoReviewedAt,
 		"reviewer_id":    d.ReviewerID,
 		"reviewed_at":    d.ReviewedAt,
 		// 申报级扩展字段

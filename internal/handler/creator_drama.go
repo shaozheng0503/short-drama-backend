@@ -682,10 +682,11 @@ func (s *Server) creatorSubmitDrama(c *gin.Context) {
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		// 提交审核：status 保持 draft（status 字段不混审核语义）；audit_status → pending；清掉历史驳回痕迹。
 		if err := tx.Model(d).Updates(map[string]interface{}{
-			"audit_status": model.DramaAuditPending,
-			"audit_reason": "",
-			"reviewer_id":  nil,
-			"reviewed_at":  nil,
+			"audit_status":       model.DramaAuditPending,
+			"audit_reason":       "",
+			"audit_submitted_at": nowTimePtr(),
+			"reviewer_id":        nil,
+			"reviewed_at":        nil,
 		}).Error; err != nil {
 			return err
 		}

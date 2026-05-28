@@ -51,6 +51,15 @@ func (s *Server) adminListDramas(c *gin.Context) {
 			return
 		}
 	}
+	if v := c.Query("video_audit_status"); v != "" {
+		switch v {
+		case model.DramaAuditPending, model.DramaAuditApproved, model.DramaAuditRejected:
+			q = q.Where("video_audit_status = ?", v)
+		default:
+			response.InvalidParam(c, "video_audit_status 只能是 pending/approved/rejected")
+			return
+		}
+	}
 	if v := strings.TrimSpace(c.Query("keyword")); v != "" {
 		like := "%" + v + "%"
 		q = q.Where("title ILIKE ? OR description ILIKE ?", like, like)
@@ -68,8 +77,14 @@ func (s *Server) adminListDramas(c *gin.Context) {
 
 	var total int64
 	q.Count(&total)
+	orderClause := "updated_at desc"
+	if v := c.Query("audit_status"); v == model.DramaAuditPending {
+		orderClause = "audit_submitted_at desc NULLS LAST, updated_at desc"
+	} else if v := c.Query("video_audit_status"); v == model.DramaAuditPending {
+		orderClause = "video_submitted_at desc NULLS LAST, updated_at desc"
+	}
 	var list []model.Drama
-	if err := q.Order("updated_at desc").
+	if err := q.Order(orderClause).
 		Offset((page - 1) * pageSize).Limit(pageSize).
 		Find(&list).Error; err != nil {
 		response.ServerError(c, "查询短剧失败")
@@ -79,16 +94,42 @@ func (s *Server) adminListDramas(c *gin.Context) {
 	views := make([]gin.H, 0, len(list))
 	cats := s.collectCategoryNames(list)
 	crts := s.collectCreatorNames(list)
+
+	dramaIDs := make([]uint64, 0, len(list))
+	creatorIDs := make([]uint64, 0)
+	creatorSeen := map[uint64]bool{}
+	for _, d := range list {
+		dramaIDs = append(dramaIDs, d.ID)
+		if d.CreatorID != nil && !creatorSeen[*d.CreatorID] {
+			creatorIDs = append(creatorIDs, *d.CreatorID)
+			creatorSeen[*d.CreatorID] = true
+		}
+	}
+	categoriesByDrama := s.collectDramaCategories(dramaIDs)
+	contractByDrama := s.collectDramaContractStatus(dramaIDs)
+	publishAccountsByCreator := s.collectCreatorPublishAccounts(creatorIDs)
+
 	for _, d := range list {
 		categoryName := ""
 		if d.CategoryID != nil {
 			categoryName = cats[*d.CategoryID]
 		}
 		creatorName := ""
+		var publishAccounts []gin.H
 		if d.CreatorID != nil {
 			creatorName = crts[*d.CreatorID]
+			publishAccounts = publishAccountsByCreator[*d.CreatorID]
 		}
-		views = append(views, dramaAdminView(d, categoryName, creatorName))
+		if publishAccounts == nil {
+			publishAccounts = []gin.H{}
+		}
+		categories := categoriesByDrama[d.ID]
+		if categories == nil {
+			categories = []gin.H{}
+		}
+		views = append(views, adminDramaListItemView(
+			d, categoryName, creatorName, categories, publishAccounts, contractByDrama[d.ID],
+		))
 	}
 	response.OK(c, pageResp(views, page, pageSize, total))
 }
@@ -416,6 +457,91 @@ func (s *Server) adminApproveDrama(c *gin.Context) {
 	if drama.CreatorID != nil {
 		s.sendNotification(*drama.CreatorID, "作品审核通过",
 			"您的作品《"+drama.Title+"》已审核通过，可以发布上架。", "")
+	}
+	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
+}
+
+// adminApproveDramaVideo —— 正片（视频内容）审核通过。
+func (s *Server) adminApproveDramaVideo(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var drama model.Drama
+	if err := s.db.First(&drama, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "短剧不存在")
+			return
+		}
+		response.ServerError(c, "查询短剧失败")
+		return
+	}
+	var epCnt int64
+	s.db.Model(&model.Episode{}).Where("drama_id = ?", id).Count(&epCnt)
+	if epCnt == 0 {
+		response.InvalidParam(c, "尚无正片剧集，无法审核")
+		return
+	}
+	now := time.Now()
+	reviewerID := middleware.CurrentID(c)
+	if err := s.db.Model(&drama).Updates(map[string]interface{}{
+		"video_audit_status": model.DramaAuditApproved,
+		"video_audit_reason": "",
+		"video_reviewer_id":  reviewerID,
+		"video_reviewed_at":  now,
+	}).Error; err != nil {
+		response.ServerError(c, "正片审核通过失败")
+		return
+	}
+	s.db.First(&drama, id)
+	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
+}
+
+type adminRejectDramaVideoRequest struct {
+	Reason string `json:"reason"`
+}
+
+// adminRejectDramaVideo —— 正片（视频内容）审核驳回。
+func (s *Server) adminRejectDramaVideo(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var req adminRejectDramaVideoRequest
+	_ = c.ShouldBindJSON(&req)
+	if len(req.Reason) > 255 {
+		response.InvalidParam(c, "reason 不能超过 255 字符")
+		return
+	}
+	var drama model.Drama
+	if err := s.db.First(&drama, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "短剧不存在")
+			return
+		}
+		response.ServerError(c, "查询短剧失败")
+		return
+	}
+	now := time.Now()
+	reviewerID := middleware.CurrentID(c)
+	if err := s.db.Model(&drama).Updates(map[string]interface{}{
+		"video_audit_status": model.DramaAuditRejected,
+		"video_audit_reason": req.Reason,
+		"video_reviewer_id":  reviewerID,
+		"video_reviewed_at":  now,
+	}).Error; err != nil {
+		response.ServerError(c, "正片审核驳回失败")
+		return
+	}
+	s.db.First(&drama, id)
+	if drama.CreatorID != nil {
+		content := "您的作品《" + drama.Title + "》正片审核未通过，请修改后重新提交。"
+		if req.Reason != "" {
+			content += "驳回原因：" + req.Reason
+		}
+		s.sendNotification(*drama.CreatorID, "正片审核未通过", content, "")
 	}
 	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
 }

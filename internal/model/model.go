@@ -210,9 +210,10 @@ type Creator struct {
 	BankCardNoMasked   string    `gorm:"column:bank_card_no_masked;size:32" json:"bank_card_no_masked"`
 	IdentityMID        string    `gorm:"column:identity_mid;size:64" json:"identity_mid"`   // 创作者身份信息 MID
 	IdentityRole       string    `gorm:"column:identity_role;size:32" json:"identity_role"` // 版权人 / 制作方等
-	VerifyStatus       string    `gorm:"column:verify_status;size:20;default:pending" json:"verify_status"`
-	VerifyRejectReason string    `gorm:"column:verify_reject_reason;size:255" json:"verify_reject_reason"`
-	TotalIncomeCents   int64     `gorm:"column:total_income_cents;default:0" json:"total_income_cents"`
+	VerifyStatus       string     `gorm:"column:verify_status;size:20;default:pending" json:"verify_status"`
+	VerifyRejectReason string     `gorm:"column:verify_reject_reason;size:255" json:"verify_reject_reason"`
+	VerifySubmittedAt  *time.Time `gorm:"column:verify_submitted_at;index" json:"verify_submitted_at"`
+	TotalIncomeCents   int64      `gorm:"column:total_income_cents;default:0" json:"total_income_cents"`
 	BalanceCents       int64     `gorm:"column:balance_cents;default:0" json:"balance_cents"`
 	FrozenCents        int64     `gorm:"column:frozen_cents;default:0" json:"frozen_cents"`
 	Status             string    `gorm:"column:status;size:20;default:active" json:"status"`
@@ -279,6 +280,13 @@ type Drama struct {
 	Status        string  `gorm:"column:status;size:20;default:draft;index" json:"status"`
 	AuditStatus   string  `gorm:"column:audit_status;size:20;default:approved;index" json:"audit_status"`
 	AuditReason   string  `gorm:"column:audit_reason;size:255" json:"audit_reason"`
+	AuditSubmittedAt *time.Time `gorm:"column:audit_submitted_at;index" json:"audit_submitted_at"`
+	// 正片（视频内容）审核，与剧壳 audit_status 独立。
+	VideoAuditStatus string     `gorm:"column:video_audit_status;size:20;default:'';index" json:"video_audit_status"`
+	VideoAuditReason string     `gorm:"column:video_audit_reason;size:255" json:"video_audit_reason"`
+	VideoSubmittedAt *time.Time `gorm:"column:video_submitted_at;index" json:"video_submitted_at"`
+	VideoReviewerID  *uint64    `gorm:"column:video_reviewer_id" json:"video_reviewer_id"`
+	VideoReviewedAt  *time.Time `gorm:"column:video_reviewed_at" json:"video_reviewed_at"`
 
 	// === 申报级扩展字段（2026-05-27 漫剧上传规格）===
 	IsAI                bool       `gorm:"column:is_ai;default:false" json:"is_ai"`                             // 是否 AI 作品
