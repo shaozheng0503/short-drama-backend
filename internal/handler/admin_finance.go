@@ -27,7 +27,7 @@ func (s *Server) adminDashboard(c *gin.Context) {
 	s.db.Model(&model.User{}).Count(&userCount)
 	s.db.Model(&model.Creator{}).Count(&creatorCount)
 	s.db.Model(&model.Drama{}).Count(&dramaCount)
-	s.db.Model(&model.Drama{}).Where("status IN ?", []string{model.DramaStatusDraft, model.DramaStatusReviewing}).Count(&pendingDramaCount)
+	s.db.Model(&model.Drama{}).Where("status IN ?", []string{model.DramaStatusDraft, model.DramaStatusAwaitingPublish}).Count(&pendingDramaCount)
 	s.db.Model(&model.Withdrawal{}).Where("status = ?", model.WithdrawalStatusPending).Count(&pendingWithdrawCount)
 	today := time.Now().Format("2006-01-02")
 	s.db.Model(&model.CreatorStatsDaily{}).Where("stat_date = ?", today).

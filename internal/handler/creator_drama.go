@@ -552,13 +552,19 @@ func (s *Server) creatorPublishDrama(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// 通过审核才能进入发布环节：明确要求 audit_status=approved，pending / rejected 都拒。
+	// 通过审核才能进入发布环节：audit_status 必须 approved，pending / rejected 都拒。
 	switch d.AuditStatus {
 	case model.DramaAuditPending:
 		response.Forbidden(c, "该剧正在审核中，待审核通过后才能上架")
 		return
 	case model.DramaAuditRejected:
 		response.Forbidden(c, "该剧已被驳回，请先修改后重新提审")
+		return
+	}
+	// status 守卫：只允许从"待发布"或"已下架"上架。draft 状态(没通过审核或刚撤回)
+	// / published(已上架，重复发) 都不应触发 publish。
+	if d.Status != model.DramaStatusAwaitingPublish && d.Status != model.DramaStatusOffline {
+		response.Conflict(c, "当前剧目状态不可上架：仅待发布或已下架状态可上架")
 		return
 	}
 
@@ -658,15 +664,11 @@ func (s *Server) creatorSubmitDrama(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// 允许提交的入口：
-	//   - draft：首次提交
-	//   - offline：复活重提
-	//   - reviewing+rejected：被驳回后改完重新提审（status 不会回 draft，靠 audit_status 标识）
-	canSubmit := d.Status == model.DramaStatusDraft ||
-		d.Status == model.DramaStatusOffline ||
-		(d.Status == model.DramaStatusReviewing && d.AuditStatus == model.DramaAuditRejected)
-	if !canSubmit {
-		response.Conflict(c, "仅草稿 / 已下架 / 被驳回状态可提交审核")
+	// 允许提交的入口：draft 或 offline。
+	// 被驳回的剧 status 已经在 draft（admin reject 时不动 draft，本身就在 draft），
+	// 重新提审从 draft 进入即可——靠 audit_status 区分"首次提交" vs "驳回后再提"。
+	if d.Status != model.DramaStatusDraft && d.Status != model.DramaStatusOffline {
+		response.Conflict(c, "仅草稿 / 已下架状态可提交审核")
 		return
 	}
 	if d.CreatorID == nil {
@@ -678,9 +680,8 @@ func (s *Server) creatorSubmitDrama(c *gin.Context) {
 
 	var contractCreated bool
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		// 提交审核：status → reviewing；audit_status → pending（明确"在队列等审"）；清掉历史驳回痕迹。
+		// 提交审核：status 保持 draft（status 字段不混审核语义）；audit_status → pending；清掉历史驳回痕迹。
 		if err := tx.Model(d).Updates(map[string]interface{}{
-			"status":       model.DramaStatusReviewing,
 			"audit_status": model.DramaAuditPending,
 			"audit_reason": "",
 			"reviewer_id":  nil,

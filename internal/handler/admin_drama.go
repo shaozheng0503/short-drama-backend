@@ -342,12 +342,15 @@ func (s *Server) adminRejectDrama(c *gin.Context) {
 		"reviewer_id":  reviewerID,
 		"reviewed_at":  now,
 	}
-	// 驳回只动 audit_status，status 由各自的整体状态决定：
-	//   - reviewing 驳回后仍是 reviewing，audit_status=rejected 自己表达"驳回中"；
-	//     等创作者改完调 submit，audit_status 才回到 pending。
-	//   - published 被驳回时强制 offline（已上线 + 驳回必须立即下架）。
-	if drama.Status == model.DramaStatusPublished {
+	// 驳回时的 status 反推：
+	//   - published        → offline（已上线 + 驳回必须立即下架）
+	//   - awaiting_publish → draft（撤回已通过的审核，剧从发布队列退出）
+	//   - draft / offline 不动
+	switch drama.Status {
+	case model.DramaStatusPublished:
 		updates["status"] = model.DramaStatusOffline
+	case model.DramaStatusAwaitingPublish:
+		updates["status"] = model.DramaStatusDraft
 	}
 	if err := s.db.Model(&drama).Updates(updates).Error; err != nil {
 		response.ServerError(c, "驳回失败")
@@ -364,8 +367,9 @@ func (s *Server) adminRejectDrama(c *gin.Context) {
 	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
 }
 
-// adminApproveDrama —— 管理员审核通过（多用于把先前 rejected 的剧恢复）。
-// 只动 audit_status 与审计字段，不动 status；要上线由创作者自助 publish 或 admin publish。
+// adminApproveDrama —— 管理员审核通过。
+// 推进 status 进发布队列：draft / offline → awaiting_publish；已经在 awaiting_publish
+// 或 published 状态的不动（幂等再审）。具体的上架动作由创作者 / admin 显式 publish。
 func (s *Server) adminApproveDrama(c *gin.Context) {
 	id := parseUint(c.Param("id"))
 	if id == 0 {
@@ -388,6 +392,10 @@ func (s *Server) adminApproveDrama(c *gin.Context) {
 		"audit_reason": "",
 		"reviewer_id":  reviewerID,
 		"reviewed_at":  now,
+	}
+	// 通过审核 → 进入"待上架"。已经在发布队列 / 已上架的不再动 status，保持幂等。
+	if drama.Status == model.DramaStatusDraft || drama.Status == model.DramaStatusOffline {
+		updates["status"] = model.DramaStatusAwaitingPublish
 	}
 	if err := s.db.Model(&drama).Updates(updates).Error; err != nil {
 		response.ServerError(c, "审核通过失败")
