@@ -658,8 +658,15 @@ func (s *Server) creatorSubmitDrama(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if d.Status != model.DramaStatusDraft && d.Status != model.DramaStatusOffline {
-		response.Conflict(c, "仅草稿/已下架状态可提交审核")
+	// 允许提交的入口：
+	//   - draft：首次提交
+	//   - offline：复活重提
+	//   - reviewing+rejected：被驳回后改完重新提审（status 不会回 draft，靠 audit_status 标识）
+	canSubmit := d.Status == model.DramaStatusDraft ||
+		d.Status == model.DramaStatusOffline ||
+		(d.Status == model.DramaStatusReviewing && d.AuditStatus == model.DramaAuditRejected)
+	if !canSubmit {
+		response.Conflict(c, "仅草稿 / 已下架 / 被驳回状态可提交审核")
 		return
 	}
 	if d.CreatorID == nil {
