@@ -115,7 +115,9 @@ server {
 }
 ```
 
-## 五、systemd 示例
+## 五、systemd 示例（含零停机升级支持）
+
+API 进程通过 `github.com/cloudflare/tableflip` 实现 fork+exec 继承 listener 的零停机重启，配合 systemd 的 `PIDFile=` 跟踪 MainPID。**此 unit 中所有 `KillMode=process`、`PIDFile=`、`ExecReload=` 都是必填项**，缺一个零停机就会破：
 
 ```ini
 [Unit]
@@ -124,19 +126,82 @@ After=network.target postgresql.service redis.service
 
 [Service]
 Type=simple
+User=drama
+Group=drama
 WorkingDirectory=/opt/drama-backend
 EnvironmentFile=/opt/drama-backend/.env
 ExecStart=/opt/drama-backend/drama-api
-Restart=always
+ExecReload=/bin/kill -HUP $MAINPID
+PIDFile=/run/drama-api/pid
+RuntimeDirectory=drama-api
+Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM
-TimeoutStopSec=15
+KillMode=process
+TimeoutStopSec=60
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-发布 / 重启时 API 会处理 `SIGTERM`，并在 `APP_SHUTDOWN_TIMEOUT_SECONDS` 内优雅停止 HTTP 服务和后台任务。
+关键点说明：
+- `PIDFile=/run/drama-api/pid` + `RuntimeDirectory=drama-api`：systemd 自动建 `/run/drama-api/`（属主 drama），tableflip 在 Ready 时把当前 PID 写入，systemd 据此重新跟踪升级后的 MainPID。
+- `ExecReload=/bin/kill -HUP $MAINPID`：`systemctl reload` 触发 SIGHUP，tableflip 收到后 fork 新进程接管 listener fd，新进程 Ready 后老进程 graceful exit。
+- `KillMode=process`：**必加**。默认 `control-group` 会在老进程退出/timeout 时把整个 cgroup（包括 tableflip 派生的新进程）一锅端，零停机失效。
+- `Restart=on-failure`：升级中老进程 exit(0) 不视为失败，systemd 不会误触发重启；崩溃才兜底重启。
+- API 进程同时也响应 `SIGTERM`（`systemctl stop/restart` 路径），在 `APP_SHUTDOWN_TIMEOUT_SECONDS` 内优雅停服。
+
+### 零停机部署流程（日常推荐）
+
+```bash
+# 1. 本地交叉编译（stripped 减小传输体积）
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+  go build -ldflags="-s -w" -o /tmp/drama-api ./cmd/api
+
+# 2. scp 到临时路径（运行中的二进制不能直接覆盖，会 ETXTBSY）
+scp /tmp/drama-api root@server:/tmp/drama-api.new
+
+# 3. mv 替换 inode（老进程仍持有老 inode 继续跑）+ 权限
+ssh root@server '
+  mv -f /tmp/drama-api.new /opt/drama-backend/drama-api &&
+  chown drama:drama /opt/drama-backend/drama-api &&
+  chmod +x /opt/drama-backend/drama-api
+'
+
+# 4. 触发零停机升级（不是 restart！）
+ssh root@server 'systemctl reload drama-backend'
+
+# 5. 验证：MainPID 应已切换，NRestarts 仍为 0，/ready 通 200
+ssh root@server '
+  systemctl show -p MainPID -p NRestarts --value drama-backend
+  curl -sS http://localhost:18080/ready
+'
+```
+
+每次部署 `reload` 完成时间约 50ms～几秒（取决于 inflight 请求 graceful 时间），客户端零感知；MainPID 切换后老 PID 自动清理。
+
+### 何时仍要用 `systemctl restart`
+
+- 改了 `EnvironmentFile`（环境变量）/ unit 文件后；
+- 数据库 schema 大变更需要全停服迁移；
+- 服务已经卡死、reload 无响应。
+
+`restart` 会有 ~1-2 秒接口拒接窗口，非日常发版场景才用。
+
+### 回滚
+
+```bash
+# 备份在 /opt/drama-backend/drama-api.bak.<timestamp>，挑最近一份
+ssh root@server '
+  ls -lt /opt/drama-backend/drama-api.bak.* | head -3
+  mv -f /opt/drama-backend/drama-api.bak.<ts> /opt/drama-backend/drama-api &&
+  chown drama:drama /opt/drama-backend/drama-api &&
+  chmod +x /opt/drama-backend/drama-api &&
+  systemctl reload drama-backend
+'
+```
+
+回滚同样走 `reload`，零停机。
 
 ## 六、探针与联调
 

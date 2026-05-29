@@ -154,6 +154,33 @@ go run ./cmd/reconcile
 
 ---
 
+## 日常发版（零停机）
+
+API 启用了 `cloudflare/tableflip` + systemd PIDFile 模式，**发版用 `systemctl reload`，不要用 `restart`**。
+
+```bash
+# 本地交叉编译（必加 -ldflags="-s -w" 把体积砍到 ~35MB）
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+  go build -ldflags="-s -w" -o /tmp/drama-api ./cmd/api
+
+# scp 到临时路径（运行中的二进制 ETXTBSY，不能直接覆盖）
+scp /tmp/drama-api root@<server>:/tmp/drama-api.new
+
+# mv 替换 + 权限 + reload（不是 restart）
+ssh root@<server> '
+  mv -f /tmp/drama-api.new /opt/drama-backend/drama-api &&
+  chown drama:drama /opt/drama-backend/drama-api &&
+  chmod +x /opt/drama-backend/drama-api &&
+  systemctl reload drama-backend
+'
+```
+
+`reload` 走 SIGHUP → tableflip fork+exec 新进程继承 listener fd → 新进程 Ready 后老进程 graceful exit，MainPID 通过 PIDFile 切换，客户端零感知。
+
+只有改 unit 文件 / `.env` / 进程卡死时才用 `systemctl restart`（有 ~1-2 秒拒接窗口）。详见 `docs/DEPLOYMENT.md §五`。
+
+---
+
 ## 关键设计
 
 ### 钱相关防护
