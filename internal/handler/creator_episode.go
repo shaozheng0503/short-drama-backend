@@ -81,10 +81,7 @@ func (s *Server) creatorCreateEpisode(c *gin.Context) {
 		Status:          status,
 	}
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&ep).Error; err != nil {
-			return err
-		}
-		return refreshDramaTotalEpisodes(tx, dramaID)
+		return tx.Create(&ep).Error
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -146,10 +143,7 @@ func (s *Server) creatorBatchCreateEpisodes(c *gin.Context) {
 		})
 	}
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&eps).Error; err != nil {
-			return err
-		}
-		return refreshDramaTotalEpisodes(tx, dramaID)
+		return tx.Create(&eps).Error
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -343,10 +337,7 @@ func (s *Server) creatorDeleteEpisode(c *gin.Context) {
 		return
 	}
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Delete(&model.Episode{}, id).Error; err != nil {
-			return err
-		}
-		return refreshDramaTotalEpisodes(tx, ep.DramaID)
+		return tx.Delete(&model.Episode{}, id).Error
 	})
 	if err != nil {
 		response.ServerError(c, "删除剧集失败")

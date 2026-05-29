@@ -93,10 +93,7 @@ func (s *Server) adminCreateEpisode(c *gin.Context) {
 	}
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&ep).Error; err != nil {
-			return err
-		}
-		return refreshDramaTotalEpisodes(tx, dramaID)
+		return tx.Create(&ep).Error
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -259,10 +256,7 @@ func (s *Server) adminBatchCreateEpisodes(c *gin.Context) {
 	}
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&eps).Error; err != nil {
-			return err
-		}
-		return refreshDramaTotalEpisodes(tx, dramaID)
+		return tx.Create(&eps).Error
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -543,7 +537,6 @@ func (s *Server) adminReorderEpisodes(c *gin.Context) {
 }
 
 // adminDeleteEpisode —— 仅 draft 状态短剧可删除其剧集；已上架的剧涉及用户购买/解锁，禁止物理删。
-// 删后同事务刷新 dramas.total_episodes。
 func (s *Server) adminDeleteEpisode(c *gin.Context) {
 	id := parseUint(c.Param("id"))
 	if id == 0 {
@@ -570,10 +563,7 @@ func (s *Server) adminDeleteEpisode(c *gin.Context) {
 	}
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Delete(&model.Episode{}, id).Error; err != nil {
-			return err
-		}
-		return refreshDramaTotalEpisodes(tx, ep.DramaID)
+		return tx.Delete(&model.Episode{}, id).Error
 	})
 	if err != nil {
 		response.ServerError(c, "删除剧集失败")
@@ -586,18 +576,6 @@ func (s *Server) dramaExists(id uint64) bool {
 	var cnt int64
 	s.db.Model(&model.Drama{}).Where("id = ?", id).Count(&cnt)
 	return cnt > 0
-}
-
-func refreshDramaTotalEpisodes(tx *gorm.DB, dramaID uint64) error {
-	var cnt int64
-	if err := tx.Model(&model.Episode{}).
-		Where("drama_id = ?", dramaID).
-		Count(&cnt).Error; err != nil {
-		return err
-	}
-	return tx.Model(&model.Drama{}).
-		Where("id = ?", dramaID).
-		Update("total_episodes", cnt).Error
 }
 
 func isUniqueViolation(err error) bool {
