@@ -74,6 +74,7 @@ func dramaCardView(d model.Drama) gin.H {
 		"free_episodes":  d.FreeEpisodes,
 		"play_count":     d.PlayCount,
 		"like_count":     d.LikeCount,
+		"share_count":    d.ShareCount,
 	}
 }
 
@@ -99,6 +100,9 @@ func dramaAdminView(d model.Drama, categoryName, creatorName string) gin.H {
 		"reviewed_at":        d.ReviewedAt,
 		// 申报级扩展字段
 		"is_ai":                 d.IsAI,
+		"aigc_tools":            d.AIGCTools,
+		"language_id":           d.LanguageID,
+		"dialect_id":            d.DialectID,
 		"audience":              d.Audience,
 		"alias_paid":            d.AliasPaid,
 		"alias_free":            d.AliasFree,
@@ -116,6 +120,7 @@ func dramaAdminView(d model.Drama, categoryName, creatorName string) gin.H {
 		"play_count":            d.PlayCount,
 		"like_count":            d.LikeCount,
 		"favorite_count":        d.FavoriteCount,
+		"share_count":           d.ShareCount,
 		"published_at":          d.PublishedAt,
 		"created_at":            d.CreatedAt,
 		"updated_at":            d.UpdatedAt,

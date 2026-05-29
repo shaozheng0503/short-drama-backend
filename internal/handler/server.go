@@ -142,6 +142,8 @@ func (s *Server) Router() *gin.Engine {
 	common := v1.Group("/common")
 	common.POST("/sms/send", s.sendSMS)
 	common.POST("/uploads/image-sign", s.commonImageUploadSign)
+	common.GET("/aigc-tools", s.getAIGCTools)
+	common.GET("/languages", s.listLanguages)
 
 	// === APP ===
 	app := v1.Group("/app")
@@ -224,6 +226,7 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.GET("/settlement/summary", s.creatorSettlementSummary)
 	creatorAuth.POST("/withdrawals", s.idempotencyMiddleware("creator"), s.creatorCreateWithdrawal)
 	creatorAuth.GET("/withdrawals", s.creatorListWithdrawals)
+	creatorAuth.GET("/withdrawals/tax-preview", s.creatorWithdrawTaxPreview)
 	creatorAuth.GET("/contracts", s.creatorListContracts)
 	creatorAuth.GET("/contracts/:id/docx", s.creatorDownloadContractDocx)
 	creatorAuth.GET("/contracts/:id", s.creatorGetContract)
@@ -246,6 +249,10 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/categories", s.adminCreateCategory)
 	adminAuth.PUT("/categories/:id", s.adminUpdateCategory)
 	adminAuth.DELETE("/categories/:id", s.adminDeleteCategory)
+	adminAuth.GET("/languages", s.listLanguages)
+	adminAuth.POST("/languages", s.adminCreateLanguage)
+	adminAuth.PUT("/languages/:id", s.adminUpdateLanguage)
+	adminAuth.DELETE("/languages/:id", s.adminDeleteLanguage)
 
 	adminAuth.GET("/dramas", s.adminListDramas)
 	adminAuth.POST("/dramas", s.adminCreateDrama)
@@ -275,8 +282,8 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.PUT("/creators/:id", s.adminUpdateCreator)
 	adminAuth.POST("/creators/:id/ban", s.adminBanCreator)
 	adminAuth.POST("/creators/:id/unban", s.adminUnbanCreator)
-	adminAuth.POST("/creators/:id/verification/approve", s.adminApproveCreatorVerification)
-	adminAuth.POST("/creators/:id/verification/reject", s.adminRejectCreatorVerification)
+	adminAuth.POST("/creators/:id/verification/approve", s.requireAdminRole(model.AdminRoleAuditor), s.adminApproveCreatorVerification)
+	adminAuth.POST("/creators/:id/verification/reject", s.requireAdminRole(model.AdminRoleAuditor), s.adminRejectCreatorVerification)
 	adminAuth.GET("/creator-channel-accounts", s.adminListCreatorChannelAccounts)
 	adminAuth.POST("/creator-channel-accounts", s.adminCreateChannelAccount)
 	adminAuth.PUT("/creator-channel-accounts/:id", s.adminUpdateChannelAccount)
@@ -310,6 +317,15 @@ func (s *Server) Router() *gin.Engine {
 	// 全局价格配置：读对所有 admin 开放，写仅超管。
 	adminAuth.GET("/config/pricing", s.adminGetPricingConfig)
 	adminAuth.PUT("/config/pricing", s.requireAdminRole(), s.adminUpdatePricingConfig)
+	adminAuth.GET("/config/aigc-tools", s.adminGetAIGCTools)
+	adminAuth.PUT("/config/aigc-tools", s.requireAdminRole(), s.adminUpdateAIGCTools)
+	adminAuth.GET("/config/income-share", s.adminGetIncomeShareConfig)
+	adminAuth.PUT("/config/income-share", s.requireAdminRole(), s.adminUpdateIncomeShareConfig)
+	// 个税阶梯：读对所有 admin 开放，写仅超管。
+	adminAuth.GET("/config/tax-brackets", s.adminListTaxBrackets)
+	adminAuth.POST("/config/tax-brackets", s.requireAdminRole(), s.adminCreateTaxBracket)
+	adminAuth.PUT("/config/tax-brackets/:id", s.requireAdminRole(), s.adminUpdateTaxBracket)
+	adminAuth.DELETE("/config/tax-brackets/:id", s.requireAdminRole(), s.adminDeleteTaxBracket)
 
 	adminAuth.GET("/contract-template.docx", s.adminDownloadContractTemplate)
 	adminAuth.GET("/contracts", s.adminListContracts)

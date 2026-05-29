@@ -25,6 +25,7 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		&model.Creator{},
 		&model.CreatorChannelAccount{},
 		&model.Category{},
+		&model.Language{},
 		&model.DramaTag{},
 		&model.Drama{},
 		&model.DramaCover{},
@@ -38,6 +39,7 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		&model.EpisodeUnlock{},
 		&model.Contract{},
 		&model.Withdrawal{},
+		&model.TaxBracket{},
 		&model.CreatorStatsDaily{},
 		&model.ChannelIncomeDaily{},
 		&model.ChannelIncomeImportBatch{},
@@ -74,6 +76,29 @@ func ensureIndexes(db *gorm.DB) error {
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_user_episode_pending
 		ON orders (user_id, episode_id)
 		WHERE status = 'pending'
+	`).Error; err != nil {
+		return err
+	}
+	// 观看历史「一剧一条」迁移：删除旧的 (user,episode) 唯一索引，对存量去重（每个 user+drama 仅留最近一条），
+	// 再建 (user,drama) 唯一索引。幂等，重复执行安全。
+	if err := db.Exec(`DROP INDEX IF EXISTS uniq_user_episode`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`
+		DELETE FROM play_histories ph
+		USING play_histories keep
+		WHERE ph.user_id = keep.user_id
+		  AND ph.drama_id = keep.drama_id
+		  AND (
+		    ph.updated_at < keep.updated_at
+		    OR (ph.updated_at = keep.updated_at AND ph.id < keep.id)
+		  )
+	`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS uniq_play_user_drama
+		ON play_histories (user_id, drama_id)
 	`).Error; err != nil {
 		return err
 	}

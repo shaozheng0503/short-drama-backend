@@ -120,6 +120,20 @@ const (
 	WithdrawalStatusPaid     = "paid"
 )
 
+// 打款类型：机构=对公，个人=对私。供财务手动打款区分。
+const (
+	TransferTypePublic  = "public"  // 对公（机构创作者）
+	TransferTypePrivate = "private" // 对私（个人创作者）
+)
+
+// TransferTypeOf 按创作者类型推断打款类型。
+func TransferTypeOf(creatorType string) string {
+	if creatorType == CreatorTypeOrganization {
+		return TransferTypePublic
+	}
+	return TransferTypePrivate
+}
+
 const (
 	ContractStatusPending   = "pending"
 	ContractStatusSigning   = "signing"
@@ -205,6 +219,8 @@ type Creator struct {
 	IDCardNoEnc        string    `gorm:"column:id_card_no_enc;size:512" json:"-"`
 	IDCardNoMasked     string    `gorm:"column:id_card_no_masked;size:32" json:"id_card_no_masked"`
 	BankName           string    `gorm:"column:bank_name;size:64" json:"bank_name"`
+	BankBranch         string    `gorm:"column:bank_branch;size:128" json:"bank_branch"`          // 开户支行（避免跨行转账受限）
+	BankLicenseURL     string    `gorm:"column:bank_license_url;size:512" json:"bank_license_url"` // 银行开户许可证（机构认证）
 	BankCardNoEnc      string    `gorm:"column:bank_card_no_enc;size:512" json:"-"`
 	BankCardLast4      string    `gorm:"column:bank_card_last4;size:8" json:"-"`
 	BankCardNoMasked   string    `gorm:"column:bank_card_no_masked;size:32" json:"bank_card_no_masked"`
@@ -255,6 +271,21 @@ type Category struct {
 
 func (Category) TableName() string { return "categories" }
 
+// Language —— 可配置语言 / 方言。ParentID 为空=语言（中文/英文…），非空=该语言下的方言子项（粤语/闽南语…）。
+// 海外版用它做语言筛选，吴建棉要的「单独方言选择」即 ParentID 非空的子项。
+type Language struct {
+	ID        uint64    `gorm:"primaryKey;column:id" json:"id"`
+	ParentID  *uint64   `gorm:"column:parent_id;index" json:"parent_id"` // 空=语言，非空=方言
+	Name      string    `gorm:"column:name;size:64;index" json:"name"`
+	Code      string    `gorm:"column:code;size:32;index" json:"code"` // 选填，如 zh / en / yue
+	SortOrder int       `gorm:"column:sort_order;default:0" json:"sort_order"`
+	Status    string    `gorm:"column:status;size:20;default:active;index" json:"status"`
+	CreatedAt time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt time.Time `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (Language) TableName() string { return "languages" }
+
 // DramaTag —— 剧与分类的多对多。 Drama.CategoryID 是首要主题（向后兼容老 API），
 // 其余维度 (setting / background / audience) 都通过 drama_tags 关联。
 type DramaTag struct {
@@ -290,6 +321,9 @@ type Drama struct {
 
 	// === 申报级扩展字段（2026-05-27 漫剧上传规格）===
 	IsAI                bool       `gorm:"column:is_ai;default:false" json:"is_ai"`                             // 是否 AI 作品
+	AIGCTools           []string   `gorm:"column:aigc_tools;serializer:json" json:"aigc_tools"`                 // 关联 AIGC 创作工具（多选固定 tag，即梦/小云雀等，is_ai 时填）
+	LanguageID          *uint64    `gorm:"column:language_id;index" json:"language_id"`                         // 语言（languages.id，parent 为空）
+	DialectID           *uint64    `gorm:"column:dialect_id;index" json:"dialect_id"`                           // 方言（languages.id，parent 非空）
 	Audience            string     `gorm:"column:audience;size:20" json:"audience"`                             // 男频/女频/通用
 	AliasPaid           string     `gorm:"column:alias_paid;size:64" json:"alias_paid"`                         // 站外付费别名（选填）
 	AliasFree           string     `gorm:"column:alias_free;size:64" json:"alias_free"`                         // 站外免费别名（选填）
@@ -310,6 +344,7 @@ type Drama struct {
 	PlayCount     int64      `gorm:"column:play_count;default:0" json:"play_count"`
 	LikeCount     int64      `gorm:"column:like_count;default:0" json:"like_count"`
 	FavoriteCount int64      `gorm:"column:favorite_count;default:0" json:"favorite_count"`
+	ShareCount    int64      `gorm:"column:share_count;default:0" json:"share_count"`
 	SortOrder     int        `gorm:"column:sort_order;default:0" json:"sort_order"`
 	PublishedAt   *time.Time `gorm:"column:published_at" json:"published_at"`
 	CreatedAt     time.Time  `gorm:"column:created_at" json:"created_at"`
@@ -374,11 +409,14 @@ type Comment struct {
 func (Comment) TableName() string { return "comments" }
 
 // PlayHistory —— 观看历史（MVP 数据库设计 3.8）
+// PlayHistory —— 观看历史。**一剧一条**：每个 (user, drama) 只保留一行，episode_id 记最近看到的那一集，
+// 上报时 upsert 覆盖。唯一键 (user_id, drama_id) 由 ensureIndexes 手动建（含存量去重），不走 gorm 标签，
+// 以便对存量「一集一条」数据安全迁移。
 type PlayHistory struct {
 	ID              uint64    `gorm:"primaryKey;column:id" json:"id"`
-	UserID          uint64    `gorm:"column:user_id;uniqueIndex:uniq_user_episode,priority:1" json:"user_id"`
+	UserID          uint64    `gorm:"column:user_id;index" json:"user_id"`
 	DramaID         uint64    `gorm:"column:drama_id;index" json:"drama_id"`
-	EpisodeID       uint64    `gorm:"column:episode_id;uniqueIndex:uniq_user_episode,priority:2" json:"episode_id"`
+	EpisodeID       uint64    `gorm:"column:episode_id" json:"episode_id"` // 最近观看的剧集
 	ProgressSeconds int       `gorm:"column:progress_seconds;default:0" json:"progress_seconds"`
 	UpdatedAt       time.Time `gorm:"column:updated_at" json:"updated_at"`
 	CreatedAt       time.Time `gorm:"column:created_at" json:"created_at"`
@@ -467,6 +505,11 @@ type Withdrawal struct {
 	BankNameSnapshot   string     `gorm:"column:bank_name_snapshot;size:64" json:"bank_name_snapshot"`
 	BankCardNoSnapshot string     `gorm:"column:bank_card_no_snapshot;size:64" json:"bank_card_no_snapshot"`
 	Status             string     `gorm:"column:status;size:20;default:pending;index" json:"status"`
+	// 个税：个人创作者按阶梯代扣，机构开票不扣。下列三项在申请时按当时配置快照。
+	CreatorTypeSnapshot string    `gorm:"column:creator_type_snapshot;size:20" json:"creator_type_snapshot"`
+	TransferType        string    `gorm:"column:transfer_type;size:20" json:"transfer_type"` // public=对公(机构) / private=对私(个人)，财务打款区分
+	TaxCents            int64     `gorm:"column:tax_cents;default:0" json:"tax_cents"` // 代扣个税
+	NetCents            int64     `gorm:"column:net_cents;default:0" json:"net_cents"` // 实际到账 = amount_cents - tax_cents
 	Remark             string     `gorm:"column:remark;size:255" json:"remark"`
 	TransactionNo      string     `gorm:"column:transaction_no;size:128" json:"transaction_no"`
 	ReviewedBy         *uint64    `gorm:"column:reviewed_by" json:"reviewed_by"`
@@ -477,6 +520,23 @@ type Withdrawal struct {
 }
 
 func (Withdrawal) TableName() string { return "withdrawals" }
+
+// TaxBracket —— 个人创作者提现个税阶梯配置（速算扣除法）。
+// 落地数字由财务提供，先建表与计算框架；空配置=不扣税。机构开票创作者不走此表。
+// 计算：找到 min<=金额<max（max=0 表示无上限）的档，tax = round(金额×rate_bp/10000) - quick_deduct_cents，最低 0。
+type TaxBracket struct {
+	ID              uint64    `gorm:"primaryKey;column:id" json:"id"`
+	MinCents        int64     `gorm:"column:min_cents;default:0" json:"min_cents"`         // 区间下限（含）
+	MaxCents        int64     `gorm:"column:max_cents;default:0" json:"max_cents"`         // 区间上限（不含），0=无上限
+	RateBP          int       `gorm:"column:rate_bp;default:0" json:"rate_bp"`             // 税率基点（10000=100%）
+	QuickDeductCents int64    `gorm:"column:quick_deduct_cents;default:0" json:"quick_deduct_cents"` // 速算扣除数
+	SortOrder       int       `gorm:"column:sort_order;default:0" json:"sort_order"`
+	Status          string    `gorm:"column:status;size:20;default:active;index" json:"status"`
+	CreatedAt       time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt       time.Time `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (TaxBracket) TableName() string { return "tax_brackets" }
 
 // CreatorStatsDaily —— 创作者每日数据（MVP 数据库设计 3.16）
 type CreatorStatsDaily struct {
@@ -500,7 +560,9 @@ type ChannelIncomeDaily struct {
 	Channel     string    `gorm:"column:channel;size:32;uniqueIndex:uniq_channel_income,priority:2" json:"channel"`
 	StatDate    string    `gorm:"column:stat_date;size:10;uniqueIndex:uniq_channel_income,priority:3" json:"stat_date"`
 	CreatorID   uint64    `gorm:"column:creator_id;index" json:"creator_id"`
-	IncomeCents int64     `gorm:"column:income_cents;default:0" json:"income_cents"`
+	GrossCents   int64    `gorm:"column:gross_cents;default:0" json:"gross_cents"`         // 渠道总收益（财务填）
+	ShareRatioBP int      `gorm:"column:share_ratio_bp;default:0" json:"share_ratio_bp"`   // 创作者分成比例，基点(10000=100%)
+	IncomeCents int64     `gorm:"column:income_cents;default:0" json:"income_cents"`       // 创作者实得 = 总收益×比例，入账金额
 	BatchNo     string    `gorm:"column:batch_no;size:32;index" json:"batch_no"`
 	ImportRowNo int       `gorm:"column:import_row_no;default:0" json:"import_row_no"`
 	CreatedAt   time.Time `gorm:"column:created_at" json:"created_at"`
@@ -575,4 +637,14 @@ func (GlobalConfig) TableName() string { return "global_configs" }
 const (
 	ConfigKeyFreeEpisodes = "pricing.free_episodes" // 全局默认免费集数
 	ConfigKeyPriceCents   = "pricing.price_cents"   // 全局默认每集单价（分）
+	ConfigKeyAIGCTools    = "aigc.tools"            // 可选 AIGC 创作工具列表（JSON 数组字符串）
+	// 渠道收益分成比例（基点，10000=100%）。按渠道分开配置，键 = 前缀 + 渠道名；
+	// ConfigKeyIncomeShareDefault 为兜底默认值。Excel 行内填了比例则以行内为准。
+	ConfigKeyIncomeSharePrefix  = "income.share_ratio."        // + 渠道名
+	ConfigKeyIncomeShareDefault = "income.share_ratio.default" // 默认分成比例（基点）
+)
+
+// 分成比例基点常量。
+const (
+	ShareRatioBPFull = 10000 // 100%
 )

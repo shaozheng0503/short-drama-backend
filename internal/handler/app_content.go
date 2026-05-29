@@ -73,6 +73,16 @@ func (s *Server) appListDramas(c *gin.Context) {
 			q = q.Where("category_id = ?", id)
 		}
 	}
+	if v := c.Query("language_id"); v != "" {
+		if id := parseUint(v); id > 0 {
+			q = q.Where("language_id = ?", id)
+		}
+	}
+	if v := c.Query("dialect_id"); v != "" {
+		if id := parseUint(v); id > 0 {
+			q = q.Where("dialect_id = ?", id)
+		}
+	}
 
 	switch c.DefaultQuery("sort", "new") {
 	case "hot":
@@ -129,9 +139,12 @@ func (s *Server) appDramaDetail(c *gin.Context) {
 		"total_episodes": drama.TotalEpisodes,
 		"free_episodes":  drama.FreeEpisodes,
 		"price_cents":    drama.PriceCents,
+		"language_id":    drama.LanguageID,
+		"dialect_id":     drama.DialectID,
 		"play_count":     drama.PlayCount,
 		"like_count":     drama.LikeCount,
 		"favorite_count": drama.FavoriteCount,
+		"share_count":    drama.ShareCount,
 		"is_liked":       false,
 		"is_favorited":   false,
 		"last_watch":     nil,

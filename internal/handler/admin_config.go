@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"ai-drama-platform/internal/model"
@@ -88,4 +90,176 @@ func (s *Server) setConfigTx(tx *gorm.DB, key, value string) error {
 		Columns:   []clause.Column{{Name: "key"}},
 		DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
 	}).Create(&model.GlobalConfig{Key: key, Value: value, UpdatedAt: time.Now()}).Error
+}
+
+// === AIGC 创作工具列表配置 ===
+
+// 默认 AIGC 工具列表（无配置时回落）。
+var defaultAIGCTools = []string{"即梦", "小云雀", "可灵", "海螺", "Sora", "Runway", "其他"}
+
+// aigcTools 读取已配置的 AIGC 工具列表；未配置 / 解析失败时回落默认值。
+func (s *Server) aigcTools() []string {
+	var gc model.GlobalConfig
+	if err := s.db.First(&gc, "key = ?", model.ConfigKeyAIGCTools).Error; err != nil {
+		return defaultAIGCTools
+	}
+	var tools []string
+	if err := json.Unmarshal([]byte(gc.Value), &tools); err != nil || len(tools) == 0 {
+		return defaultAIGCTools
+	}
+	return tools
+}
+
+// getAIGCTools —— GET /v1/common/aigc-tools（App / 创作者中台拉取可选工具）。
+func (s *Server) getAIGCTools(c *gin.Context) {
+	response.OK(c, gin.H{"tools": s.aigcTools()})
+}
+
+// === 渠道收益分成比例配置 ===
+
+// channelShareRatioBP 返回某渠道的分成比例基点：先查渠道专属配置，再查默认配置；
+// 都没有时返回 (0, false) —— 调用方据此决定是否回落 100% 并给警告。
+func (s *Server) channelShareRatioBP(channel string) (int, bool) {
+	if v, ok := s.configBP(model.ConfigKeyIncomeSharePrefix + channel); ok {
+		return v, true
+	}
+	if v, ok := s.configBP(model.ConfigKeyIncomeShareDefault); ok {
+		return v, true
+	}
+	return 0, false
+}
+
+// configBP 读一个基点整数配置。
+func (s *Server) configBP(key string) (int, bool) {
+	var gc model.GlobalConfig
+	if err := s.db.First(&gc, "key = ?", key).Error; err != nil {
+		return 0, false
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(gc.Value))
+	if err != nil || v < 0 || v > model.ShareRatioBPFull {
+		return 0, false
+	}
+	return v, true
+}
+
+// adminGetIncomeShareConfig —— GET /v1/admin/config/income-share
+// 返回默认比例 + 各渠道专属比例（基点）。
+func (s *Server) adminGetIncomeShareConfig(c *gin.Context) {
+	var gcs []model.GlobalConfig
+	s.db.Where("key = ? OR key LIKE ?", model.ConfigKeyIncomeShareDefault, model.ConfigKeyIncomeSharePrefix+"%").Find(&gcs)
+	channels := map[string]int{}
+	defaultBP := 0
+	hasDefault := false
+	for _, gc := range gcs {
+		v, err := strconv.Atoi(strings.TrimSpace(gc.Value))
+		if err != nil {
+			continue
+		}
+		if gc.Key == model.ConfigKeyIncomeShareDefault {
+			defaultBP = v
+			hasDefault = true
+			continue
+		}
+		channel := strings.TrimPrefix(gc.Key, model.ConfigKeyIncomeSharePrefix)
+		if channel != "" {
+			channels[channel] = v
+		}
+	}
+	response.OK(c, gin.H{
+		"default_bp":  defaultBP,
+		"has_default": hasDefault,
+		"channels":    channels,
+		"note":        "基点：10000=100%，5000=50%。Excel 行内填了比例以行内为准。",
+	})
+}
+
+type incomeShareConfigRequest struct {
+	DefaultBP *int            `json:"default_bp"`
+	Channels  map[string]int  `json:"channels"` // 渠道名 -> 基点
+}
+
+// adminUpdateIncomeShareConfig —— PUT /v1/admin/config/income-share（仅超管）
+func (s *Server) adminUpdateIncomeShareConfig(c *gin.Context) {
+	var req incomeShareConfigRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "请求体不合法")
+		return
+	}
+	validBP := func(v int) bool { return v >= 0 && v <= model.ShareRatioBPFull }
+	if req.DefaultBP != nil && !validBP(*req.DefaultBP) {
+		response.InvalidParam(c, "default_bp 须在 0~10000 之间")
+		return
+	}
+	for ch, v := range req.Channels {
+		if strings.TrimSpace(ch) == "" {
+			response.InvalidParam(c, "渠道名不能为空")
+			return
+		}
+		if !validBP(v) {
+			response.InvalidParam(c, "渠道 "+ch+" 的比例须在 0~10000 之间")
+			return
+		}
+	}
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if req.DefaultBP != nil {
+			if err := s.setConfigTx(tx, model.ConfigKeyIncomeShareDefault, strconv.Itoa(*req.DefaultBP)); err != nil {
+				return err
+			}
+		}
+		for ch, v := range req.Channels {
+			if err := s.setConfigTx(tx, model.ConfigKeyIncomeSharePrefix+strings.TrimSpace(ch), strconv.Itoa(v)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		response.ServerError(c, "保存配置失败")
+		return
+	}
+	s.adminGetIncomeShareConfig(c)
+}
+
+// adminGetAIGCTools —— GET /v1/admin/config/aigc-tools
+func (s *Server) adminGetAIGCTools(c *gin.Context) {
+	response.OK(c, gin.H{"tools": s.aigcTools()})
+}
+
+type aigcToolsConfigRequest struct {
+	Tools []string `json:"tools" binding:"required"`
+}
+
+// adminUpdateAIGCTools —— PUT /v1/admin/config/aigc-tools（仅超管）
+func (s *Server) adminUpdateAIGCTools(c *gin.Context) {
+	var req aigcToolsConfigRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "tools 必填且为字符串数组")
+		return
+	}
+	cleaned := make([]string, 0, len(req.Tools))
+	for _, t := range req.Tools {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if len([]rune(t)) > 64 {
+			response.InvalidParam(c, "单个工具名不能超过 64 个字")
+			return
+		}
+		cleaned = append(cleaned, t)
+	}
+	if len(cleaned) == 0 {
+		response.InvalidParam(c, "至少配置一个工具")
+		return
+	}
+	raw, err := json.Marshal(cleaned)
+	if err != nil {
+		response.ServerError(c, "序列化失败")
+		return
+	}
+	if err := s.setConfigTx(s.db, model.ConfigKeyAIGCTools, string(raw)); err != nil {
+		response.ServerError(c, "保存配置失败")
+		return
+	}
+	response.OK(c, gin.H{"tools": cleaned})
 }

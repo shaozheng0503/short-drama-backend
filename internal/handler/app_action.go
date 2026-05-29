@@ -47,11 +47,18 @@ func (s *Server) appShareDrama(c *gin.Context) {
 		response.NotFound(c, "短剧未上架")
 		return
 	}
-	// MVP：分享只做埋点，不落表。channel 字段读出但不持久化。
+	// channel 选填，仅作埋点参考，不落明细表（分享明细量大且无需逐条留存）。
 	_ = c.ShouldBindJSON(&struct {
 		Channel string `json:"channel"`
 	}{})
-	response.OK(c, gin.H{"shared": true})
+	if err := s.db.Model(&model.Drama{}).Where("id = ?", id).
+		UpdateColumn("share_count", gorm.Expr("share_count + ?", 1)).Error; err != nil {
+		response.ServerError(c, "记录分享失败")
+		return
+	}
+	var refreshed model.Drama
+	s.db.Select("share_count").First(&refreshed, id)
+	response.OK(c, gin.H{"shared": true, "share_count": refreshed.ShareCount})
 }
 
 func (s *Server) appListFavorites(c *gin.Context) {
