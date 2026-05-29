@@ -26,10 +26,12 @@ type incomeImportRowReport struct {
 	Title           string `json:"title"`
 	Channel         string `json:"channel"`
 	StatDate        string `json:"stat_date"`
-	IncomeCents     int64  `json:"income_cents"`
-	Status          string `json:"status"` // created / updated / unchanged / duplicate / failed
+	GrossCents      int64  `json:"gross_cents"`     // 总收益
+	ShareRatioBP    int    `json:"share_ratio_bp"`  // 实际采用的分成比例（基点）
+	IncomeCents     int64  `json:"income_cents"`    // 创作者实得 = 总收益×比例
+	Status          string `json:"status"`          // created / updated / unchanged / duplicate / failed
 	Message         string `json:"message"`
-	ExistingCents   *int64 `json:"existing_cents,omitempty"`
+	ExistingCents   *int64 `json:"existing_cents,omitempty"` // 旧的创作者实得
 	DeltaCents      int64  `json:"delta_cents"`
 	DramaID         uint64 `json:"drama_id,omitempty"`
 	CreatorID       uint64 `json:"creator_id,omitempty"`
@@ -38,21 +40,22 @@ type incomeImportRowReport struct {
 }
 
 // adminDownloadIncomeTemplate —— GET /v1/admin/finance/income/template.xlsx
-// 生成「短剧名称 + 渠道 + 收益 + 日期 + 短剧ID(选填)」五列收益导入模板。
-// E 列短剧ID 用于解决名称重复时的歧义；不填则按名称匹配，名称唯一才能定位。
+// 生成「短剧名称 + 渠道 + 总收益 + 分成比例 + 日期 + 短剧ID(选填)」六列收益导入模板。
+// 分成比例(D 列)：支持 50 / 50% / 0.5 三种写法，均表示 50%；留空则按该渠道的全局配置比例。
+// 短剧ID(F 列)用于解决名称重复时的歧义；不填则按名称匹配，名称唯一才能定位。
 func (s *Server) adminDownloadIncomeTemplate(c *gin.Context) {
 	xl := excelize.NewFile()
 	defer xl.Close()
 
 	sheet := "Sheet1"
-	headers := []string{"短剧名称", "渠道", "收益", "日期", "短剧ID(选填,名称重复时必填)"}
+	headers := []string{"短剧名称", "渠道", "总收益", "分成比例(如50或50%或0.5,留空按配置)", "日期", "短剧ID(选填,名称重复时必填)"}
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		_ = xl.SetCellValue(sheet, cell, h)
 	}
 	samples := [][]interface{}{
-		{"总裁的逆袭新娘", "抖音", 123.45, "2026-05-26", ""},
-		{"总裁的逆袭新娘", "快手", 88.00, "2026-05-27", 42},
+		{"总裁的逆袭新娘", "抖音", 123.45, "50%", "2026-05-26", ""},
+		{"总裁的逆袭新娘", "快手", 88.00, "", "2026-05-27", 42},
 	}
 	for r, row := range samples {
 		for col, v := range row {
@@ -61,8 +64,10 @@ func (s *Server) adminDownloadIncomeTemplate(c *gin.Context) {
 		}
 	}
 	_ = xl.SetColWidth(sheet, "A", "A", 28)
-	_ = xl.SetColWidth(sheet, "B", "D", 20)
-	_ = xl.SetColWidth(sheet, "E", "E", 30)
+	_ = xl.SetColWidth(sheet, "B", "C", 16)
+	_ = xl.SetColWidth(sheet, "D", "D", 30)
+	_ = xl.SetColWidth(sheet, "E", "E", 16)
+	_ = xl.SetColWidth(sheet, "F", "F", 30)
 
 	var buf bytes.Buffer
 	if err := xl.Write(&buf); err != nil {
@@ -81,17 +86,25 @@ func (s *Server) adminDownloadIncomeTemplate(c *gin.Context) {
 //
 // 表格列（第 1 行表头，从第 2 行起读）：
 //
-//	A 列：短剧名称   B 列：渠道(抖音/快手/腾讯/B站/视频号…)   C 列：收益   D 列：日期
-//	E 列：短剧ID(选填)
+//	A 列：短剧名称   B 列：渠道(抖音/快手/腾讯/B站/视频号…)   C 列：总收益
+//	D 列：分成比例(50 / 50% / 0.5，留空按渠道全局配置)   E 列：日期   F 列：短剧ID(选填)
 //
-// 剧目匹配：E 列短剧ID 优先 —— 填了就按 ID 直接定位（仍校验名称一致性，不一致只给 warning）；
-// 没填则按 A 列名称匹配，名称在库内不唯一时该行 fail 并提示填 E 列。
+// 分成计算：创作者实得 = round(总收益 × 比例)。比例优先取行内 D 列；D 列留空则取
+//
+//	该渠道的全局配置(income.share_ratio.<渠道> → income.share_ratio.default)；
+//	都没配置则回落 100% 并在该行给出 warning，避免漏配时金额归零。
+//
+// 剧目匹配：F 列短剧ID 优先 —— 填了就按 ID 直接定位（仍校验名称一致性，不一致只给 warning）；
+// 没填则按 A 列名称匹配，名称在库内不唯一时该行 fail 并提示填 F 列。
 // 增量导入：
 //   - 文件内同一 (剧ID, 渠道, 日期) 重复行会跳过并在 row_reports 标记 duplicate。
-//   - 库内已存在且金额相同 → unchanged，不重复入账。
-//   - 库内已存在但金额不同 → updated，按差额调整创作者账面。
-//   - 库内不存在 → created，新增并全额入账。
+//   - 库内已存在且「创作者实得」相同 → unchanged，不重复入账。
+//   - 库内已存在但不同 → updated，按差额调整创作者账面。
+//   - 库内不存在 → created，新增并按实得入账。
+//
+// dry_run：带 ?dry_run=1 时只解析+试算，给出逐行 delta 报告，不写库、不入账、不存批次。
 func (s *Server) adminImportDailyIncome(c *gin.Context) {
+	dryRun := c.Query("dry_run") == "1" || c.Query("dry_run") == "true"
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		response.InvalidParam(c, "请在 form-data 的 file 字段上传 xlsx 文件")
@@ -127,12 +140,14 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 	}
 
 	type parsedRow struct {
-		rowNo          int
-		title          string
-		channel        string
-		incomeCents    int64
-		statDate       string
-		explicitDramaID uint64 // E 列填了才非 0
+		rowNo           int
+		title           string
+		channel         string
+		grossCents      int64
+		ratioBP         int  // 行内填的比例；rowHasRatio=false 时无效，待回落配置
+		rowHasRatio     bool // D 列是否填了比例
+		statDate        string
+		explicitDramaID uint64 // F 列填了才非 0
 	}
 	var parsed []parsedRow
 	rowReports := make([]incomeImportRowReport, 0)
@@ -145,8 +160,8 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 		if rowIsBlank(row) {
 			continue
 		}
-		if len(row) < 4 {
-			rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Status: "failed", Message: "列数不足（需 短剧名称/渠道/收益/日期，E 列短剧ID 选填）"})
+		if len(row) < 5 {
+			rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Status: "failed", Message: "列数不足（需 短剧名称/渠道/总收益/分成比例/日期，F 列短剧ID 选填；比例可留空）"})
 			continue
 		}
 		title := strings.TrimSpace(row[0])
@@ -162,17 +177,22 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 		yuanRaw := strings.ReplaceAll(strings.TrimSpace(row[2]), ",", "") // 容忍千分位
 		yuan, eInc := strconv.ParseFloat(yuanRaw, 64)
 		if eInc != nil || yuan < 0 {
-			rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Status: "failed", Message: "收益金额不合法"})
+			rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Status: "failed", Message: "总收益金额不合法"})
 			continue
 		}
-		statDate, ok := normalizeDate(strings.TrimSpace(row[3]))
+		ratioBP, rowHasRatio, ratioErr := parseShareRatioBP(strings.TrimSpace(row[3]))
+		if ratioErr != "" {
+			rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Status: "failed", Message: ratioErr})
+			continue
+		}
+		statDate, ok := normalizeDate(strings.TrimSpace(row[4]))
 		if !ok {
 			rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Status: "failed", Message: "日期格式应为 YYYY-MM-DD"})
 			continue
 		}
 		var explicitDramaID uint64
-		if len(row) >= 5 {
-			if idStr := strings.TrimSpace(row[4]); idStr != "" {
+		if len(row) >= 6 {
+			if idStr := strings.TrimSpace(row[5]); idStr != "" {
 				// Excel 中数字单元格读出来可能是 "42" 或 "42.0"，TrimRight 一下小数点尾巴
 				if dot := strings.IndexByte(idStr, '.'); dot >= 0 {
 					tail := strings.TrimRight(idStr[dot+1:], "0")
@@ -182,12 +202,13 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 				}
 				v, eID := strconv.ParseUint(idStr, 10, 64)
 				if eID != nil || v == 0 {
-					rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, StatDate: statDate, Status: "failed", Message: "E 列 短剧ID 不合法"})
+					rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, StatDate: statDate, Status: "failed", Message: "F 列 短剧ID 不合法"})
 					continue
 				}
 				explicitDramaID = v
 			}
 		}
+		grossCents := int64(math.Round(yuan * 100))
 		key := incomeImportKey(title, explicitDramaID, channel, statDate)
 		if firstRow, exists := seenRows[key]; exists {
 			rowReports = append(rowReports, incomeImportRowReport{
@@ -195,7 +216,7 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 				Title:          title,
 				Channel:        channel,
 				StatDate:       statDate,
-				IncomeCents:    int64(math.Round(yuan * 100)),
+				GrossCents:     grossCents,
 				DramaID:        explicitDramaID,
 				Status:         "duplicate",
 				Message:        fmt.Sprintf("同一文件内重复，已跳过；首次出现在第%d行", firstRow),
@@ -205,11 +226,13 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 		}
 		seenRows[key] = lineNo
 		parsed = append(parsed, parsedRow{
-			rowNo:          lineNo,
-			title:          title,
-			channel:        channel,
-			incomeCents:    int64(math.Round(yuan * 100)),
-			statDate:       statDate,
+			rowNo:           lineNo,
+			title:           title,
+			channel:         channel,
+			grossCents:      grossCents,
+			ratioBP:         ratioBP,
+			rowHasRatio:     rowHasRatio,
+			statDate:        statDate,
 			explicitDramaID: explicitDramaID,
 		})
 	}
@@ -223,22 +246,45 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 	var totalDelta int64
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		for _, pr := range parsed {
+			// 解析比例：行内优先；行内留空则查渠道配置；都没有回落 100% 并 warning。
+			ratioBP := pr.ratioBP
+			var ratioWarn string
+			if !pr.rowHasRatio {
+				if cfgBP, ok := s.channelShareRatioBP(pr.channel); ok {
+					ratioBP = cfgBP
+				} else {
+					ratioBP = model.ShareRatioBPFull
+					ratioWarn = "未填比例且渠道未配置分成比例，按 100% 入账"
+				}
+			}
+			incomeCents := int64(math.Round(float64(pr.grossCents) * float64(ratioBP) / float64(model.ShareRatioBPFull)))
 			report := incomeImportRowReport{
-				RowNo:       pr.rowNo,
-				Title:       pr.title,
-				Channel:     pr.channel,
-				StatDate:    pr.statDate,
-				IncomeCents: pr.incomeCents,
+				RowNo:        pr.rowNo,
+				Title:        pr.title,
+				Channel:      pr.channel,
+				StatDate:     pr.statDate,
+				GrossCents:   pr.grossCents,
+				ShareRatioBP: ratioBP,
+				IncomeCents:  incomeCents,
+				Message:      ratioWarn,
 			}
 
-			// 剧目匹配：E 列 dramaID 优先 → 否则按名称且要求唯一。
+			// mergeWarn 把比例/名称等 warning 拼到状态说明前面，避免被覆盖丢失。
+			mergeWarn := func(msg string) string {
+				if report.Message != "" {
+					return report.Message + "；" + msg
+				}
+				return msg
+			}
+
+			// 剧目匹配：F 列 dramaID 优先 → 否则按名称且要求唯一。
 			var drama model.Drama
 			if pr.explicitDramaID != 0 {
 				if err := tx.Select("id", "title", "creator_id").
 					Where("id = ?", pr.explicitDramaID).First(&drama).Error; err != nil {
 					if isNotFound(err) {
 						report.Status = "failed"
-						report.Message = fmt.Sprintf("E 列 短剧ID=%d 不存在，已跳过", pr.explicitDramaID)
+						report.Message = fmt.Sprintf("F 列 短剧ID=%d 不存在，已跳过", pr.explicitDramaID)
 						rowReports = append(rowReports, report)
 						continue
 					}
@@ -246,7 +292,7 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 				}
 				if drama.Title != pr.title {
 					// 名称与库内不一致只 warning：以 ID 为准
-					report.Message = fmt.Sprintf("名称与库内不一致（库内=%q，以 ID=%d 为准）", drama.Title, pr.explicitDramaID)
+					report.Message = mergeWarn(fmt.Sprintf("名称与库内不一致（库内=%q，以 ID=%d 为准）", drama.Title, pr.explicitDramaID))
 				}
 			} else {
 				var dramas []model.Drama
@@ -265,7 +311,7 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 						ids = append(ids, strconv.FormatUint(d.ID, 10))
 					}
 					report.Status = "failed"
-					report.Message = fmt.Sprintf("短剧名称不唯一（匹配到 %d 部，ID=[%s]），请在 E 列填写「短剧ID」定位", len(dramas), strings.Join(ids, ","))
+					report.Message = fmt.Sprintf("短剧名称不唯一（匹配到 %d 部，ID=[%s]），请在 F 列填写「短剧ID」定位", len(dramas), strings.Join(ids, ","))
 					rowReports = append(rowReports, report)
 					continue
 				}
@@ -281,7 +327,7 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 			creatorID := *drama.CreatorID
 			report.CreatorID = creatorID
 
-			// 渠道明细：覆盖语义，算差额。
+			// 渠道明细：覆盖语义，按「创作者实得」算差额。
 			var existing model.ChannelIncomeDaily
 			errFind := tx.Where("drama_id = ? AND channel = ? AND stat_date = ?",
 				drama.ID, pr.channel, pr.statDate).First(&existing).Error
@@ -290,38 +336,45 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 				report.ChannelIncomeID = existing.ID
 				old := existing.IncomeCents
 				report.ExistingCents = &old
-				delta = pr.incomeCents - existing.IncomeCents
+				delta = incomeCents - existing.IncomeCents
 				if delta == 0 {
 					report.Status = "unchanged"
-					report.Message = "库内已存在且金额相同，未重复入账"
+					report.Message = mergeWarn("库内已存在且创作者实得相同，未重复入账")
 					unchangedRows++
 				} else {
-					if err := tx.Model(&model.ChannelIncomeDaily{}).Where("id = ?", existing.ID).
-						Updates(map[string]interface{}{
-							"income_cents":  pr.incomeCents,
-							"creator_id":    creatorID,
-							"batch_no":      batchNo,
-							"import_row_no": pr.rowNo,
-						}).Error; err != nil {
-						return err
+					if !dryRun {
+						if err := tx.Model(&model.ChannelIncomeDaily{}).Where("id = ?", existing.ID).
+							Updates(map[string]interface{}{
+								"gross_cents":    pr.grossCents,
+								"share_ratio_bp": ratioBP,
+								"income_cents":   incomeCents,
+								"creator_id":     creatorID,
+								"batch_no":       batchNo,
+								"import_row_no":  pr.rowNo,
+							}).Error; err != nil {
+							return err
+						}
 					}
 					report.Status = "updated"
-					report.Message = "库内已存在，已按差额覆盖更新"
+					report.Message = mergeWarn("库内已存在，已按差额覆盖更新")
 					updatedRows++
 				}
 			} else if isNotFound(errFind) {
-				delta = pr.incomeCents
+				delta = incomeCents
 				newRow := model.ChannelIncomeDaily{
 					DramaID: drama.ID, Channel: pr.channel, StatDate: pr.statDate,
-					CreatorID: creatorID, IncomeCents: pr.incomeCents,
-					BatchNo: batchNo, ImportRowNo: pr.rowNo,
+					CreatorID: creatorID, GrossCents: pr.grossCents, ShareRatioBP: ratioBP,
+					IncomeCents: incomeCents,
+					BatchNo:     batchNo, ImportRowNo: pr.rowNo,
 				}
-				if err := tx.Create(&newRow).Error; err != nil {
-					return err
+				if !dryRun {
+					if err := tx.Create(&newRow).Error; err != nil {
+						return err
+					}
+					report.ChannelIncomeID = newRow.ID
 				}
-				report.ChannelIncomeID = newRow.ID
 				report.Status = "created"
-				report.Message = "新增渠道收益记录"
+				report.Message = mergeWarn("新增渠道收益记录")
 				createdRows++
 			} else {
 				return errFind
@@ -329,18 +382,20 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 			report.DeltaCents = delta
 
 			if delta != 0 {
-				// creator_stats_daily 按 (creator,drama,date) 累加差额，保证创作者收益/看板含第三方收入。
-				if err := s.bumpCreatorStatsIncome(tx, creatorID, drama.ID, pr.statDate, delta); err != nil {
-					return err
-				}
-				if err := tx.Model(&model.Creator{}).
-					Clauses(clause.Locking{Strength: "UPDATE"}).
-					Where("id = ?", creatorID).
-					Updates(map[string]interface{}{
-						"total_income_cents": gorm.Expr("total_income_cents + ?", delta),
-						"balance_cents":      gorm.Expr("balance_cents + ?", delta),
-					}).Error; err != nil {
-					return err
+				if !dryRun {
+					// creator_stats_daily 按 (creator,drama,date) 累加差额，保证创作者收益/看板含第三方收入。
+					if err := s.bumpCreatorStatsIncome(tx, creatorID, drama.ID, pr.statDate, delta); err != nil {
+						return err
+					}
+					if err := tx.Model(&model.Creator{}).
+						Clauses(clause.Locking{Strength: "UPDATE"}).
+						Where("id = ?", creatorID).
+						Updates(map[string]interface{}{
+							"total_income_cents": gorm.Expr("total_income_cents + ?", delta),
+							"balance_cents":      gorm.Expr("balance_cents + ?", delta),
+						}).Error; err != nil {
+						return err
+					}
 				}
 				totalDelta += delta
 			}
@@ -364,6 +419,7 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 
 	result := gin.H{
 		"batch_no":           batchNo,
+		"dry_run":            dryRun,
 		"processed_rows":     len(rowReports),
 		"imported_rows":      createdRows + updatedRows,
 		"created_rows":       createdRows,
@@ -375,11 +431,47 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 		"row_reports":        rowReports,
 		"errors":             incomeImportErrors(rowReports),
 	}
+	// dry_run 只试算不落库，也不记录批次。
+	if dryRun {
+		result["batch_no"] = ""
+		result["note"] = "试算结果（dry_run），未写库、未入账、未记录批次。去掉 dry_run 参数即可正式导入。"
+		response.OK(c, result)
+		return
+	}
 	if err := s.saveIncomeImportBatch(c, batchNo, fileHeader.Filename, result, rowReports); err != nil {
 		response.ServerError(c, "导入成功但批次记录保存失败")
 		return
 	}
 	response.OK(c, result)
+}
+
+// parseShareRatioBP 解析分成比例单元格 → 基点(10000=100%)。
+// 支持 "50" / "50%" / "0.5" 三种写法均表示 50%；空字符串返回 (0,false,"") 表示行内未填、待回落配置。
+// 返回 (基点, 是否填了, 错误说明)。
+func parseShareRatioBP(raw string) (int, bool, string) {
+	if raw == "" {
+		return 0, false, ""
+	}
+	s := strings.TrimSpace(raw)
+	isPercent := strings.HasSuffix(s, "%")
+	s = strings.TrimSuffix(s, "%")
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil || v < 0 {
+		return 0, false, "分成比例不合法（支持 50 / 50% / 0.5）"
+	}
+	var bp int
+	switch {
+	case isPercent:
+		bp = int(math.Round(v * 100)) // 50% → 5000
+	case v <= 1:
+		bp = int(math.Round(v * 10000)) // 0.5 → 5000
+	default:
+		bp = int(math.Round(v * 100)) // 50 → 5000
+	}
+	if bp < 0 || bp > model.ShareRatioBPFull {
+		return 0, false, "分成比例须在 0~100% 之间"
+	}
+	return bp, true, ""
 }
 
 // rowIsBlank 判断一行 Excel 是否全为空白（excelize.GetRows 偶尔会把尾部全空行也返回）。

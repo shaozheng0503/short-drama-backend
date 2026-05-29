@@ -172,6 +172,8 @@ func channelIncomeView(item model.ChannelIncomeDaily, dramaTitle, creatorName st
 		"stat_date":     item.StatDate,
 		"creator_id":    item.CreatorID,
 		"creator_name":  creatorName,
+		"gross_cents":    item.GrossCents,
+		"share_ratio_bp": item.ShareRatioBP,
 		"income_cents":  item.IncomeCents,
 		"batch_no":      item.BatchNo,
 		"import_row_no": item.ImportRowNo,

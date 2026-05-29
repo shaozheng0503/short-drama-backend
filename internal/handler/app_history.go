@@ -80,10 +80,11 @@ func (s *Server) appUpsertPlayHistory(c *gin.Context) {
 		UpdatedAt:       now,
 		CreatedAt:       now,
 	}
+	// 一剧一条：按 (user_id, drama_id) 冲突即覆盖，episode_id 更新为最近观看的那一集。
 	if err := s.db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "user_id"}, {Name: "episode_id"}},
+		Columns: []clause.Column{{Name: "user_id"}, {Name: "drama_id"}},
 		DoUpdates: clause.Assignments(map[string]interface{}{
-			"drama_id":         req.DramaID,
+			"episode_id":       req.EpisodeID,
 			"progress_seconds": req.ProgressSeconds,
 			"updated_at":       now,
 		}),

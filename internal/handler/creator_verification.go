@@ -22,6 +22,7 @@ type personalVerificationRequest struct {
 	Name       string `json:"name" binding:"required"`
 	IDCardNo   string `json:"id_card_no" binding:"required"`
 	BankName   string `json:"bank_name" binding:"required"`
+	BankBranch string `json:"bank_branch"`
 	BankCardNo string `json:"bank_card_no" binding:"required"`
 	SMSCode    string `json:"sms_code"`
 }
@@ -30,13 +31,16 @@ type enterpriseVerificationRequest struct {
 	OrgName            string `json:"org_name" binding:"required"`
 	OrgCreditCode      string `json:"org_credit_code" binding:"required"`
 	BusinessLicenseURL string `json:"business_license_url" binding:"required"`
+	BankLicenseURL     string `json:"bank_license_url"`
 	BankName           string `json:"bank_name" binding:"required"`
+	BankBranch         string `json:"bank_branch"`
 	BankCardNo         string `json:"bank_card_no" binding:"required"`
 	SMSCode            string `json:"sms_code"`
 }
 
 type bankCardChangeRequest struct {
 	BankName   string `json:"bank_name" binding:"required"`
+	BankBranch string `json:"bank_branch"`
 	BankCardNo string `json:"bank_card_no" binding:"required"`
 	SMSCode    string `json:"sms_code" binding:"required"`
 }
@@ -89,12 +93,14 @@ func (s *Server) creatorUpdatePersonalVerification(c *gin.Context) {
 		"id_card_no_enc":       encID,
 		"id_card_no_masked":    maskIDCard(req.IDCardNo),
 		"bank_name":            req.BankName,
+		"bank_branch":          req.BankBranch,
 		"bank_card_no_enc":     encBank,
 		"bank_card_last4":      secure.Last4(req.BankCardNo),
 		"bank_card_no_masked":  maskBankCard(req.BankCardNo),
 		"org_name":             "",
 		"org_credit_code":      "",
 		"business_license_url": "",
+		"bank_license_url":     "",
 		"verify_status":        model.CreatorVerifyPending,
 		"verify_reject_reason": "",
 		"verify_submitted_at":  nowTimePtr(),
@@ -121,6 +127,10 @@ func (s *Server) creatorUpdateEnterpriseVerification(c *gin.Context) {
 		response.InvalidParam(c, "business_license_url 过长")
 		return
 	}
+	if len(req.BankLicenseURL) > 512 {
+		response.InvalidParam(c, "bank_license_url 过长")
+		return
+	}
 	if err := s.validateBankCardChange(cid, req.BankCardNo, req.SMSCode); err != nil {
 		response.InvalidParam(c, err.Error())
 		return
@@ -138,7 +148,9 @@ func (s *Server) creatorUpdateEnterpriseVerification(c *gin.Context) {
 		"org_name":             req.OrgName,
 		"org_credit_code":      req.OrgCreditCode,
 		"business_license_url": req.BusinessLicenseURL,
+		"bank_license_url":     req.BankLicenseURL,
 		"bank_name":            req.BankName,
+		"bank_branch":          req.BankBranch,
 		"bank_card_no_enc":     encBank,
 		"bank_card_last4":      secure.Last4(req.BankCardNo),
 		"bank_card_no_masked":  maskBankCard(req.BankCardNo),
@@ -204,6 +216,7 @@ func (s *Server) creatorChangeBankCard(c *gin.Context) {
 	}
 	if err := s.db.Model(&model.Creator{}).Where("id = ?", cid).Updates(map[string]interface{}{
 		"bank_name":           req.BankName,
+		"bank_branch":         req.BankBranch,
 		"bank_card_no_enc":    enc,
 		"bank_card_last4":     secure.Last4(req.BankCardNo),
 		"bank_card_no_masked": maskBankCard(req.BankCardNo),

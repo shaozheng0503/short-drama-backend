@@ -112,9 +112,11 @@ func (s *Server) adminListCreators(c *gin.Context) {
 			"org_name":             cr.OrgName,
 			"org_credit_code":      cr.OrgCreditCode,
 			"business_license_url": cr.BusinessLicenseURL,
+			"bank_license_url":     cr.BankLicenseURL,
 			"identity_mid":         uid,
 			"identity_role":        cr.IdentityRole,
 			"bank_name":            cr.BankName,
+			"bank_branch":          cr.BankBranch,
 			"id_card_no_masked":    cr.IDCardNoMasked,
 			"bank_card_no_masked":  cr.BankCardNoMasked,
 			"verify_status":        cr.VerifyStatus,
@@ -196,9 +198,11 @@ type adminUpdateCreatorRequest struct {
 	OrgName            *string `json:"org_name"`
 	OrgCreditCode      *string `json:"org_credit_code"`
 	BusinessLicenseURL *string `json:"business_license_url"`
+	BankLicenseURL     *string `json:"bank_license_url"`
 	IdentityMID        *string `json:"identity_mid"`
 	IdentityRole       *string `json:"identity_role"`
 	BankName           *string `json:"bank_name"`
+	BankBranch         *string `json:"bank_branch"`
 	VerifyStatus       *string `json:"verify_status"`
 }
 
@@ -251,6 +255,9 @@ func (s *Server) adminUpdateCreator(c *gin.Context) {
 	if req.BusinessLicenseURL != nil {
 		updates["business_license_url"] = *req.BusinessLicenseURL
 	}
+	if req.BankLicenseURL != nil {
+		updates["bank_license_url"] = *req.BankLicenseURL
+	}
 	if req.IdentityMID != nil {
 		updates["identity_mid"] = *req.IdentityMID
 	}
@@ -259,6 +266,9 @@ func (s *Server) adminUpdateCreator(c *gin.Context) {
 	}
 	if req.BankName != nil {
 		updates["bank_name"] = *req.BankName
+	}
+	if req.BankBranch != nil {
+		updates["bank_branch"] = *req.BankBranch
 	}
 	if req.VerifyStatus != nil && *req.VerifyStatus != "" {
 		switch *req.VerifyStatus {

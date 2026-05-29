@@ -101,15 +101,20 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 			return err
 		}
 
+		taxCents, netCents, _ := s.computeWithdrawalTax(creator, req.AmountCents)
 		dramaID := req.DramaID
 		w := model.Withdrawal{
-			WithdrawalNo:       generateWithdrawalNo(),
-			CreatorID:          cid,
-			DramaID:            &dramaID,
-			AmountCents:        req.AmountCents,
-			BankNameSnapshot:   creator.BankName,
-			BankCardNoSnapshot: "***" + creator.BankCardLast4,
-			Status:             model.WithdrawalStatusPending,
+			WithdrawalNo:        generateWithdrawalNo(),
+			CreatorID:           cid,
+			DramaID:             &dramaID,
+			AmountCents:         req.AmountCents,
+			CreatorTypeSnapshot: creator.CreatorType,
+			TransferType:        model.TransferTypeOf(creator.CreatorType),
+			TaxCents:            taxCents,
+			NetCents:            netCents,
+			BankNameSnapshot:    creator.BankName,
+			BankCardNoSnapshot:  "***" + creator.BankCardLast4,
+			Status:              model.WithdrawalStatusPending,
 		}
 		if err := tx.Create(&w).Error; err != nil {
 			return err
@@ -175,6 +180,10 @@ func (s *Server) withdrawalView(w model.Withdrawal) gin.H {
 		"id":                    w.ID,
 		"withdrawal_no":         w.WithdrawalNo,
 		"amount_cents":          w.AmountCents,
+		"tax_cents":             w.TaxCents,
+		"net_cents":             w.NetCents,
+		"creator_type_snapshot": w.CreatorTypeSnapshot,
+		"transfer_type":         w.TransferType,
 		"bank_name_snapshot":    w.BankNameSnapshot,
 		"bank_card_no_snapshot": w.BankCardNoSnapshot,
 		"status":                w.Status,

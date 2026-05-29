@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"strings"
 	"time"
 
 	"ai-drama-platform/internal/middleware"
@@ -15,7 +16,30 @@ const (
 	dramaTitleMaxRune = 20
 	dramaDescMaxRune  = 200
 	dramaMaxCovers    = 5
+	aigcToolMaxRune   = 64
+	aigcToolsMax      = 10
 )
+
+// normalizeTags 清洗多选 tag：去空白、丢空串、按出现顺序去重，单个截断到 aigcToolMaxRune，最多 aigcToolsMax 个。
+func normalizeTags(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, t := range in {
+		t = strings.TrimSpace(t)
+		if t == "" || seen[t] {
+			continue
+		}
+		if runeLen(t) > aigcToolMaxRune {
+			t = string([]rune(t)[:aigcToolMaxRune])
+		}
+		seen[t] = true
+		out = append(out, t)
+		if len(out) >= aigcToolsMax {
+			break
+		}
+	}
+	return out
+}
 
 // characterInput —— 角色录入。姓名必填，照片/简介选填。
 type characterInput struct {
@@ -40,7 +64,10 @@ type creatorDramaRequest struct {
 
 	// === 申报级扩展字段 ===
 	IsAI                *bool      `json:"is_ai"`
-	Audience            *string    `json:"audience"` // 男频/女频/通用
+	AIGCTools           *[]string  `json:"aigc_tools"`  // 关联 AIGC 创作工具（多选固定 tag）
+	LanguageID          *uint64    `json:"language_id"` // 语言
+	DialectID           *uint64    `json:"dialect_id"`  // 方言
+	Audience            *string    `json:"audience"`    // 男频/女频/通用
 	AliasPaid           *string    `json:"alias_paid"`
 	AliasFree           *string    `json:"alias_free"`
 	ProductionOrg       *string    `json:"production_org"`
@@ -293,6 +320,23 @@ func applyDramaScalars(d *model.Drama, req *creatorDramaRequest) {
 	if req.IsAI != nil {
 		d.IsAI = *req.IsAI
 	}
+	if req.AIGCTools != nil {
+		d.AIGCTools = normalizeTags(*req.AIGCTools)
+	}
+	if req.LanguageID != nil {
+		if *req.LanguageID == 0 {
+			d.LanguageID = nil
+		} else {
+			d.LanguageID = req.LanguageID
+		}
+	}
+	if req.DialectID != nil {
+		if *req.DialectID == 0 {
+			d.DialectID = nil
+		} else {
+			d.DialectID = req.DialectID
+		}
+	}
 	if req.Audience != nil {
 		d.Audience = *req.Audience
 	}
@@ -408,6 +452,12 @@ func (s *Server) creatorUpdateDrama(c *gin.Context) {
 				return err
 			}
 		}
+		if req.AIGCTools != nil {
+			// serializer:json 字段单独走 struct 更新以触发序列化。
+			if err := tx.Model(d).Update("aigc_tools", normalizeTags(*req.AIGCTools)).Error; err != nil {
+				return err
+			}
+		}
 		if hasCats {
 			if err := s.replaceDramaCategoryTags(tx, d.ID, categoryIDs); err != nil {
 				return err
@@ -456,6 +506,21 @@ func buildDramaUpdates(req *creatorDramaRequest) map[string]interface{} {
 	}
 	if req.IsAI != nil {
 		updates["is_ai"] = *req.IsAI
+	}
+	// aigc_tools 用 serializer:json，map 更新不走序列化，放到事务里用 struct 更新（见 creatorUpdateDrama）。
+	if req.LanguageID != nil {
+		if *req.LanguageID == 0 {
+			updates["language_id"] = nil
+		} else {
+			updates["language_id"] = *req.LanguageID
+		}
+	}
+	if req.DialectID != nil {
+		if *req.DialectID == 0 {
+			updates["dialect_id"] = nil
+		} else {
+			updates["dialect_id"] = *req.DialectID
+		}
 	}
 	if req.Audience != nil {
 		updates["audience"] = *req.Audience
