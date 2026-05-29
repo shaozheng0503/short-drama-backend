@@ -56,6 +56,10 @@ func (s *Server) adminListCreators(c *gin.Context) {
 	}
 	if v := c.Query("verify_status"); v != "" {
 		q = q.Where("verify_status = ?", v)
+		// 认证待审：pending 仅指「已提交待审」，排除注册默认占位记录。
+		if v == model.CreatorVerifyPending {
+			q = q.Where("verify_submitted_at IS NOT NULL")
+		}
 	}
 	if v := strings.TrimSpace(c.Query("keyword")); v != "" {
 		like := "%" + v + "%"
@@ -144,7 +148,7 @@ func (s *Server) adminCreateCreator(c *gin.Context) {
 	creator := model.Creator{
 		Phone:        req.Phone,
 		Name:         req.Name,
-		VerifyStatus: model.CreatorVerifyPending,
+		VerifyStatus: model.CreatorVerifyUnverified,
 		Status:       model.StatusActive,
 	}
 	applyCreatorDefaults(&creator)
@@ -258,7 +262,7 @@ func (s *Server) adminUpdateCreator(c *gin.Context) {
 	}
 	if req.VerifyStatus != nil && *req.VerifyStatus != "" {
 		switch *req.VerifyStatus {
-		case model.CreatorVerifyPending, model.CreatorVerifyVerified, model.CreatorVerifyRejected:
+		case model.CreatorVerifyUnverified, model.CreatorVerifyPending, model.CreatorVerifyVerified, model.CreatorVerifyRejected:
 			updates["verify_status"] = *req.VerifyStatus
 		default:
 			response.InvalidParam(c, "verify_status 非法")

@@ -30,9 +30,10 @@ const (
 )
 
 const (
-	CreatorVerifyPending  = "pending"
-	CreatorVerifyVerified = "verified"
-	CreatorVerifyRejected = "rejected"
+	CreatorVerifyUnverified = "unverified" // 已注册但未提交认证资料
+	CreatorVerifyPending    = "pending"    // 已提交，待 Admin 审核
+	CreatorVerifyVerified   = "verified"
+	CreatorVerifyRejected   = "rejected"
 )
 
 // Drama.Status —— 发布阶段（与 audit_status 配合）：

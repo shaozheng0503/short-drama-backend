@@ -88,7 +88,7 @@ func (s *Server) findOrCreateCreator(phone string) (model.Creator, error) {
 	creator = model.Creator{
 		Phone:        phone,
 		CreatorType:  model.CreatorTypePersonal,
-		VerifyStatus: model.CreatorVerifyPending,
+		VerifyStatus: model.CreatorVerifyUnverified,
 		Status:       model.StatusActive,
 	}
 	applyCreatorDefaults(&creator)
