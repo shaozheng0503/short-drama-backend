@@ -12,9 +12,10 @@ import (
 
 func (s *Server) appHome(c *gin.Context) {
 	// 首页按短视频信息流返回：前端直接拿 recommend_dramas 渲染上下滑视频流。
+	// 前期按需求做「随机推荐」（ORDER BY RANDOM()）；后续再按用户标签调整推荐概率。
 	var recommend []model.Drama
 	s.db.Where("status = ?", model.DramaStatusPublished).
-		Order("sort_order desc, published_at desc, id desc").
+		Order("RANDOM()").
 		Limit(10).
 		Find(&recommend)
 

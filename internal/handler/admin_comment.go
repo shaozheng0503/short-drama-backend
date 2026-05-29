@@ -15,6 +15,16 @@ func (s *Server) adminListComments(c *gin.Context) {
 	if v := parseUint(c.Query("drama_id")); v > 0 {
 		q = q.Where("drama_id = ?", v)
 	}
+	if v := parseUint(c.Query("episode_id")); v > 0 {
+		q = q.Where("episode_id = ?", v)
+	}
+	// scope=drama 只看剧评，scope=episode 只看集评。
+	switch c.Query("scope") {
+	case "drama":
+		q = q.Where("episode_id IS NULL")
+	case "episode":
+		q = q.Where("episode_id IS NOT NULL")
+	}
 	if v := parseUint(c.Query("user_id")); v > 0 {
 		q = q.Where("user_id = ?", v)
 	}

@@ -399,6 +399,7 @@ func (Episode) TableName() string { return "episodes" }
 type Comment struct {
 	ID        uint64         `gorm:"primaryKey;column:id" json:"id"`
 	DramaID   uint64         `gorm:"column:drama_id;index;not null" json:"drama_id"`
+	EpisodeID *uint64        `gorm:"column:episode_id;index" json:"episode_id"` // 空=剧评，有值=该集的集评
 	UserID    uint64         `gorm:"column:user_id;index;not null" json:"user_id"`
 	Content   string         `gorm:"column:content;type:text;not null" json:"content"`
 	CreatedAt time.Time      `gorm:"column:created_at;index" json:"created_at"`
