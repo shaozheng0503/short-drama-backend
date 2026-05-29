@@ -13,11 +13,13 @@ import (
 const commentMaxLen = 1000
 
 type createCommentRequest struct {
-	Content string `json:"content"`
+	Content   string  `json:"content"`
+	EpisodeID *uint64 `json:"episode_id"` // 选填：传了=对该集发集评，不传=对整剧发剧评
 }
 
 // appListComments —— 评论列表。匿名也能看（OpenAPI 规定 security: bearerAuth 或空），
 // 用户信息按 user_id 批量查；user 已删 / 已禁仍展示，但 nickname/avatar 退到默认。
+// 区分剧评 / 集评：带 ?episode_id= 时只返回该集的集评；不带时只返回整剧的剧评（episode_id 为空）。
 func (s *Server) appListComments(c *gin.Context) {
 	dramaID := parseUint(c.Param("id"))
 	if dramaID == 0 {
@@ -39,12 +41,24 @@ func (s *Server) appListComments(c *gin.Context) {
 		return
 	}
 
+	// episode_id 过滤：有值=集评，无值=剧评。
+	q := s.db.Model(&model.Comment{}).Where("drama_id = ?", dramaID)
+	if v := parseUint(c.Query("episode_id")); v > 0 {
+		if !s.episodeBelongsToDrama(v, dramaID) {
+			response.InvalidParam(c, "episode_id 与 drama_id 不匹配")
+			return
+		}
+		q = q.Where("episode_id = ?", v)
+	} else {
+		q = q.Where("episode_id IS NULL")
+	}
+
 	page, pageSize := paginate(c)
 	var total int64
-	s.db.Model(&model.Comment{}).Where("drama_id = ?", dramaID).Count(&total)
+	q.Count(&total)
 
 	var comments []model.Comment
-	if err := s.db.Where("drama_id = ?", dramaID).
+	if err := q.
 		Order("created_at desc").
 		Offset((page - 1) * pageSize).
 		Limit(pageSize).
@@ -99,11 +113,22 @@ func (s *Server) appCreateComment(c *gin.Context) {
 		return
 	}
 
+	// 集评：传了 episode_id 就校验该集属于本剧，存为集评；否则为剧评。
+	var episodeID *uint64
+	if req.EpisodeID != nil && *req.EpisodeID > 0 {
+		if !s.episodeBelongsToDrama(*req.EpisodeID, dramaID) {
+			response.InvalidParam(c, "episode_id 与 drama_id 不匹配")
+			return
+		}
+		episodeID = req.EpisodeID
+	}
+
 	uid := middleware.CurrentID(c)
 	cm := model.Comment{
-		DramaID: dramaID,
-		UserID:  uid,
-		Content: content,
+		DramaID:   dramaID,
+		EpisodeID: episodeID,
+		UserID:    uid,
+		Content:   content,
 	}
 	if err := s.db.Create(&cm).Error; err != nil {
 		response.ServerError(c, "发表评论失败")
@@ -140,6 +165,13 @@ func (s *Server) collectCommentUsers(comments []model.Comment) map[uint64]*model
 	return out
 }
 
+// episodeBelongsToDrama 校验剧集存在且归属该剧。
+func (s *Server) episodeBelongsToDrama(episodeID, dramaID uint64) bool {
+	var cnt int64
+	s.db.Model(&model.Episode{}).Where("id = ? AND drama_id = ?", episodeID, dramaID).Count(&cnt)
+	return cnt > 0
+}
+
 func commentView(cm model.Comment, u *model.User) gin.H {
 	uv := gin.H{"id": cm.UserID, "nickname": "", "avatar": ""}
 	if u != nil {
@@ -148,6 +180,7 @@ func commentView(cm model.Comment, u *model.User) gin.H {
 	}
 	return gin.H{
 		"id":         cm.ID,
+		"episode_id": cm.EpisodeID, // null=剧评，有值=集评
 		"user":       uv,
 		"content":    cm.Content,
 		"created_at": cm.CreatedAt,
