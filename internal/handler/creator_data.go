@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"time"
 
@@ -48,6 +49,116 @@ func (s *Server) creatorDashboard(c *gin.Context) {
 		"today_income_cents": todayIncome,
 		"today_play_count":   todayPlay,
 	})
+}
+
+// creatorDataOverview —— GET /v1/creator/data-overview
+// 数据概况：按区间统计 新增漫剧数 / 新增播放量 / 变现收入 / 退款金额，各带环比涨跌%，并给收入趋势图。
+// 区间：?range=7d|14d|30d（默认 7d），或自定义 ?start=YYYY-MM-DD&end=YYYY-MM-DD。
+func (s *Server) creatorDataOverview(c *gin.Context) {
+	cid := middleware.CurrentID(c)
+
+	// 解析区间。自定义优先（start&end 都给且合法）；否则按 range 预设。
+	var start, end time.Time
+	loc := time.Now().Location()
+	startStr, endStr := c.Query("start"), c.Query("end")
+	if s1, e1 := parseDateLoc(startStr, loc), parseDateLoc(endStr, loc); s1 != nil && e1 != nil && !e1.Before(*s1) {
+		start, end = *s1, *e1
+	} else {
+		days := 7
+		switch c.Query("range") {
+		case "14d":
+			days = 14
+		case "30d":
+			days = 30
+		case "7d", "":
+			days = 7
+		}
+		end = todayDate(loc)
+		start = end.AddDate(0, 0, -(days - 1))
+	}
+	dayCount := int(end.Sub(start).Hours()/24) + 1
+	prevEnd := start.AddDate(0, 0, -1)
+	prevStart := prevEnd.AddDate(0, 0, -(dayCount - 1))
+
+	fmtD := func(t time.Time) string { return t.Format("2006-01-02") }
+
+	// 区间内 播放/收入（跨该创作者所有剧聚合）
+	curPlay, curIncome := s.sumCreatorStats(cid, fmtD(start), fmtD(end))
+	prevPlay, prevIncome := s.sumCreatorStats(cid, fmtD(prevStart), fmtD(prevEnd))
+
+	// 新增漫剧数（按 created_at 落在区间内）
+	var curNewDramas, prevNewDramas int64
+	s.db.Model(&model.Drama{}).Where("creator_id = ? AND created_at >= ? AND created_at < ?",
+		cid, start, end.AddDate(0, 0, 1)).Count(&curNewDramas)
+	s.db.Model(&model.Drama{}).Where("creator_id = ? AND created_at >= ? AND created_at < ?",
+		cid, prevStart, prevStart.AddDate(0, 0, dayCount)).Count(&prevNewDramas)
+
+	// 收入趋势图：区间内按日聚合
+	type dayAgg struct {
+		StatDate string
+		Play     int64
+		Income   int64
+	}
+	var rows []dayAgg
+	s.db.Table("creator_stats_daily").
+		Select("stat_date, COALESCE(SUM(play_count),0) as play, COALESCE(SUM(income_cents),0) as income").
+		Where("creator_id = ? AND stat_date >= ? AND stat_date <= ?", cid, fmtD(start), fmtD(end)).
+		Group("stat_date").Order("stat_date asc").Scan(&rows)
+	byDate := map[string]dayAgg{}
+	for _, r := range rows {
+		byDate[r.StatDate] = r
+	}
+	trend := make([]gin.H, 0, dayCount)
+	for i := 0; i < dayCount; i++ {
+		d := fmtD(start.AddDate(0, 0, i))
+		trend = append(trend, gin.H{"date": d, "income_cents": byDate[d].Income, "play_count": byDate[d].Play})
+	}
+
+	response.OK(c, gin.H{
+		"range":      gin.H{"start": fmtD(start), "end": fmtD(end), "days": dayCount},
+		"new_dramas": withDelta(curNewDramas, prevNewDramas),
+		"play_count": withDelta(curPlay, prevPlay),
+		"income_cents": withDelta(curIncome, prevIncome),
+		// 退款金额：依赖真支付/退款功能，尚未接入，先恒为 0 占位（环比同样为 0）。
+		"refund_cents":  withDelta(0, 0),
+		"income_trend":  trend,
+	})
+}
+
+// sumCreatorStats 汇总某创作者在 [start,end]（含端点，YYYY-MM-DD）内的播放与收入。
+func (s *Server) sumCreatorStats(cid uint64, start, end string) (play, income int64) {
+	s.db.Model(&model.CreatorStatsDaily{}).
+		Where("creator_id = ? AND stat_date >= ? AND stat_date <= ?", cid, start, end).
+		Select("COALESCE(SUM(play_count),0)").Scan(&play)
+	s.db.Model(&model.CreatorStatsDaily{}).
+		Where("creator_id = ? AND stat_date >= ? AND stat_date <= ?", cid, start, end).
+		Select("COALESCE(SUM(income_cents),0)").Scan(&income)
+	return
+}
+
+// withDelta 返回 {value, prev, delta_percent}。环比%=四舍五入到 1 位小数；prev=0 时 delta_percent=null（前端显示"--"）。
+func withDelta(cur, prev int64) gin.H {
+	out := gin.H{"value": cur, "prev": prev, "delta_percent": nil}
+	if prev != 0 {
+		out["delta_percent"] = math.Round(float64(cur-prev)/float64(prev)*1000) / 10
+	}
+	return out
+}
+
+func parseDateLoc(s string, loc *time.Location) *time.Time {
+	if s == "" {
+		return nil
+	}
+	t, err := time.ParseInLocation("2006-01-02", s, loc)
+	if err != nil {
+		return nil
+	}
+	return &t
+}
+
+func todayDate(loc *time.Location) time.Time {
+	n := time.Now().In(loc)
+	return time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, loc)
 }
 
 func (s *Server) creatorListDramas(c *gin.Context) {

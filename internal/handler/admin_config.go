@@ -263,3 +263,69 @@ func (s *Server) adminUpdateAIGCTools(c *gin.Context) {
 	}
 	response.OK(c, gin.H{"tools": cleaned})
 }
+
+// === 搜索框推荐 / 热搜词 ===
+
+var defaultHotKeywords = []string{"逆袭", "都市", "甜宠", "悬疑", "古风"}
+
+// hotKeywords 读已配置的热搜词；未配置/解析失败回落默认。
+func (s *Server) hotKeywords() []string {
+	var gc model.GlobalConfig
+	if err := s.db.First(&gc, "key = ?", model.ConfigKeyHotSearch).Error; err != nil {
+		return defaultHotKeywords
+	}
+	var kw []string
+	if err := json.Unmarshal([]byte(gc.Value), &kw); err != nil || len(kw) == 0 {
+		return defaultHotKeywords
+	}
+	return kw
+}
+
+// getHotSearch —— GET /v1/app/search/hot（搜索框推荐词）。
+func (s *Server) getHotSearch(c *gin.Context) {
+	response.OK(c, gin.H{"keywords": s.hotKeywords()})
+}
+
+// adminGetHotSearch —— GET /v1/admin/config/hot-search
+func (s *Server) adminGetHotSearch(c *gin.Context) {
+	response.OK(c, gin.H{"keywords": s.hotKeywords()})
+}
+
+type hotSearchConfigRequest struct {
+	Keywords []string `json:"keywords" binding:"required"`
+}
+
+// adminUpdateHotSearch —— PUT /v1/admin/config/hot-search（仅超管）
+func (s *Server) adminUpdateHotSearch(c *gin.Context) {
+	var req hotSearchConfigRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "keywords 必填且为字符串数组")
+		return
+	}
+	cleaned := make([]string, 0, len(req.Keywords))
+	for _, k := range req.Keywords {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		if len([]rune(k)) > 32 {
+			response.InvalidParam(c, "单个热搜词不能超过 32 个字")
+			return
+		}
+		cleaned = append(cleaned, k)
+	}
+	if len(cleaned) == 0 {
+		response.InvalidParam(c, "至少配置一个热搜词")
+		return
+	}
+	raw, err := json.Marshal(cleaned)
+	if err != nil {
+		response.ServerError(c, "序列化失败")
+		return
+	}
+	if err := s.setConfigTx(s.db, model.ConfigKeyHotSearch, string(raw)); err != nil {
+		response.ServerError(c, "保存配置失败")
+		return
+	}
+	response.OK(c, gin.H{"keywords": cleaned})
+}

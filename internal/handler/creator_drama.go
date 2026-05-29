@@ -20,6 +20,20 @@ const (
 	aigcToolsMax      = 10
 )
 
+// 计划发布时间最少提前量：当前时间 + 3 天（预留审核时间）。
+const scheduledPublishMinLeadHours = 72
+
+// validateScheduledPublishAt 校验计划发布时间至少在当前时间 3 天后；合法返回 ""。
+func validateScheduledPublishAt(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	if t.Before(time.Now().Add(scheduledPublishMinLeadHours * time.Hour)) {
+		return "发布时间至少需在当前时间 3 天后（预留审核时间）"
+	}
+	return ""
+}
+
 // normalizeTags 清洗多选 tag：去空白、丢空串、按出现顺序去重，单个截断到 aigcToolMaxRune，最多 aigcToolsMax 个。
 func normalizeTags(in []string) []string {
 	out := make([]string, 0, len(in))
@@ -114,6 +128,9 @@ func validateCreatorDrama(req *creatorDramaRequest) string {
 	}
 	if req.PublishType != nil && *req.PublishType != "" && !model.ValidPublishType(*req.PublishType) {
 		return "publish_type 只能是 self/platform"
+	}
+	if msg := validateScheduledPublishAt(req.ScheduledPublishAt); msg != "" {
+		return msg
 	}
 	if req.Characters != nil {
 		for _, ch := range *req.Characters {
@@ -691,6 +708,10 @@ func (s *Server) creatorUpdateDramaPublishConfig(c *gin.Context) {
 	}
 	if req.ScheduledPublishAt == nil {
 		response.InvalidParam(c, "scheduled_publish_at 必填")
+		return
+	}
+	if msg := validateScheduledPublishAt(req.ScheduledPublishAt); msg != "" {
+		response.InvalidParam(c, msg)
 		return
 	}
 

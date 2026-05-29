@@ -639,6 +639,7 @@ const (
 	ConfigKeyFreeEpisodes = "pricing.free_episodes" // 全局默认免费集数
 	ConfigKeyPriceCents   = "pricing.price_cents"   // 全局默认每集单价（分）
 	ConfigKeyAIGCTools    = "aigc.tools"            // 可选 AIGC 创作工具列表（JSON 数组字符串）
+	ConfigKeyHotSearch    = "search.hot_keywords"   // 搜索框推荐/热搜词（JSON 数组字符串）
 	// 渠道收益分成比例（基点，10000=100%）。按渠道分开配置，键 = 前缀 + 渠道名；
 	// ConfigKeyIncomeShareDefault 为兜底默认值。Excel 行内填了比例则以行内为准。
 	ConfigKeyIncomeSharePrefix  = "income.share_ratio."        // + 渠道名

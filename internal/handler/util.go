@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"ai-drama-platform/internal/model"
@@ -38,6 +39,19 @@ func paginate(c *gin.Context) (page, pageSize int) {
 func parseUint(s string) uint64 {
 	n, _ := strconv.ParseUint(s, 10, 64)
 	return n
+}
+
+// parseUintList 解析逗号分隔的正整数列表（去重、忽略 0/非法项）。
+func parseUintList(s string) []uint64 {
+	out := make([]uint64, 0)
+	seen := map[uint64]bool{}
+	for _, part := range strings.Split(s, ",") {
+		if v := parseUint(strings.TrimSpace(part)); v > 0 && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func nowTimePtr() *time.Time {
