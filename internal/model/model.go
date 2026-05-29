@@ -13,8 +13,9 @@ const (
 )
 
 const (
-	SMSScenAppLogin      = "login"
-	SMSSceneCreatorLogin = "creator_login"
+	SMSScenAppLogin         = "login"
+	SMSSceneCreatorLogin    = "creator_login"
+	SMSSceneBankCardChange  = "bank_card_change"
 )
 
 const (
@@ -461,6 +462,7 @@ type Withdrawal struct {
 	ID                 uint64     `gorm:"primaryKey;column:id" json:"id"`
 	WithdrawalNo       string     `gorm:"column:withdrawal_no;size:64;uniqueIndex" json:"withdrawal_no"`
 	CreatorID          uint64     `gorm:"column:creator_id;index" json:"creator_id"`
+	DramaID            *uint64    `gorm:"column:drama_id;index" json:"drama_id"`
 	AmountCents        int64      `gorm:"column:amount_cents" json:"amount_cents"`
 	BankNameSnapshot   string     `gorm:"column:bank_name_snapshot;size:64" json:"bank_name_snapshot"`
 	BankCardNoSnapshot string     `gorm:"column:bank_card_no_snapshot;size:64" json:"bank_card_no_snapshot"`

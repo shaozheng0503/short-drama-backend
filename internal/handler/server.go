@@ -187,6 +187,7 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.GET("/verification", s.creatorGetVerification)
 	creatorAuth.PUT("/verification/personal", s.creatorUpdatePersonalVerification)
 	creatorAuth.PUT("/verification/enterprise", s.creatorUpdateEnterpriseVerification)
+	creatorAuth.POST("/bank-card/send-sms", s.creatorSendBankCardSMS)
 	creatorAuth.POST("/bank-card/change", s.creatorChangeBankCard)
 	creatorAuth.GET("/channel-accounts", s.creatorListChannelAccounts)
 	creatorAuth.POST("/channel-accounts", s.creatorCreateChannelAccount)
@@ -220,6 +221,7 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.POST("/uploads/image-sign", s.creatorImageUploadSign)
 
 	creatorAuth.GET("/income", s.creatorIncome)
+	creatorAuth.GET("/settlement/summary", s.creatorSettlementSummary)
 	creatorAuth.POST("/withdrawals", s.idempotencyMiddleware("creator"), s.creatorCreateWithdrawal)
 	creatorAuth.GET("/withdrawals", s.creatorListWithdrawals)
 	creatorAuth.GET("/contracts", s.creatorListContracts)

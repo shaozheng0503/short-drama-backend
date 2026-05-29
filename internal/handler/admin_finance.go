@@ -336,6 +336,10 @@ func (s *Server) adminApproveCreatorVerification(c *gin.Context) {
 		response.Conflict(c, "创作者已通过实名认证")
 		return
 	}
+	if check := checkCreatorVerificationApprovable(cr); !check.OK {
+		respondWithdrawProfileBlock(c, check, false)
+		return
+	}
 	if err := s.db.Model(&cr).Updates(map[string]interface{}{
 		"verify_status":        model.CreatorVerifyVerified,
 		"verify_reject_reason": "",
@@ -569,7 +573,7 @@ func (s *Server) adminListWithdrawals(c *gin.Context) {
 	q.Order("created_at desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&items)
 	list := make([]gin.H, 0, len(items))
 	for _, w := range items {
-		v := withdrawalView(w)
+		v := s.withdrawalView(w)
 		v["creator_id"] = w.CreatorID
 		list = append(list, v)
 	}
@@ -740,7 +744,7 @@ func (s *Server) respondWithdrawalResult(c *gin.Context, id uint64, err error) {
 	}
 	var w model.Withdrawal
 	s.db.First(&w, id)
-	view := withdrawalView(w)
+	view := s.withdrawalView(w)
 	view["creator_id"] = w.CreatorID
 	response.OK(c, view)
 }

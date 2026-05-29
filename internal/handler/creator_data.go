@@ -274,7 +274,7 @@ type creatorProfileRequest struct {
 	IDCardNo           *string `json:"id_card_no"`
 	BankName           *string `json:"bank_name"`
 	BankCardNo         *string `json:"bank_card_no"`
-	SMSCode            *string `json:"sms_code"` // 修改已绑定银行卡时必填，scene=creator_login
+	SMSCode            *string `json:"sms_code"` // 修改已绑定银行卡时必填，scene=bank_card_change
 }
 
 // idCardRegex / bankCardRegex 入参做最小可用本地校验。
@@ -442,10 +442,10 @@ func (s *Server) creatorUpdateProfile(c *gin.Context) {
 	if req.BankCardNo != nil && *req.BankCardNo != "" {
 		if creator.BankCardNoEnc != "" && creator.BankCardNoMasked != "" && maskBankCard(*req.BankCardNo) != creator.BankCardNoMasked {
 			if req.SMSCode == nil || *req.SMSCode == "" {
-				response.InvalidParam(c, "修改银行卡号需先获取并提交短信验证码 sms_code")
+				response.InvalidParam(c, "修改银行卡号需先调用 POST /creator/bank-card/send-sms 获取验证码")
 				return
 			}
-			if err := s.sms.Verify(creator.Phone, model.SMSSceneCreatorLogin, *req.SMSCode); err != nil {
+			if err := s.sms.Verify(creator.Phone, model.SMSSceneBankCardChange, *req.SMSCode); err != nil {
 				response.InvalidParam(c, "短信验证码错误或已过期")
 				return
 			}
