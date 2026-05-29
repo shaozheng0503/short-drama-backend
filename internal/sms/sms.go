@@ -66,7 +66,7 @@ func (s *Service) ProviderName() string { return s.provider.Name() }
 
 func ValidScene(scene string) bool {
 	switch scene {
-	case model.SMSScenAppLogin, model.SMSSceneCreatorLogin:
+	case model.SMSScenAppLogin, model.SMSSceneCreatorLogin, model.SMSSceneBankCardChange:
 		return true
 	}
 	return false
@@ -78,7 +78,7 @@ func ValidPhone(phone string) bool {
 
 // AllowSendByIP 对短信发送接口做 IP 级限流，防止批量刷短信。
 func (s *Service) AllowSendByIP(ip string) bool {
-	if ip == "" {
+	if s.cfg.SMSDevMode || ip == "" {
 		return true
 	}
 	s.sendIPMu.Lock()
@@ -92,7 +92,7 @@ func (s *Service) AllowSendByIP(ip string) bool {
 	return item.Allow()
 }
 
-// Send 发送验证码：60 秒频控 + 5 分钟有效期 + 通过 provider 下发。
+// Send 发送验证码：生产环境 60 秒频控；dev 模式跳过频控便于联调。
 // 返回新生成的验证码（仅供 dev 模式回显，生产模式不应当回写到响应）。
 func (s *Service) Send(phone, scene string) (string, error) {
 	if !ValidPhone(phone) {
@@ -110,7 +110,7 @@ func (s *Service) Send(phone, scene string) (string, error) {
 			Where("phone = ? AND scene = ?", phone, scene).
 			Order("created_at desc").
 			First(&latest).Error
-		if err == nil && latest.CreatedAt.After(cooldownStart) {
+		if !s.cfg.SMSDevMode && err == nil && latest.CreatedAt.After(cooldownStart) {
 			return ErrTooFrequent
 		}
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {

@@ -7,13 +7,14 @@ import (
 	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/response"
 	"ai-drama-platform/internal/secure"
+	"ai-drama-platform/internal/sms"
 
 	"github.com/gin-gonic/gin"
 )
 
 var (
 	errInvalidBankCard        = errors.New("bank_card_no 必须是 16-19 位数字")
-	errSMSRequiredForBankCard = errors.New("修改银行卡号需先获取并提交短信验证码 sms_code")
+	errSMSRequiredForBankCard = errors.New("修改银行卡号需先调用 POST /creator/bank-card/send-sms 获取验证码")
 	errSMSInvalidForBankCard  = errors.New("短信验证码错误或已过期")
 )
 
@@ -152,6 +153,39 @@ func (s *Server) creatorUpdateEnterpriseVerification(c *gin.Context) {
 	s.creatorGetVerification(c)
 }
 
+func (s *Server) creatorSendBankCardSMS(c *gin.Context) {
+	cid := middleware.CurrentID(c)
+	var creator model.Creator
+	if err := s.db.First(&creator, cid).Error; err != nil {
+		response.ServerError(c, "查询创作者失败")
+		return
+	}
+	if !s.sms.AllowSendByIP(c.ClientIP()) {
+		response.Fail(c, response.CodeRateLimited, "发送过于频繁，请稍后再试")
+		return
+	}
+	code, err := s.sms.Send(creator.Phone, model.SMSSceneBankCardChange)
+	if err != nil {
+		switch {
+		case errors.Is(err, sms.ErrTooFrequent):
+			response.Conflict(c, "发送过于频繁，请 60 秒后重试")
+		case errors.Is(err, sms.ErrProviderFail):
+			response.Fail(c, response.CodeThirdPartyError, "短信网关下发失败，请稍后重试")
+		default:
+			response.ServerError(c, "短信发送失败")
+		}
+		return
+	}
+	data := gin.H{
+		"expire_seconds": int(s.cfg.SMSCodeTTL.Seconds()),
+		"phone_masked":   sms.MaskPhone(creator.Phone),
+	}
+	if s.cfg.SMSDevMode {
+		data["dev_code"] = code
+	}
+	response.OK(c, data)
+}
+
 func (s *Server) creatorChangeBankCard(c *gin.Context) {
 	cid := middleware.CurrentID(c)
 	var req bankCardChangeRequest
@@ -192,7 +226,7 @@ func (s *Server) validateBankCardChange(creatorID uint64, bankCardNo, smsCode st
 		if smsCode == "" {
 			return errSMSRequiredForBankCard
 		}
-		if err := s.sms.Verify(creator.Phone, model.SMSSceneCreatorLogin, smsCode); err != nil {
+		if err := s.sms.Verify(creator.Phone, model.SMSSceneBankCardChange, smsCode); err != nil {
 			return errSMSInvalidForBankCard
 		}
 	}

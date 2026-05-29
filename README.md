@@ -63,7 +63,8 @@ api server listening on :18080
 | 分组 | 路径前缀 | 说明 |
 |---|---|---|
 | Health | `GET /health`、`GET /ready` | 存活 / 就绪（含 Redis ping） |
-| Common | `POST /v1/common/sms/send` | 短信验证码（`scene=login/creator_login`） |
+| Common | `POST /v1/common/sms/send` | 短信验证码（`scene=login/creator_login`，不含换绑） |
+| Creator | `POST /v1/creator/bank-card/send-sms` | 换绑银行卡发验证码（需 JWT，scene=bank_card_change） |
 | **APP**（22） | `/v1/app/*` | 登录、内容浏览、播放、互动、下单、解锁 |
 | **Creator**（10） | `/v1/creator/*` | 登录、资料、数据看板、收益、提现、合同 |
 | **Admin**（28） | `/v1/admin/*` | 内容/分类/创作者/订单/提现/合同的全套 CRUD + 审核 |

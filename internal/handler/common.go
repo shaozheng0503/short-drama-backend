@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/response"
 	"ai-drama-platform/internal/sms"
 
@@ -85,6 +86,12 @@ func (s *Server) sendSMS(c *gin.Context) {
 	}
 	if !s.sms.AllowSendByIP(c.ClientIP()) {
 		response.Fail(c, response.CodeRateLimited, "发送过于频繁，请稍后再试")
+		return
+	}
+	switch req.Scene {
+	case model.SMSScenAppLogin, model.SMSSceneCreatorLogin:
+	default:
+		response.InvalidParam(c, "scene 必须是 login 或 creator_login；换绑银行卡请用 POST /creator/bank-card/send-sms")
 		return
 	}
 	code, err := s.sms.Send(req.Phone, req.Scene)
