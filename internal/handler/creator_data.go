@@ -220,30 +220,40 @@ func (s *Server) creatorDramaStats(c *gin.Context) {
 	})
 }
 
+// creatorIncome —— GET /v1/creator/income
+// 返回创作者作品明细（按 日 × 作品 拆行）。每行字段：date / drama_id / drama_title / play_count / income_cents。
+// 数据源 creator_stats_daily 的唯一键就是 (creator,drama,date)，无需再聚合，按日倒序、同日内按 drama_id 升序输出。
 func (s *Server) creatorIncome(c *gin.Context) {
 	cid := middleware.CurrentID(c)
 	page, pageSize := paginate(c)
 
 	type aggRow struct {
-		StatDate    string
-		IncomeCents int64
+		StatDate    string `gorm:"column:stat_date"`
+		DramaID     uint64 `gorm:"column:drama_id"`
+		DramaTitle  string `gorm:"column:drama_title"`
+		PlayCount   int64  `gorm:"column:play_count"`
+		IncomeCents int64  `gorm:"column:income_cents"`
 	}
-	var rows []aggRow
-	base := s.db.Table("creator_stats_daily").
-		Select("stat_date, COALESCE(SUM(income_cents),0) as income_cents").
-		Where("creator_id = ?", cid).
-		Group("stat_date").
-		Order("stat_date desc")
 
 	var total int64
-	s.db.Raw("SELECT COUNT(DISTINCT stat_date) FROM creator_stats_daily WHERE creator_id = ?", cid).Scan(&total)
+	s.db.Model(&model.CreatorStatsDaily{}).Where("creator_id = ?", cid).Count(&total)
 
-	base.Offset((page - 1) * pageSize).Limit(pageSize).Scan(&rows)
+	var rows []aggRow
+	s.db.Table("creator_stats_daily AS csd").
+		Select("csd.stat_date, csd.drama_id, COALESCE(d.title,'') AS drama_title, csd.play_count, csd.income_cents").
+		Joins("LEFT JOIN dramas AS d ON d.id = csd.drama_id").
+		Where("csd.creator_id = ?", cid).
+		Order("csd.stat_date desc, csd.drama_id asc").
+		Offset((page - 1) * pageSize).Limit(pageSize).
+		Scan(&rows)
 
 	list := make([]gin.H, 0, len(rows))
 	for _, r := range rows {
 		list = append(list, gin.H{
 			"date":         r.StatDate,
+			"drama_id":     r.DramaID,
+			"drama_title":  r.DramaTitle,
+			"play_count":   r.PlayCount,
 			"income_cents": r.IncomeCents,
 		})
 	}
