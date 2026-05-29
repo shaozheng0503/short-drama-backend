@@ -20,3 +20,6 @@ secrets/
 # 日志 / 临时文件
 *.log
 /tmp/
+
+# 误落在根目录的服务端二进制（生产部署应该用 /tmp/drama-api）
+/drama-api
