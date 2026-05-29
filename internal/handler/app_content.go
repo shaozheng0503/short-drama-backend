@@ -74,6 +74,18 @@ func (s *Server) appListDramas(c *gin.Context) {
 			q = q.Where("category_id = ?", id)
 		}
 	}
+	// 多维筛选：category_ids 支持「主题/设定/背景/受众」任意维度的分类多选（逗号分隔），
+	// 语义为 AND——剧必须同时命中所有所选分类（按 drama_tags 关联）。
+	if catIDs := parseUintList(c.Query("category_ids")); len(catIDs) > 0 {
+		q = q.Where(
+			"id IN (SELECT drama_id FROM drama_tags WHERE category_id IN ? GROUP BY drama_id HAVING COUNT(DISTINCT category_id) = ?)",
+			catIDs, len(catIDs),
+		)
+	}
+	// 男女频：直接按 dramas.audience 字段筛（男频/女频/通用）。
+	if v := strings.TrimSpace(c.Query("audience")); v != "" {
+		q = q.Where("audience = ?", v)
+	}
 	if v := c.Query("language_id"); v != "" {
 		if id := parseUint(v); id > 0 {
 			q = q.Where("language_id = ?", id)
@@ -86,9 +98,9 @@ func (s *Server) appListDramas(c *gin.Context) {
 	}
 
 	switch c.DefaultQuery("sort", "new") {
-	case "hot":
+	case "hot": // 热度/推荐
 		q = q.Order("play_count desc, id desc")
-	default:
+	default: // 时间（最新）
 		q = q.Order("published_at desc, id desc")
 	}
 

@@ -155,6 +155,7 @@ func (s *Server) Router() *gin.Engine {
 	app.GET("/dramas/:id/episodes", s.appListEpisodes)
 	app.GET("/dramas/:id/comments", s.appListComments)
 	app.GET("/search", s.appSearch)
+	app.GET("/search/hot", s.getHotSearch)
 	app.GET("/products", s.appListProducts)
 
 	appAuth := app.Group("")
@@ -227,6 +228,7 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.POST("/withdrawals", s.idempotencyMiddleware("creator"), s.creatorCreateWithdrawal)
 	creatorAuth.GET("/withdrawals", s.creatorListWithdrawals)
 	creatorAuth.GET("/withdrawals/tax-preview", s.creatorWithdrawTaxPreview)
+	creatorAuth.GET("/data-overview", s.creatorDataOverview)
 	creatorAuth.GET("/contracts", s.creatorListContracts)
 	creatorAuth.GET("/contracts/:id/docx", s.creatorDownloadContractDocx)
 	creatorAuth.GET("/contracts/:id", s.creatorGetContract)
@@ -319,6 +321,8 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.PUT("/config/pricing", s.requireAdminRole(), s.adminUpdatePricingConfig)
 	adminAuth.GET("/config/aigc-tools", s.adminGetAIGCTools)
 	adminAuth.PUT("/config/aigc-tools", s.requireAdminRole(), s.adminUpdateAIGCTools)
+	adminAuth.GET("/config/hot-search", s.adminGetHotSearch)
+	adminAuth.PUT("/config/hot-search", s.requireAdminRole(), s.adminUpdateHotSearch)
 	adminAuth.GET("/config/income-share", s.adminGetIncomeShareConfig)
 	adminAuth.PUT("/config/income-share", s.requireAdminRole(), s.adminUpdateIncomeShareConfig)
 	// 个税阶梯：读对所有 admin 开放，写仅超管。
