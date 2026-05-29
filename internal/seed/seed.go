@@ -81,10 +81,6 @@ func Run(db *gorm.DB, cfg config.Config) (*Result, error) {
 	}
 	r.Episodes = n
 
-	if err := refreshDramaTotals(db, dramas); err != nil {
-		return nil, fmt.Errorf("refresh totals: %w", err)
-	}
-
 	n, err = seedUserActions(db, users, dramas)
 	if err != nil {
 		return nil, fmt.Errorf("seed user actions: %w", err)
@@ -413,7 +409,7 @@ func seedDramas(
 			CoverURL:      spec.Cover,
 			CategoryID:    &themeID,
 			CreatorID:     &creatorID,
-			TotalEpisodes: spec.EpisodeCount, // 真实值 refreshDramaTotals 再覆盖
+			TotalEpisodes: spec.EpisodeCount, // 创作者承诺总集数
 			FreeEpisodes:  spec.FreeEpisodes,
 			PriceCents:    spec.PriceCents,
 			Status:        status,
@@ -555,21 +551,6 @@ func seedEpisodes(
 		out[dramaID] = eps
 	}
 	return out, created, nil
-}
-
-// refreshDramaTotals 用真实剧集行数刷新 total_episodes，避免 spec 与实际不一致。
-func refreshDramaTotals(db *gorm.DB, dramas map[string]uint64) error {
-	for _, dramaID := range dramas {
-		var cnt int64
-		if err := db.Model(&model.Episode{}).Where("drama_id = ?", dramaID).Count(&cnt).Error; err != nil {
-			return err
-		}
-		if err := db.Model(&model.Drama{}).Where("id = ?", dramaID).
-			Update("total_episodes", cnt).Error; err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // seedUserActions：用户 1 点赞 + 收藏剧 1、剧 4；用户 2 点赞剧 2；用户 3 收藏剧 5。
