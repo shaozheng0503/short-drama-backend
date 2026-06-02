@@ -116,7 +116,6 @@ func dramaAdminView(d model.Drama, categoryName, creatorName string) gin.H {
 		"is_ai":                 d.IsAI,
 		"aigc_tools":            d.AIGCTools,
 		"language_id":           d.LanguageID,
-		"dialect_id":            d.DialectID,
 		"audience":              d.Audience,
 		"alias_paid":            d.AliasPaid,
 		"alias_free":            d.AliasFree,

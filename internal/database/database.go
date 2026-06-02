@@ -61,6 +61,9 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 	if err := ensureIndexes(db); err != nil {
 		return nil, err
 	}
+	if err := migrateMergeDialectIntoLanguage(db); err != nil {
+		return nil, err
+	}
 	if cfg.SeedMockData {
 		result, err := seed.Run(db, cfg)
 		if err != nil {
@@ -108,6 +111,21 @@ func ensureIndexes(db *gorm.DB) error {
 		return err
 	}
 	return nil
+}
+
+// migrateMergeDialectIntoLanguage 将 dramas.dialect_id 合并进 language_id 后删除 dialect_id 列。
+func migrateMergeDialectIntoLanguage(db *gorm.DB) error {
+	if !db.Migrator().HasColumn(&model.Drama{}, "dialect_id") {
+		return nil
+	}
+	if err := db.Exec(`
+		UPDATE dramas
+		SET language_id = COALESCE(dialect_id, language_id)
+		WHERE dialect_id IS NOT NULL
+	`).Error; err != nil {
+		return err
+	}
+	return db.Migrator().DropColumn(&model.Drama{}, "dialect_id")
 }
 
 func ensureInitialAdmin(db *gorm.DB, cfg config.Config) error {

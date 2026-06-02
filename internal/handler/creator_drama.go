@@ -79,8 +79,8 @@ type creatorDramaRequest struct {
 	// === 申报级扩展字段 ===
 	IsAI                *bool      `json:"is_ai"`
 	AIGCTools           *[]string  `json:"aigc_tools"`  // 关联 AIGC 创作工具（多选固定 tag）
-	LanguageID          *uint64    `json:"language_id"` // 语言
-	DialectID           *uint64    `json:"dialect_id"`  // 方言
+	LanguageID          *uint64    `json:"language_id"` // 语言/方言（languages.id，如普通话、粤语、英语）
+	DialectID           *uint64    `json:"dialect_id"`  // 已废弃：请改用 language_id，服务端会合并
 	Audience            *string    `json:"audience"`    // 男频/女频/通用
 	AliasPaid           *string    `json:"alias_paid"`
 	AliasFree           *string    `json:"alias_free"`
@@ -98,6 +98,16 @@ type creatorDramaRequest struct {
 
 	// 角色：传了就整体替换（含空数组=清空）。MVP 从宽，不强制至少一位。
 	Characters *[]characterInput `json:"characters"`
+}
+
+// normalizeDramaLanguageID 将废弃的 dialect_id 合并进 language_id。
+func normalizeDramaLanguageID(req *creatorDramaRequest) {
+	if req.DialectID == nil || *req.DialectID == 0 {
+		return
+	}
+	if req.LanguageID == nil || *req.LanguageID == 0 {
+		req.LanguageID = req.DialectID
+	}
 }
 
 // validateCreatorDrama 做轻量校验。MVP 原则：字段从宽，只挡明显错误（长度上限、负数、枚举、多图上限）。
@@ -263,6 +273,7 @@ func (s *Server) creatorCreateDrama(c *gin.Context) {
 		response.InvalidParam(c, "title 必填")
 		return
 	}
+	normalizeDramaLanguageID(&req)
 	if msg := validateCreatorDrama(&req); msg != "" {
 		response.InvalidParam(c, msg)
 		return
@@ -345,13 +356,6 @@ func applyDramaScalars(d *model.Drama, req *creatorDramaRequest) {
 			d.LanguageID = nil
 		} else {
 			d.LanguageID = req.LanguageID
-		}
-	}
-	if req.DialectID != nil {
-		if *req.DialectID == 0 {
-			d.DialectID = nil
-		} else {
-			d.DialectID = req.DialectID
 		}
 	}
 	if req.Audience != nil {
@@ -445,6 +449,7 @@ func (s *Server) creatorUpdateDrama(c *gin.Context) {
 		response.InvalidParam(c, "请求体不合法")
 		return
 	}
+	normalizeDramaLanguageID(&req)
 	if msg := validateCreatorDrama(&req); msg != "" {
 		response.InvalidParam(c, msg)
 		return
@@ -530,13 +535,6 @@ func buildDramaUpdates(req *creatorDramaRequest) map[string]interface{} {
 			updates["language_id"] = nil
 		} else {
 			updates["language_id"] = *req.LanguageID
-		}
-	}
-	if req.DialectID != nil {
-		if *req.DialectID == 0 {
-			updates["dialect_id"] = nil
-		} else {
-			updates["dialect_id"] = *req.DialectID
 		}
 	}
 	if req.Audience != nil {

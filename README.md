@@ -76,7 +76,7 @@ api server listening on :18080
 ```
 POST /v1/common/sms/send             {phone, scene:"login"}
 POST /v1/app/auth/login              {phone, code}                       → app_token
-GET  /v1/app/home / dramas / search                                       → 浏览
+GET  /v1/app/home / theater / dramas / search                             → 浏览（剧场推荐用 theater）
 GET  /v1/app/episodes/:id/play       Bearer app_token                    → 锁/解
 POST /v1/app/orders                  {product_id, episode_id, drama_id, payment_method}
                                      Header: Idempotency-Key             → order_no

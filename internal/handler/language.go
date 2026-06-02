@@ -19,7 +19,7 @@ func languageView(l model.Language) gin.H {
 }
 
 // listLanguages —— GET /v1/common/languages
-// 返回语言树：每个语言带其下方言子项（dialects）。海外版做语言/方言筛选用。
+// 返回扁平语言列表（含粤语等方言项），短剧仅使用 language_id 关联其中一项。
 // 默认只返回 active；带 ?all=1（管理端）返回全部。
 func (s *Server) listLanguages(c *gin.Context) {
 	q := s.db.Model(&model.Language{})
@@ -31,25 +31,9 @@ func (s *Server) listLanguages(c *gin.Context) {
 		response.ServerError(c, "查询语言列表失败")
 		return
 	}
-	// 分组：parent 为空的是语言，其余挂到对应语言的 dialects 下。
-	dialectsByParent := map[uint64][]gin.H{}
+	list := make([]gin.H, 0, len(items))
 	for _, l := range items {
-		if l.ParentID != nil {
-			dialectsByParent[*l.ParentID] = append(dialectsByParent[*l.ParentID], languageView(l))
-		}
-	}
-	list := make([]gin.H, 0)
-	for _, l := range items {
-		if l.ParentID != nil {
-			continue
-		}
-		v := languageView(l)
-		ds := dialectsByParent[l.ID]
-		if ds == nil {
-			ds = []gin.H{}
-		}
-		v["dialects"] = ds
-		list = append(list, v)
+		list = append(list, languageView(l))
 	}
 	response.OK(c, gin.H{"list": list, "total": int64(len(list))})
 }
@@ -185,7 +169,7 @@ func (s *Server) adminDeleteLanguage(c *gin.Context) {
 	}
 	// 被短剧引用（语言或方言）时不允许删除。
 	var refCnt int64
-	s.db.Model(&model.Drama{}).Where("language_id = ? OR dialect_id = ?", id, id).Count(&refCnt)
+	s.db.Model(&model.Drama{}).Where("language_id = ?", id).Count(&refCnt)
 	if refCnt > 0 {
 		response.Conflict(c, "语言仍被短剧引用，无法删除")
 		return

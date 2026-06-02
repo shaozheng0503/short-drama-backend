@@ -322,8 +322,7 @@ type Drama struct {
 	// === 申报级扩展字段（2026-05-27 漫剧上传规格）===
 	IsAI                bool       `gorm:"column:is_ai;default:false" json:"is_ai"`                             // 是否 AI 作品
 	AIGCTools           []string   `gorm:"column:aigc_tools;serializer:json" json:"aigc_tools"`                 // 关联 AIGC 创作工具（多选固定 tag，即梦/小云雀等，is_ai 时填）
-	LanguageID          *uint64    `gorm:"column:language_id;index" json:"language_id"`                         // 语言（languages.id，parent 为空）
-	DialectID           *uint64    `gorm:"column:dialect_id;index" json:"dialect_id"`                           // 方言（languages.id，parent 非空）
+	LanguageID          *uint64    `gorm:"column:language_id;index" json:"language_id"` // 语言/方言（languages.id，含粤语等子项）
 	Audience            string     `gorm:"column:audience;size:20" json:"audience"`                             // 男频/女频/通用
 	AliasPaid           string     `gorm:"column:alias_paid;size:64" json:"alias_paid"`                         // 站外付费别名（选填）
 	AliasFree           string     `gorm:"column:alias_free;size:64" json:"alias_free"`                         // 站外免费别名（选填）

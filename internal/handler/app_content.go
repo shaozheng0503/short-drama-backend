@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"strings"
 
 	"ai-drama-platform/internal/middleware"
@@ -8,6 +10,7 @@ import (
 	"ai-drama-platform/internal/response"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func (s *Server) appHome(c *gin.Context) {
@@ -22,6 +25,64 @@ func (s *Server) appHome(c *gin.Context) {
 	response.OK(c, gin.H{
 		"recommend_dramas": s.homeFeedDramaList(recommend),
 	})
+}
+
+// appTheater —— GET /v1/app/theater
+// 剧场页（图文推荐流）：与 /app/dramas 筛选列表区分，每次刷新可换一批推荐顺序。
+// 不传 seed 时服务端生成新 seed（下拉刷新即新推荐）；翻页时带上 recommend_seed 保持顺序稳定。
+func (s *Server) appTheater(c *gin.Context) {
+	page, pageSize := paginate(c)
+	seed := strings.TrimSpace(c.Query("seed"))
+	if seed == "" {
+		seed = newRecommendSeed()
+	}
+
+	q := s.db.Model(&model.Drama{}).Where("status = ?", model.DramaStatusPublished)
+	if v := strings.TrimSpace(c.Query("audience")); v != "" {
+		q = q.Where("audience = ?", v)
+	}
+
+	var total int64
+	q.Count(&total)
+
+	var list []model.Drama
+	if err := q.Order(gorm.Expr("md5(dramas.id::text || ?) ASC", seed)).
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Find(&list).Error; err != nil {
+		response.ServerError(c, "查询剧场推荐失败")
+		return
+	}
+
+	views := s.dramaCardListWithTags(list)
+	data := pageResp(views, page, pageSize, total)
+	data["recommend_seed"] = seed
+	response.OK(c, data)
+}
+
+func newRecommendSeed() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "theater"
+	}
+	return hex.EncodeToString(b)
+}
+
+func (s *Server) dramaCardListWithTags(list []model.Drama) []gin.H {
+	views := dramaCardList(list)
+	ids := make([]uint64, len(list))
+	for i, d := range list {
+		ids[i] = d.ID
+	}
+	tagMap := s.collectDramaTagNames(ids)
+	for i, d := range list {
+		tags := tagMap[d.ID]
+		if tags == nil {
+			tags = []string{}
+		}
+		views[i]["tags"] = tags
+	}
+	return views
 }
 
 func (s *Server) homeFeedDramaList(dramas []model.Drama) []gin.H {
@@ -90,10 +151,10 @@ func (s *Server) appListDramas(c *gin.Context) {
 		if id := parseUint(v); id > 0 {
 			q = q.Where("language_id = ?", id)
 		}
-	}
-	if v := c.Query("dialect_id"); v != "" {
+	} else if v := c.Query("dialect_id"); v != "" {
+		// 兼容旧参数：方言筛选已合并为 language_id
 		if id := parseUint(v); id > 0 {
-			q = q.Where("dialect_id = ?", id)
+			q = q.Where("language_id = ?", id)
 		}
 	}
 
@@ -111,20 +172,8 @@ func (s *Server) appListDramas(c *gin.Context) {
 		response.ServerError(c, "查询短剧列表失败")
 		return
 	}
-	// 剧场页（图文形式）卡片要展示「类型」标签（如 战斗/奇幻/古代），按 drama_tags 批量补上。
-	views := dramaCardList(list)
-	ids := make([]uint64, len(list))
-	for i, d := range list {
-		ids[i] = d.ID
-	}
-	tagMap := s.collectDramaTagNames(ids)
-	for i, d := range list {
-		tags := tagMap[d.ID]
-		if tags == nil {
-			tags = []string{}
-		}
-		views[i]["tags"] = tags
-	}
+	// 筛选列表也返回 tags，便于复用卡片组件；推荐流请用 GET /app/theater。
+	views := s.dramaCardListWithTags(list)
 	response.OK(c, pageResp(views, page, pageSize, total))
 }
 
@@ -203,7 +252,6 @@ func (s *Server) appDramaDetail(c *gin.Context) {
 		"free_episodes":  drama.FreeEpisodes,
 		"price_cents":    drama.PriceCents,
 		"language_id":    drama.LanguageID,
-		"dialect_id":     drama.DialectID,
 		"play_count":     drama.PlayCount,
 		"like_count":     drama.LikeCount,
 		"favorite_count": drama.FavoriteCount,
