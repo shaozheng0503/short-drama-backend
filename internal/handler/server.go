@@ -150,6 +150,7 @@ func (s *Server) Router() *gin.Engine {
 	app.POST("/auth/login", s.appLogin)
 	app.GET("/categories", s.appListCategories)
 	app.GET("/home", s.appHome)
+	app.GET("/theater", s.appTheater)
 	app.GET("/dramas", s.appListDramas)
 	app.GET("/dramas/:id", s.appDramaDetail)
 	app.GET("/dramas/:id/episodes", s.appListEpisodes)
