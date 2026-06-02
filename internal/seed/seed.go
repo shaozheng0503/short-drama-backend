@@ -45,6 +45,12 @@ func Run(db *gorm.DB, cfg config.Config) (*Result, error) {
 	r := &Result{}
 	now := time.Now()
 
+	// theme 维度的唯一权威来源；幂等。即便调用方（如 /v1/dev/seed）没在启动期跑过，
+	// 也保证 18 个漫剧题材存在，seedDramas 才能解析各剧的 PrimaryTheme。
+	if err := EnsureThemeCategories(db); err != nil {
+		return nil, fmt.Errorf("ensure theme categories: %w", err)
+	}
+
 	cats, n, err := seedCategories(db)
 	if err != nil {
 		return nil, fmt.Errorf("seed categories: %w", err)
@@ -138,16 +144,13 @@ func firstOrCreateByUnique[T any](db *gorm.DB, where map[string]interface{}, att
 	return attrs, true, nil
 }
 
-// 红果短剧筛选维度：保持用户给定顺序，SortOrder = 数组长度 - index，方便首页按热度排。
-// 4 个维度独立写入 categories.type；audience 只两项；background 中将「宫廷荒岛」拆成两项。
+// mock 联调用的筛选维度（仅 SEED_MOCK_DATA / /v1/dev/seed 时写入）。
+// 注意：theme 维度**不在这里** —— 题材分类统一由 EnsureThemeCategories 负责（18 个漫剧题材，
+// 启动时幂等灌入，是生产唯一权威来源）。这里只造 setting / background / audience 三个维度，
+// 避免再向 categories 灌入与漫剧题材竞争的旧红果题材。
 //
 //nolint:gochecknoglobals // 静态常量表，常驻内存比每次构造便宜
 var (
-	themeNames = []string{
-		"现言", "女性成长", "脑洞", "奇幻", "玄幻", "古言", "战神", "宫斗", "仙侠", "权谋",
-		"年代爱情", "种田", "悬疑", "喜剧", "民国爱情", "志怪", "青春", "灵异", "家国情怀", "法律",
-		"刑侦", "抗战", "武侠", "民国传奇", "求生", "动作", "科幻", "恐怖", "商战",
-	}
 	settingNames = []string{
 		"打脸虐恋", "大女主", "大男主", "马甲", "重生", "穿越", "系统", "先婚后爱", "家长里短", "小人物",
 		"神豪", "破镜重圆", "豪门", "强者回归", "虐恋", "传承觉醒", "异能", "医生", "赘婿逆袭", "强强联合",
@@ -161,8 +164,8 @@ var (
 	audienceNames = []string{"男频", "女频"} // 注：原文「男率」按红果命名习惯纠正为「男频」
 )
 
-// fridayThemeNames —— 2026-05-27 会议确定的漫剧分类（type=theme，可多选）。
-// 与 themeNames 有重叠（悬疑/喜剧/青春/武侠/民国/年代），按 (type,name) 唯一键幂等写入，重复项跳过。
+// fridayThemeNames —— 2026-05-27 会议确定的漫剧题材（type=theme，可多选），是生产 theme
+// 维度的唯一权威来源。按 (type,name) 唯一键幂等写入，重复项跳过。
 //
 //nolint:gochecknoglobals
 var fridayThemeNames = []string{
@@ -190,13 +193,14 @@ func EnsureThemeCategories(db *gorm.DB) error {
 	return nil
 }
 
-// seedCategories 把 4 个维度一次性写进 categories；返回的 map 用 (type,name) 复合键索引。
+// seedCategories 只写入 mock 联调用的 setting / background / audience 维度；theme 维度
+// 由 EnsureThemeCategories 统一负责（18 个漫剧题材）。这里把已存在的 theme 分类读进返回
+// map，供 seedDramas / seedDramaTags 解析 PrimaryTheme。返回的 map 用 (type,name) 复合键索引。
 func seedCategories(db *gorm.DB) (map[catKey]uint64, int, error) {
 	dims := []struct {
 		Type  string
 		Names []string
 	}{
-		{model.CategoryTypeTheme, themeNames},
 		{model.CategoryTypeSetting, settingNames},
 		{model.CategoryTypeBackground, backgroundNames},
 		{model.CategoryTypeAudience, audienceNames},
@@ -204,8 +208,7 @@ func seedCategories(db *gorm.DB) (map[catKey]uint64, int, error) {
 	out := map[catKey]uint64{}
 	created := 0
 	for _, dim := range dims {
-		// 排序：第一项最大，往后递减 — 这样首页 ORDER BY sort_order ASC 时（小的先）展示靠前的是热门
-		// 等等：appHome 用的是 sort_order asc，所以小值=靠前。给第一项 1，往后增。
+		// 排序：第一项最小、往后递增 —— appHome 用 sort_order ASC，小值=靠前。
 		for i, name := range dim.Names {
 			c := model.Category{
 				Type:      dim.Type,
@@ -225,6 +228,15 @@ func seedCategories(db *gorm.DB) (map[catKey]uint64, int, error) {
 				created++
 			}
 		}
+	}
+	// theme 由 EnsureThemeCategories 灌入；把现存 theme 分类读进 map 供后续解析，
+	// 不在此处新建任何 theme，杜绝旧红果题材回流。
+	var themes []model.Category
+	if err := db.Where("type = ?", model.CategoryTypeTheme).Find(&themes).Error; err != nil {
+		return nil, 0, err
+	}
+	for _, t := range themes {
+		out[catKey{Type: model.CategoryTypeTheme, Name: t.Name}] = t.ID
 	}
 	return out, created, nil
 }
@@ -328,7 +340,7 @@ func dramaSpecs() []dramaSpec {
 			Cover: "https://picsum.photos/seed/drama1/600/900", CreatorPhone: "13800000001",
 			FreeEpisodes: 3, PriceCents: 990, EpisodeCount: 12,
 			PlayCount: 152_300, LikeCount: 18_240, FavoriteCount: 9_120, SortOrder: 100,
-			PrimaryTheme: "现言",
+			PrimaryTheme: "都市日常", // 旧红果题材「现言」已统一到漫剧题材
 			Settings:     []string{"豪门", "重生", "打脸虐恋", "破镜重圆"},
 			Backgrounds:  []string{"现代", "都市"},
 			Audience:     "女频",
@@ -338,7 +350,7 @@ func dramaSpecs() []dramaSpec {
 			Cover: "https://picsum.photos/seed/drama2/600/900", CreatorPhone: "13800000001",
 			FreeEpisodes: 2, PriceCents: 1290, EpisodeCount: 16,
 			PlayCount: 98_500, LikeCount: 12_300, FavoriteCount: 7_800, SortOrder: 95,
-			PrimaryTheme: "古言",
+			PrimaryTheme: "古风", // 旧红果题材「古言」已统一到漫剧题材
 			Settings:     []string{"穿越", "大女主", "先婚后爱", "马甲"},
 			Backgrounds:  []string{"古代", "宫廷"},
 			Audience:     "女频",
@@ -378,7 +390,7 @@ func dramaSpecs() []dramaSpec {
 			Cover: "https://picsum.photos/seed/drama6/600/900", CreatorPhone: "13800000002",
 			FreeEpisodes: 2, PriceCents: 0, EpisodeCount: 4, // 这部留 draft 状态
 			PlayCount: 0, LikeCount: 0, FavoriteCount: 0, SortOrder: 50,
-			PrimaryTheme: "年代爱情",
+			PrimaryTheme: "年代", // 旧红果题材「年代爱情」已统一到漫剧题材
 			Settings:     []string{"重生", "小人物"},
 			Backgrounds:  []string{"年代"},
 			Audience:     "男频",
