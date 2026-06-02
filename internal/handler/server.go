@@ -164,6 +164,7 @@ func (s *Server) Router() *gin.Engine {
 	appAuth.GET("/me", s.appMe)
 	appAuth.PUT("/me", s.appUpdateMe)
 	appAuth.GET("/me/favorites", s.appListFavorites)
+	appAuth.GET("/me/likes", s.appListLikes) // 我的点赞：点赞过的剧集（集级）
 	appAuth.GET("/episodes/:id/play", s.appPlayEpisode)
 	appAuth.POST("/play-history", s.appUpsertPlayHistory)
 	appAuth.GET("/play-history", s.appListPlayHistory)

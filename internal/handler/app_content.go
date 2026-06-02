@@ -111,7 +111,47 @@ func (s *Server) appListDramas(c *gin.Context) {
 		response.ServerError(c, "查询短剧列表失败")
 		return
 	}
-	response.OK(c, pageResp(dramaCardList(list), page, pageSize, total))
+	// 剧场页（图文形式）卡片要展示「类型」标签（如 战斗/奇幻/古代），按 drama_tags 批量补上。
+	views := dramaCardList(list)
+	ids := make([]uint64, len(list))
+	for i, d := range list {
+		ids[i] = d.ID
+	}
+	tagMap := s.collectDramaTagNames(ids)
+	for i, d := range list {
+		tags := tagMap[d.ID]
+		if tags == nil {
+			tags = []string{}
+		}
+		views[i]["tags"] = tags
+	}
+	response.OK(c, pageResp(views, page, pageSize, total))
+}
+
+// collectDramaTagNames 批量取每部剧的分类标签名（drama_tags 关联），用于剧场页卡片「类型」展示。
+// 顺序：题材(theme)优先，再 setting / background / audience，各维度内按 sort_order——
+// 这样前端截断前 N 个时拿到的是最能描述剧的题材标签（对齐红果卡片「战斗/奇幻/古代」那种）。
+func (s *Server) collectDramaTagNames(dramaIDs []uint64) map[uint64][]string {
+	out := map[uint64][]string{}
+	if len(dramaIDs) == 0 {
+		return out
+	}
+	var rows []struct {
+		DramaID uint64
+		Name    string
+	}
+	s.db.Table("drama_tags").
+		Select("drama_tags.drama_id AS drama_id, categories.name AS name").
+		Joins("JOIN categories ON categories.id = drama_tags.category_id").
+		Where("drama_tags.drama_id IN ?", dramaIDs).
+		Order(`drama_tags.drama_id,
+			CASE categories.type WHEN 'theme' THEN 1 WHEN 'setting' THEN 2 WHEN 'background' THEN 3 ELSE 4 END,
+			categories.sort_order`).
+		Scan(&rows)
+	for _, r := range rows {
+		out[r.DramaID] = append(out[r.DramaID], r.Name)
+	}
+	return out
 }
 
 func (s *Server) appDramaDetail(c *gin.Context) {

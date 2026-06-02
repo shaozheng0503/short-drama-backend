@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"time"
 
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
@@ -86,6 +87,59 @@ func (s *Server) appListFavorites(c *gin.Context) {
 	}
 
 	response.OK(c, pageResp(dramaCardList(dramas), page, pageSize, total))
+}
+
+// appListLikes —— 「我的点赞」：当前用户点赞过的剧集（集级，每集一条，按点赞时间倒序）。
+// 剧集本身无封面，故 cover_url 用所属剧的主封面（对齐红果「返回每一集的封面即可」）；
+// like_count 为该集的点赞数。短剧/漫剧/高光/预告 等内容类型筛选暂无字段支撑，先返回全部。
+func (s *Server) appListLikes(c *gin.Context) {
+	uid := middleware.CurrentID(c)
+	page, pageSize := paginate(c)
+
+	base := s.db.Table("user_actions").
+		Where("user_actions.user_id = ? AND user_actions.action = ? AND user_actions.episode_id > 0", uid, model.ActionLike).
+		Joins("JOIN episodes ON episodes.id = user_actions.episode_id").
+		Joins("JOIN dramas ON dramas.id = user_actions.drama_id").
+		Where("dramas.status = ?", model.DramaStatusPublished)
+
+	var total int64
+	base.Session(&gorm.Session{}).Count(&total)
+
+	var rows []struct {
+		EpisodeID        uint64
+		EpisodeNo        int
+		EpisodeLikeCount int64
+		DramaID          uint64
+		DramaTitle       string
+		CoverURL         string
+		LikedAt          time.Time
+	}
+	if err := base.
+		Select(`episodes.id AS episode_id, episodes.episode_no AS episode_no,
+			episodes.like_count AS episode_like_count, dramas.id AS drama_id,
+			dramas.title AS drama_title, dramas.cover_url AS cover_url,
+			user_actions.created_at AS liked_at`).
+		Order("user_actions.created_at desc").
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Scan(&rows).Error; err != nil {
+		response.ServerError(c, "查询点赞失败")
+		return
+	}
+
+	list := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		list = append(list, gin.H{
+			"episode_id": r.EpisodeID,
+			"episode_no": r.EpisodeNo,
+			"drama_id":   r.DramaID,
+			"title":      r.DramaTitle,
+			"cover_url":  r.CoverURL,
+			"like_count": r.EpisodeLikeCount,
+			"liked_at":   r.LikedAt,
+		})
+	}
+	response.OK(c, pageResp(list, page, pageSize, total))
 }
 
 // appToggleFavorite 收藏 / 取消收藏（整剧级，episode_id=0）。
