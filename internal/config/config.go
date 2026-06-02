@@ -103,9 +103,12 @@ type Config struct {
 	VODPlaySignRlimit  int           // 限制 IP 数（实测「试看」类业务不要乱填，默认 0）
 
 	// 微信 / 支付宝商户号（生产时填齐才会真实下单）
-	WechatAppID    string
-	WechatMchID    string
-	WechatAPIKeyV3 string
+	WechatAppID            string
+	WechatMchID            string
+	WechatAPIKeyV3         string
+	WechatMchCertSerialNo  string // 商户证书序列号
+	WechatMchPrivateKeyPath string // 商户 API 私钥文件路径 apiclient_key.pem
+	WechatNotifyURL        string // 异步通知地址 https://<域名>/v1/webhooks/wechat/pay
 
 	AlipayAppID      string
 	AlipayPrivateKey string
@@ -193,9 +196,12 @@ func Load() Config {
 		VODPlaySignExpire:  time.Duration(getEnvInt("VOD_PLAY_SIGN_EXPIRE_SECONDS", 3600)) * time.Second,
 		VODPlaySignExper:   getEnvInt("VOD_PLAY_SIGN_EXPER", 0),
 		VODPlaySignRlimit:  getEnvInt("VOD_PLAY_SIGN_RLIMIT", 0),
-		WechatAppID:    getEnv("WECHAT_APP_ID", ""),
-		WechatMchID:    getEnv("WECHAT_MCH_ID", ""),
-		WechatAPIKeyV3: getEnv("WECHAT_API_KEY_V3", ""),
+		WechatAppID:             getEnv("WECHAT_APP_ID", ""),
+		WechatMchID:             getEnv("WECHAT_MCH_ID", ""),
+		WechatAPIKeyV3:          getEnv("WECHAT_API_KEY_V3", ""),
+		WechatMchCertSerialNo:   getEnv("WECHAT_MCH_CERT_SERIAL", ""),
+		WechatMchPrivateKeyPath: getEnv("WECHAT_MCH_PRIVATE_KEY_PATH", ""),
+		WechatNotifyURL:         getEnv("WECHAT_NOTIFY_URL", ""),
 
 		AlipayAppID:      getEnv("ALIPAY_APP_ID", ""),
 		AlipayPrivateKey: getEnv("ALIPAY_PRIVATE_KEY", ""),

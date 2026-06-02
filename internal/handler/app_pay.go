@@ -51,7 +51,7 @@ func (s *Server) appCreateOrder(c *gin.Context) {
 		log.Printf("[order] user=%d idem=%s drama=%d episode=%d", uid, idem, req.DramaID, req.EpisodeID)
 	}
 
-	outcome, err := s.billing.CreateOrReuseOrder(uid, req.DramaID, req.EpisodeID, req.ProductID, req.PaymentMethod, req.PayScene)
+	outcome, err := s.billing.CreateOrReuseOrder(uid, req.DramaID, req.EpisodeID, req.ProductID, req.PaymentMethod, req.PayScene, c.ClientIP())
 	if err != nil {
 		switch {
 		case errors.Is(err, billing.ErrEpisodeNotFound):
