@@ -16,6 +16,7 @@ type PrepayInput struct {
 	AmountCents int64
 	Subject     string
 	UserID      uint64
+	Scene       string // 支付宝多端：app（默认）/ wap；其它渠道忽略
 }
 
 // WebhookEvent 解析回调后得到的标准化事件。
@@ -57,14 +58,29 @@ func NewRegistry(cfg config.Config) *Registry {
 		reg.providers["wechat"] = &WechatProvider{cfg: cfg}
 	}
 
-	// 支付宝：同上
-	if cfg.PaymentDevMode {
+	// 支付宝：只要配齐 app_id+应用私钥+支付宝公钥，就启用真实 provider（沙箱或生产由
+	// ALIPAY_SANDBOX 决定）——这样沙箱联调期填了密钥即走真实沙箱，而微信仍可走 dev stub。
+	// 初始化失败（密钥格式错等）降级为 Unavailable，避免无验签兜底。
+	alipayConfigured := cfg.AlipayAppID != "" && cfg.AlipayPrivateKey != "" && cfg.AlipayPublicKey != ""
+	switch {
+	case alipayConfigured:
+		ap, err := NewAlipayProvider(cfg)
+		if err != nil {
+			log.Printf("[payment] 支付宝 provider 初始化失败，alipay 已禁用: %v", err)
+			reg.providers["alipay"] = &UnavailableProvider{method: "alipay"}
+		} else {
+			mode := "生产"
+			if cfg.AlipaySandbox {
+				mode = "沙箱"
+			}
+			log.Printf("[payment] 支付宝 provider 已启用（%s 网关）", mode)
+			reg.providers["alipay"] = ap
+		}
+	case cfg.PaymentDevMode:
 		reg.providers["alipay"] = &DevProvider{method: "alipay"}
-	} else if cfg.AlipayAppID == "" || cfg.AlipayPrivateKey == "" || cfg.AlipayPublicKey == "" {
+	default:
 		reg.providers["alipay"] = &UnavailableProvider{method: "alipay"}
 		log.Printf("[payment] PAYMENT_DEV_MODE=false 但支付宝配置不全，alipay 已禁用")
-	} else {
-		reg.providers["alipay"] = &AlipayProvider{cfg: cfg}
 	}
 
 	return reg

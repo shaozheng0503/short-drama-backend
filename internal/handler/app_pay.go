@@ -36,6 +36,7 @@ type createOrderRequest struct {
 	EpisodeID     uint64  `json:"episode_id" binding:"required"`
 	ProductID     *uint64 `json:"product_id"`
 	PaymentMethod string  `json:"payment_method" binding:"required"`
+	PayScene      string  `json:"pay_scene"` // 支付宝多端：app（默认）/ wap；微信忽略
 }
 
 func (s *Server) appCreateOrder(c *gin.Context) {
@@ -50,7 +51,7 @@ func (s *Server) appCreateOrder(c *gin.Context) {
 		log.Printf("[order] user=%d idem=%s drama=%d episode=%d", uid, idem, req.DramaID, req.EpisodeID)
 	}
 
-	outcome, err := s.billing.CreateOrReuseOrder(uid, req.DramaID, req.EpisodeID, req.ProductID, req.PaymentMethod)
+	outcome, err := s.billing.CreateOrReuseOrder(uid, req.DramaID, req.EpisodeID, req.ProductID, req.PaymentMethod, req.PayScene)
 	if err != nil {
 		switch {
 		case errors.Is(err, billing.ErrEpisodeNotFound):

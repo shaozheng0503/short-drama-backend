@@ -7,6 +7,7 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/redis/go-redis/v9 v9.19.0
+	github.com/smartwalle/alipay/v3 v3.2.29
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.101
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/sms v1.3.93
 	github.com/tencentyun/cos-go-sdk-v5 v0.7.73
@@ -51,6 +52,9 @@ require (
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/richardlehane/mscfb v1.0.6 // indirect
 	github.com/richardlehane/msoleps v1.0.6 // indirect
+	github.com/smartwalle/ncrypto v1.0.4 // indirect
+	github.com/smartwalle/ngx v1.1.0 // indirect
+	github.com/smartwalle/nsign v1.0.9 // indirect
 	github.com/tiendc/go-deepcopy v1.7.2 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect

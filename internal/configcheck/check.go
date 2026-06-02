@@ -155,6 +155,15 @@ func checkSMS(cfg config.Config, opts Options, report *Report) {
 }
 
 func checkPayment(cfg config.Config, opts Options, report *Report) {
+	// 支付宝只要配齐密钥就会启用真实 provider（不论 PAYMENT_DEV_MODE），此时缺 notify_url 收不到回调，
+	// 故这条检查放在 dev 模式早退之前。
+	alipayConfigured := strings.TrimSpace(cfg.AlipayAppID) != "" &&
+		strings.TrimSpace(cfg.AlipayPrivateKey) != "" &&
+		strings.TrimSpace(cfg.AlipayPublicKey) != ""
+	if alipayConfigured && strings.TrimSpace(cfg.AlipayNotifyURL) == "" {
+		report.add(SeverityWarn, "alipay_notify_url_missing", "支付宝已配密钥但 ALIPAY_NOTIFY_URL 为空，收不到异步支付结果通知")
+	}
+
 	if cfg.PaymentDevMode {
 		severity := SeverityWarn
 		if opts.Prod {

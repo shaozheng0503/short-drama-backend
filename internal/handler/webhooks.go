@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net/http"
 	"time"
 
 	"ai-drama-platform/internal/alert"
@@ -13,6 +14,16 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// ackPayWebhook 回执：支付宝异步通知要求 HTTP body 恰好为纯文本 "success"，否则会持续重试；
+// 其它渠道（微信/dev）沿用 JSON ack。需重试/失败的场景仍走 response.WebhookRetry（非 200）。
+func ackPayWebhook(c *gin.Context, method string, body gin.H) {
+	if method == "alipay" {
+		c.String(http.StatusOK, "success")
+		return
+	}
+	response.OK(c, body)
+}
 
 func (s *Server) webhookWechatPay(c *gin.Context) {
 	s.handlePayWebhook(c, "wechat")
@@ -59,7 +70,7 @@ func (s *Server) handlePayWebhook(c *gin.Context, method string) {
 
 	if !event.Paid {
 		log.Printf("[webhook] %s order=%s non-paid event ignored", method, event.OrderNo)
-		response.OK(c, gin.H{"ack": true})
+		ackPayWebhook(c, method, gin.H{"ack": true})
 		return
 	}
 
@@ -119,7 +130,7 @@ func (s *Server) handlePayWebhook(c *gin.Context, method string) {
 				},
 			})
 			// ack 200：渠道无需重试，但 ops 必须人工跟进退款
-			response.OK(c, gin.H{"ack": true, "ignored": "order_expired"})
+			ackPayWebhook(c, method, gin.H{"ack": true, "ignored": "order_expired"})
 			return
 		case errors.Is(err, billing.ErrPaymentMethodMismatch):
 			log.Printf("[webhook] %s order=%s method mismatch", method, event.OrderNo)
@@ -151,5 +162,5 @@ func (s *Server) handlePayWebhook(c *gin.Context, method string) {
 		return
 	}
 	log.Printf("[webhook] %s order=%s marked paid", method, event.OrderNo)
-	response.OK(c, gin.H{"ack": true})
+	ackPayWebhook(c, method, gin.H{"ack": true})
 }
