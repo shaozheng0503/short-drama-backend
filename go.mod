@@ -11,6 +11,7 @@ require (
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.101
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/sms v1.3.93
 	github.com/tencentyun/cos-go-sdk-v5 v0.7.73
+	github.com/wechatpay-apiv3/wechatpay-go v0.2.21
 	github.com/xuri/excelize/v2 v2.10.1
 	golang.org/x/crypto v0.51.0
 	golang.org/x/time v0.15.0

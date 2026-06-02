@@ -54,7 +54,7 @@ type CreateOrderOutcome struct {
 	PayParams       payment.PrepayParams
 }
 
-func (s *Service) CreateOrReuseOrder(userID uint64, dramaID, episodeID uint64, productID *uint64, method, payScene string) (*CreateOrderOutcome, error) {
+func (s *Service) CreateOrReuseOrder(userID uint64, dramaID, episodeID uint64, productID *uint64, method, payScene, clientIP string) (*CreateOrderOutcome, error) {
 	if method != model.PaymentMethodWechat && method != model.PaymentMethodAlipay {
 		return nil, payment.ErrUnsupportedMethod
 	}
@@ -160,10 +160,10 @@ func (s *Service) CreateOrReuseOrder(userID uint64, dramaID, episodeID uint64, p
 		}
 		return nil, err
 	}
-	return s.attachPayParams(&order, method, payScene)
+	return s.attachPayParams(&order, method, payScene, clientIP)
 }
 
-func (s *Service) attachPayParams(order *model.Order, method, payScene string) (*CreateOrderOutcome, error) {
+func (s *Service) attachPayParams(order *model.Order, method, payScene, clientIP string) (*CreateOrderOutcome, error) {
 	provider, err := s.payments.Get(method)
 	if err != nil {
 		return nil, err
@@ -174,6 +174,7 @@ func (s *Service) attachPayParams(order *model.Order, method, payScene string) (
 		Subject:     fmt.Sprintf("剧集解锁 #%d", order.EpisodeID),
 		UserID:      order.UserID,
 		Scene:       payScene,
+		ClientIP:    clientIP,
 	})
 	if err != nil {
 		return nil, err

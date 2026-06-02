@@ -16,7 +16,8 @@ type PrepayInput struct {
 	AmountCents int64
 	Subject     string
 	UserID      uint64
-	Scene       string // 支付宝多端：app（默认）/ wap；其它渠道忽略
+	Scene       string // 多端：app（默认）/ wap(h5)；微信 / 支付宝按此选产品
+	ClientIP    string // 微信 H5 支付必填 payer_client_ip；其它场景可空
 }
 
 // WebhookEvent 解析回调后得到的标准化事件。
@@ -48,14 +49,26 @@ type Registry struct {
 func NewRegistry(cfg config.Config) *Registry {
 	reg := &Registry{providers: map[string]Provider{}}
 
-	// 微信：dev 模式走 stub；生产缺配置时拒绝，避免无验签回调被伪造。
-	if cfg.PaymentDevMode {
+	// 微信：配齐 app_id+mch_id+APIv3 密钥+证书序列号+商户私钥文件，就启用真实 provider；
+	// 初始化失败（如平台证书下载失败）降级 Unavailable，避免无验签兜底。否则按 dev 模式走 stub。
+	// 注意：微信 V3 没有可用沙箱，真实 provider 需真实商户资质 + 公网才能跑通。
+	wechatConfigured := cfg.WechatAppID != "" && cfg.WechatMchID != "" && cfg.WechatAPIKeyV3 != "" &&
+		cfg.WechatMchCertSerialNo != "" && cfg.WechatMchPrivateKeyPath != ""
+	switch {
+	case wechatConfigured:
+		wp, err := NewWechatProvider(cfg)
+		if err != nil {
+			log.Printf("[payment] 微信 provider 初始化失败，wechat 已禁用: %v", err)
+			reg.providers["wechat"] = &UnavailableProvider{method: "wechat"}
+		} else {
+			log.Printf("[payment] 微信 provider 已启用")
+			reg.providers["wechat"] = wp
+		}
+	case cfg.PaymentDevMode:
 		reg.providers["wechat"] = &DevProvider{method: "wechat"}
-	} else if cfg.WechatAppID == "" || cfg.WechatMchID == "" || cfg.WechatAPIKeyV3 == "" {
+	default:
 		reg.providers["wechat"] = &UnavailableProvider{method: "wechat"}
 		log.Printf("[payment] PAYMENT_DEV_MODE=false 但微信支付配置不全，wechat 已禁用")
-	} else {
-		reg.providers["wechat"] = &WechatProvider{cfg: cfg}
 	}
 
 	// 支付宝：只要配齐 app_id+应用私钥+支付宝公钥，就启用真实 provider（沙箱或生产由

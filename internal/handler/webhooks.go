@@ -18,11 +18,16 @@ import (
 // ackPayWebhook 回执：支付宝异步通知要求 HTTP body 恰好为纯文本 "success"，否则会持续重试；
 // 其它渠道（微信/dev）沿用 JSON ack。需重试/失败的场景仍走 response.WebhookRetry（非 200）。
 func ackPayWebhook(c *gin.Context, method string, body gin.H) {
-	if method == "alipay" {
+	switch method {
+	case "alipay":
+		// 支付宝要求 body 恰好为纯文本 "success"。
 		c.String(http.StatusOK, "success")
-		return
+	case "wechat":
+		// 微信 V3 要求 200 + {"code":"SUCCESS","message":"成功"}，否则会重试。
+		c.JSON(http.StatusOK, gin.H{"code": "SUCCESS", "message": "成功"})
+	default:
+		response.OK(c, body)
 	}
-	response.OK(c, body)
 }
 
 func (s *Server) webhookWechatPay(c *gin.Context) {

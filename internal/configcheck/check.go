@@ -164,6 +164,14 @@ func checkPayment(cfg config.Config, opts Options, report *Report) {
 		report.add(SeverityWarn, "alipay_notify_url_missing", "支付宝已配密钥但 ALIPAY_NOTIFY_URL 为空，收不到异步支付结果通知")
 	}
 
+	// 微信同理：配齐凭据即启用真实 provider（不论 dev 模式），缺 notify_url 收不到回调。
+	wechatConfigured := strings.TrimSpace(cfg.WechatAppID) != "" && strings.TrimSpace(cfg.WechatMchID) != "" &&
+		strings.TrimSpace(cfg.WechatAPIKeyV3) != "" && strings.TrimSpace(cfg.WechatMchCertSerialNo) != "" &&
+		strings.TrimSpace(cfg.WechatMchPrivateKeyPath) != ""
+	if wechatConfigured && strings.TrimSpace(cfg.WechatNotifyURL) == "" {
+		report.add(SeverityWarn, "wechat_notify_url_missing", "微信已配凭据但 WECHAT_NOTIFY_URL 为空，收不到异步支付结果通知")
+	}
+
 	if cfg.PaymentDevMode {
 		severity := SeverityWarn
 		if opts.Prod {
@@ -174,9 +182,11 @@ func checkPayment(cfg config.Config, opts Options, report *Report) {
 	}
 
 	wechatRequired := map[string]string{
-		"WECHAT_APP_ID":     cfg.WechatAppID,
-		"WECHAT_MCH_ID":     cfg.WechatMchID,
-		"WECHAT_API_KEY_V3": cfg.WechatAPIKeyV3,
+		"WECHAT_APP_ID":               cfg.WechatAppID,
+		"WECHAT_MCH_ID":               cfg.WechatMchID,
+		"WECHAT_API_KEY_V3":           cfg.WechatAPIKeyV3,
+		"WECHAT_MCH_CERT_SERIAL":      cfg.WechatMchCertSerialNo,
+		"WECHAT_MCH_PRIVATE_KEY_PATH": cfg.WechatMchPrivateKeyPath,
 	}
 	for name, value := range wechatRequired {
 		if strings.TrimSpace(value) == "" {
