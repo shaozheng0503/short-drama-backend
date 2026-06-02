@@ -110,6 +110,8 @@ type Config struct {
 	AlipayAppID      string
 	AlipayPrivateKey string
 	AlipayPublicKey  string
+	AlipaySandbox    bool   // true=沙箱网关，false=生产网关（默认沙箱，更安全）
+	AlipayNotifyURL  string // 异步通知地址，公网可达：https://<域名>/v1/webhooks/alipay/pay
 }
 
 func Load() Config {
@@ -198,6 +200,8 @@ func Load() Config {
 		AlipayAppID:      getEnv("ALIPAY_APP_ID", ""),
 		AlipayPrivateKey: getEnv("ALIPAY_PRIVATE_KEY", ""),
 		AlipayPublicKey:  getEnv("ALIPAY_PUBLIC_KEY", ""),
+		AlipaySandbox:    getEnvBool("ALIPAY_SANDBOX", true),
+		AlipayNotifyURL:  getEnv("ALIPAY_NOTIFY_URL", ""),
 	}
 }
 
