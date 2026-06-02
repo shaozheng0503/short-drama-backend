@@ -87,12 +87,19 @@ func (s *Server) appPlayEpisode(c *gin.Context) {
 		}
 	}
 
+	var likedCnt int64
+	s.db.Model(&model.UserAction{}).
+		Where("user_id = ? AND episode_id = ? AND action = ?", uid, ep.ID, model.ActionLike).
+		Count(&likedCnt)
+
 	response.OK(c, gin.H{
 		"episode": gin.H{
 			"id":         ep.ID,
 			"drama_id":   ep.DramaID,
 			"episode_no": ep.EpisodeNo,
 			"title":      ep.Title,
+			"like_count": ep.LikeCount,
+			"liked":      likedCnt > 0,
 		},
 		"play_url":        playURL,
 		"expire_seconds":  expireSeconds,

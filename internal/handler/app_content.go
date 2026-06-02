@@ -217,6 +217,7 @@ func (s *Server) appListEpisodes(c *gin.Context) {
 	}
 
 	unlocked := map[uint64]bool{}
+	liked := map[uint64]bool{}
 	if uid := optionalAppUserID(c, s); uid > 0 {
 		var unlocks []model.EpisodeUnlock
 		s.db.Select("episode_id").
@@ -225,11 +226,18 @@ func (s *Server) appListEpisodes(c *gin.Context) {
 		for _, u := range unlocks {
 			unlocked[u.EpisodeID] = true
 		}
+		var likedActions []model.UserAction
+		s.db.Select("episode_id").
+			Where("user_id = ? AND drama_id = ? AND action = ?", uid, drama.ID, model.ActionLike).
+			Find(&likedActions)
+		for _, a := range likedActions {
+			liked[a.EpisodeID] = true
+		}
 	}
 
 	views := make([]gin.H, 0, len(episodes))
 	for _, ep := range episodes {
-		views = append(views, episodeAppView(ep, drama.FreeEpisodes, unlocked[ep.ID]))
+		views = append(views, episodeAppView(ep, drama.FreeEpisodes, unlocked[ep.ID], liked[ep.ID]))
 	}
 	response.OK(c, gin.H{"list": views})
 }

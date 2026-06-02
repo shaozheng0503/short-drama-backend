@@ -167,8 +167,9 @@ func (s *Server) Router() *gin.Engine {
 	appAuth.GET("/episodes/:id/play", s.appPlayEpisode)
 	appAuth.POST("/play-history", s.appUpsertPlayHistory)
 	appAuth.GET("/play-history", s.appListPlayHistory)
-	appAuth.POST("/dramas/:id/like", s.appLikeDrama)
-	appAuth.DELETE("/dramas/:id/like", s.appUnlikeDrama)
+	// 点赞=单集级（对齐红果），收藏=整剧级
+	appAuth.POST("/episodes/:id/like", s.appLikeEpisode)
+	appAuth.DELETE("/episodes/:id/like", s.appUnlikeEpisode)
 	appAuth.POST("/dramas/:id/favorite", s.appFavoriteDrama)
 	appAuth.DELETE("/dramas/:id/favorite", s.appUnfavoriteDrama)
 	appAuth.POST("/dramas/:id/share", s.appShareDrama)

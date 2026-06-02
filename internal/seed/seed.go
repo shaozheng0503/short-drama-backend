@@ -87,7 +87,7 @@ func Run(db *gorm.DB, cfg config.Config) (*Result, error) {
 	}
 	r.Episodes = n
 
-	n, err = seedUserActions(db, users, dramas)
+	n, err = seedUserActions(db, users, dramas, episodes)
 	if err != nil {
 		return nil, fmt.Errorf("seed user actions: %w", err)
 	}
@@ -566,10 +566,12 @@ func seedEpisodes(
 }
 
 // seedUserActions：用户 1 点赞 + 收藏剧 1、剧 4；用户 2 点赞剧 2；用户 3 收藏剧 5。
+// seedUserActions：点赞挂到第 1 集（集级，对齐红果），收藏挂在整剧（episode_id=0）。
 func seedUserActions(
 	db *gorm.DB,
 	users map[string]uint64,
 	dramas map[string]uint64,
+	episodes map[uint64][]model.Episode,
 ) (int, error) {
 	pairs := []struct {
 		UserPhone string
@@ -589,17 +591,34 @@ func seedUserActions(
 		if !ok1 || !ok2 {
 			continue
 		}
-		ua := model.UserAction{UserID: uid, DramaID: did, Action: p.Action}
+		// 点赞落到第 1 集；收藏 episode_id=0（剧级）。
+		var episodeID uint64
+		if p.Action == model.ActionLike {
+			eps := episodes[did]
+			if len(eps) == 0 {
+				continue
+			}
+			episodeID = eps[0].ID
+		}
+		ua := model.UserAction{UserID: uid, DramaID: did, EpisodeID: episodeID, Action: p.Action}
 		_, isNew, err := firstOrCreateByUnique(db, map[string]interface{}{
-			"user_id":  uid,
-			"drama_id": did,
-			"action":   p.Action,
+			"user_id":    uid,
+			"drama_id":   did,
+			"episode_id": episodeID,
+			"action":     p.Action,
 		}, ua)
 		if err != nil {
 			return 0, err
 		}
 		if isNew {
 			created++
+			// 集级点赞同步该集 like_count +1；drama 总赞沿用 dramaSpecs 的 mock 值。
+			if p.Action == model.ActionLike {
+				if err := db.Model(&model.Episode{}).Where("id = ?", episodeID).
+					UpdateColumn("like_count", gorm.Expr("like_count + ?", 1)).Error; err != nil {
+					return 0, err
+				}
+			}
 		}
 	}
 	return created, nil
