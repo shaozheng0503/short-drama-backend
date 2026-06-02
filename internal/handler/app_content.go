@@ -148,7 +148,17 @@ func (s *Server) collectDramaTagNames(dramaIDs []uint64) map[uint64][]string {
 			CASE categories.type WHEN 'theme' THEN 1 WHEN 'setting' THEN 2 WHEN 'background' THEN 3 ELSE 4 END,
 			categories.sort_order`).
 		Scan(&rows)
+	// 同名标签去重（一部剧可能在题材+背景都标了同名，如「年代」/「民国」）；
+	// rows 已按题材优先排序，保留首次出现即保留题材那条。
+	seen := map[uint64]map[string]bool{}
 	for _, r := range rows {
+		if seen[r.DramaID] == nil {
+			seen[r.DramaID] = map[string]bool{}
+		}
+		if seen[r.DramaID][r.Name] {
+			continue
+		}
+		seen[r.DramaID][r.Name] = true
 		out[r.DramaID] = append(out[r.DramaID], r.Name)
 	}
 	return out
