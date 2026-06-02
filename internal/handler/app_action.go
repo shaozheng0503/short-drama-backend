@@ -12,20 +12,22 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-func (s *Server) appLikeDrama(c *gin.Context) {
-	s.appToggleAction(c, model.ActionLike, "like_count", true)
+// 点赞是单集级：操作 episodes/:id，同时维护 episodes.like_count 与 dramas.like_count（全剧总赞）。
+func (s *Server) appLikeEpisode(c *gin.Context) {
+	s.appToggleEpisodeLike(c, true)
 }
 
-func (s *Server) appUnlikeDrama(c *gin.Context) {
-	s.appToggleAction(c, model.ActionLike, "like_count", false)
+func (s *Server) appUnlikeEpisode(c *gin.Context) {
+	s.appToggleEpisodeLike(c, false)
 }
 
+// 收藏是整剧级：操作 dramas/:id，episode_id=0。
 func (s *Server) appFavoriteDrama(c *gin.Context) {
-	s.appToggleAction(c, model.ActionFavorite, "favorite_count", true)
+	s.appToggleFavorite(c, true)
 }
 
 func (s *Server) appUnfavoriteDrama(c *gin.Context) {
-	s.appToggleAction(c, model.ActionFavorite, "favorite_count", false)
+	s.appToggleFavorite(c, false)
 }
 
 func (s *Server) appShareDrama(c *gin.Context) {
@@ -86,7 +88,8 @@ func (s *Server) appListFavorites(c *gin.Context) {
 	response.OK(c, pageResp(dramaCardList(dramas), page, pageSize, total))
 }
 
-func (s *Server) appToggleAction(c *gin.Context, action, counter string, enable bool) {
+// appToggleFavorite 收藏 / 取消收藏（整剧级，episode_id=0）。
+func (s *Server) appToggleFavorite(c *gin.Context, enable bool) {
 	uid := middleware.CurrentID(c)
 	dramaID := parseUint(c.Param("id"))
 	if dramaID == 0 {
@@ -110,30 +113,24 @@ func (s *Server) appToggleAction(c *gin.Context, action, counter string, enable 
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		if enable {
-			rec := model.UserAction{UserID: uid, DramaID: dramaID, Action: action}
+			rec := model.UserAction{UserID: uid, DramaID: dramaID, EpisodeID: 0, Action: model.ActionFavorite}
 			res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rec)
 			if res.Error != nil {
 				return res.Error
 			}
 			if res.RowsAffected > 0 {
-				if err := tx.Model(&model.Drama{}).
-					Where("id = ?", dramaID).
-					UpdateColumn(counter, gorm.Expr(counter+" + ?", 1)).Error; err != nil {
-					return err
-				}
+				return tx.Model(&model.Drama{}).Where("id = ?", dramaID).
+					UpdateColumn("favorite_count", gorm.Expr("favorite_count + ?", 1)).Error
 			}
 		} else {
-			res := tx.Where("user_id = ? AND drama_id = ? AND action = ?", uid, dramaID, action).
+			res := tx.Where("user_id = ? AND drama_id = ? AND episode_id = 0 AND action = ?", uid, dramaID, model.ActionFavorite).
 				Delete(&model.UserAction{})
 			if res.Error != nil {
 				return res.Error
 			}
 			if res.RowsAffected > 0 {
-				if err := tx.Model(&model.Drama{}).
-					Where("id = ? AND "+counter+" > 0", dramaID).
-					UpdateColumn(counter, gorm.Expr(counter+" - ?", 1)).Error; err != nil {
-					return err
-				}
+				return tx.Model(&model.Drama{}).Where("id = ? AND favorite_count > 0", dramaID).
+					UpdateColumn("favorite_count", gorm.Expr("favorite_count - ?", 1)).Error
 			}
 		}
 		return nil
@@ -143,16 +140,78 @@ func (s *Server) appToggleAction(c *gin.Context, action, counter string, enable 
 		return
 	}
 
-	// 重新读最新计数
 	var refreshed model.Drama
-	s.db.Select("like_count", "favorite_count").First(&refreshed, dramaID)
+	s.db.Select("favorite_count").First(&refreshed, dramaID)
+	response.OK(c, gin.H{"favorited": enable, "favorite_count": refreshed.FavoriteCount})
+}
 
-	switch action {
-	case model.ActionLike:
-		response.OK(c, gin.H{"liked": enable, "like_count": refreshed.LikeCount})
-	case model.ActionFavorite:
-		response.OK(c, gin.H{"favorited": enable, "favorite_count": refreshed.FavoriteCount})
-	default:
-		response.OK(c, gin.H{"ok": true})
+// appToggleEpisodeLike 点赞 / 取消点赞（单集级）。同步该集 episodes.like_count
+// 与该剧 dramas.like_count（全剧总赞 = 各集之和）。
+func (s *Server) appToggleEpisodeLike(c *gin.Context, enable bool) {
+	uid := middleware.CurrentID(c)
+	episodeID := parseUint(c.Param("id"))
+	if episodeID == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
 	}
+
+	var ep model.Episode
+	if err := s.db.First(&ep, episodeID).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "剧集不存在")
+			return
+		}
+		response.ServerError(c, "查询剧集失败")
+		return
+	}
+	var drama model.Drama
+	if err := s.db.First(&drama, ep.DramaID).Error; err != nil {
+		response.ServerError(c, "查询短剧失败")
+		return
+	}
+	if drama.Status != model.DramaStatusPublished {
+		response.NotFound(c, "短剧未上架")
+		return
+	}
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if enable {
+			rec := model.UserAction{UserID: uid, DramaID: ep.DramaID, EpisodeID: ep.ID, Action: model.ActionLike}
+			res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rec)
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected > 0 {
+				if err := tx.Model(&model.Episode{}).Where("id = ?", ep.ID).
+					UpdateColumn("like_count", gorm.Expr("like_count + ?", 1)).Error; err != nil {
+					return err
+				}
+				return tx.Model(&model.Drama{}).Where("id = ?", ep.DramaID).
+					UpdateColumn("like_count", gorm.Expr("like_count + ?", 1)).Error
+			}
+		} else {
+			res := tx.Where("user_id = ? AND episode_id = ? AND action = ?", uid, ep.ID, model.ActionLike).
+				Delete(&model.UserAction{})
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected > 0 {
+				if err := tx.Model(&model.Episode{}).Where("id = ? AND like_count > 0", ep.ID).
+					UpdateColumn("like_count", gorm.Expr("like_count - ?", 1)).Error; err != nil {
+					return err
+				}
+				return tx.Model(&model.Drama{}).Where("id = ? AND like_count > 0", ep.DramaID).
+					UpdateColumn("like_count", gorm.Expr("like_count - ?", 1)).Error
+			}
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		response.ServerError(c, "操作失败")
+		return
+	}
+
+	var refreshed model.Episode
+	s.db.Select("like_count").First(&refreshed, episodeID)
+	response.OK(c, gin.H{"liked": enable, "like_count": refreshed.LikeCount})
 }

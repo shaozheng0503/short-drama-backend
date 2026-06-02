@@ -387,6 +387,7 @@ type Episode struct {
 	VideoURL        string    `gorm:"column:video_url;size:512" json:"video_url"`
 	DurationSeconds int       `gorm:"column:duration_seconds;default:0" json:"duration_seconds"`
 	Status          string    `gorm:"column:status;size:20;default:uploading" json:"status"`
+	LikeCount       int64     `gorm:"column:like_count;default:0" json:"like_count"` // 集级点赞数（对齐红果：点赞是单集的）
 	CreatedAt       time.Time `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt       time.Time `gorm:"column:updated_at" json:"updated_at"`
 }
@@ -425,12 +426,15 @@ type PlayHistory struct {
 
 func (PlayHistory) TableName() string { return "play_histories" }
 
-// UserAction —— 点赞 / 收藏（MVP 数据库设计 3.9）
+// UserAction —— 点赞 / 收藏（MVP 数据库设计 3.9）。
+// 对齐红果：点赞是**单集级**（episode_id 为该集 id），收藏是**整剧级**（episode_id=0）。
+// 用 0 而非 NULL 占位，避免 Postgres 唯一索引对 NULL 不去重导致收藏可重复插入。
 type UserAction struct {
 	ID        uint64    `gorm:"primaryKey;column:id" json:"id"`
-	UserID    uint64    `gorm:"column:user_id;uniqueIndex:uniq_user_drama_action,priority:1" json:"user_id"`
-	DramaID   uint64    `gorm:"column:drama_id;uniqueIndex:uniq_user_drama_action,priority:2" json:"drama_id"`
-	Action    string    `gorm:"column:action;size:20;uniqueIndex:uniq_user_drama_action,priority:3" json:"action"`
+	UserID    uint64    `gorm:"column:user_id;uniqueIndex:uniq_user_drama_episode_action,priority:1" json:"user_id"`
+	DramaID   uint64    `gorm:"column:drama_id;uniqueIndex:uniq_user_drama_episode_action,priority:2" json:"drama_id"`
+	EpisodeID uint64    `gorm:"column:episode_id;default:0;uniqueIndex:uniq_user_drama_episode_action,priority:3" json:"episode_id"` // 0=剧级(收藏)，>0=集级(点赞)
+	Action    string    `gorm:"column:action;size:20;uniqueIndex:uniq_user_drama_episode_action,priority:4" json:"action"`
 	CreatedAt time.Time `gorm:"column:created_at" json:"created_at"`
 }
 

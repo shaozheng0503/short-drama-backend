@@ -102,6 +102,11 @@ func ensureIndexes(db *gorm.DB) error {
 	`).Error; err != nil {
 		return err
 	}
+	// 点赞下沉到集级：删除旧 (user,drama,action) 唯一索引——它会挡住同剧多集点赞。
+	// 新唯一键 (user,drama,episode,action) 由 AutoMigrate 依 model tag 建（uniq_user_drama_episode_action）。
+	if err := db.Exec(`DROP INDEX IF EXISTS uniq_user_drama_action`).Error; err != nil {
+		return err
+	}
 	return nil
 }
 
