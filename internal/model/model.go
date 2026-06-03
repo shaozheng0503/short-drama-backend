@@ -397,17 +397,56 @@ func (Episode) TableName() string { return "episodes" }
 // 软删用 DeletedAt（GORM 自动支持）：删除后 List 不返，但保留落库供审计 / 复活。
 // 长度限制 1000，超长在 handler 截断+拒绝；user_id 索引按用户拉自己评论。
 type Comment struct {
-	ID        uint64         `gorm:"primaryKey;column:id" json:"id"`
-	DramaID   uint64         `gorm:"column:drama_id;index;not null" json:"drama_id"`
-	EpisodeID *uint64        `gorm:"column:episode_id;index" json:"episode_id"` // 空=剧评，有值=该集的集评
-	UserID    uint64         `gorm:"column:user_id;index;not null" json:"user_id"`
-	Content   string         `gorm:"column:content;type:text;not null" json:"content"`
-	CreatedAt time.Time      `gorm:"column:created_at;index" json:"created_at"`
-	UpdatedAt time.Time      `gorm:"column:updated_at" json:"updated_at"`
-	DeletedAt gorm.DeletedAt `gorm:"column:deleted_at;index" json:"-"`
+	ID      uint64  `gorm:"primaryKey;column:id" json:"id"`
+	DramaID uint64  `gorm:"column:drama_id;index;not null" json:"drama_id"`
+	EpisodeID *uint64 `gorm:"column:episode_id;index" json:"episode_id"` // 空=剧评，有值=该集的集评
+	UserID  uint64  `gorm:"column:user_id;index;not null" json:"user_id"`
+	// 楼中楼：两级模型。ParentID 空=顶层评论；非空=回复，指向「顶层评论」（回复的回复也拍平挂到同一顶层）。
+	// ReplyToUserID=被回复者，用于「回复 @某人」展示（直接回复顶层评论时可为空）。
+	ParentID      *uint64        `gorm:"column:parent_id;index" json:"parent_id"`
+	ReplyToUserID *uint64        `gorm:"column:reply_to_user_id" json:"reply_to_user_id"`
+	Content       string         `gorm:"column:content;type:text;not null" json:"content"`
+	LikeCount     int64          `gorm:"column:like_count;default:0" json:"like_count"`   // 评论点赞数（冗余列，点赞/取消时事务±1）
+	ReplyCount    int64          `gorm:"column:reply_count;default:0" json:"reply_count"` // 回复数（冗余列，仅顶层评论维护）
+	CreatedAt     time.Time      `gorm:"column:created_at;index" json:"created_at"`
+	UpdatedAt     time.Time      `gorm:"column:updated_at" json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"column:deleted_at;index" json:"-"`
 }
 
 func (Comment) TableName() string { return "comments" }
+
+// CommentLike —— 评论点赞。唯一键 (comment_id,user_id) 保证一人一赞，幂等点赞用 OnConflict DoNothing。
+type CommentLike struct {
+	ID        uint64    `gorm:"primaryKey;column:id" json:"id"`
+	CommentID uint64    `gorm:"column:comment_id;uniqueIndex:uniq_comment_user,priority:1" json:"comment_id"`
+	UserID    uint64    `gorm:"column:user_id;uniqueIndex:uniq_comment_user,priority:2" json:"user_id"`
+	CreatedAt time.Time `gorm:"column:created_at" json:"created_at"`
+}
+
+func (CommentLike) TableName() string { return "comment_likes" }
+
+// AppMessage 类型：
+const (
+	AppMessageTypeCommentReply = "comment_reply" // 有人回复了我的评论（楼中楼），一回复一条
+	AppMessageTypeCommentLike  = "comment_like"  // 有人点赞了我的评论，按(收信人,评论)聚合成一条
+)
+
+// AppMessage —— APP 用户站内消息（消息页）。
+// comment_reply：一回复一条；comment_like：按 (recipient_id, comment_id) 聚合，新点赞则更新触发者+置未读+顶上来。
+// 展示字段（评论者/剧集封面/集数等）一律读时 join 出来，消息表只存路由与去重所需的最小信息。
+type AppMessage struct {
+	ID          uint64    `gorm:"primaryKey;column:id" json:"id"`
+	RecipientID uint64    `gorm:"column:recipient_id;index:idx_app_msg_recipient,priority:1;not null" json:"recipient_id"` // 收信人=被回复/被点赞的评论作者
+	Type        string    `gorm:"column:type;size:20;not null" json:"type"`
+	CommentID   uint64    `gorm:"column:comment_id;index;not null" json:"comment_id"` // 被回复/被点赞的「我的评论」
+	ReplyID     *uint64   `gorm:"column:reply_id" json:"reply_id"`                    // comment_reply 专用：新回复的评论 id
+	ActorID     uint64    `gorm:"column:actor_id;not null" json:"actor_id"`           // 触发者（回复者 / 最近点赞者）
+	IsRead      bool      `gorm:"column:is_read;default:false;index:idx_app_msg_recipient,priority:2" json:"is_read"`
+	CreatedAt   time.Time `gorm:"column:created_at;index" json:"created_at"`
+	UpdatedAt   time.Time `gorm:"column:updated_at;index" json:"updated_at"`
+}
+
+func (AppMessage) TableName() string { return "app_messages" }
 
 // PlayHistory —— 观看历史（MVP 数据库设计 3.8）
 // PlayHistory —— 观看历史。**一剧一条**：每个 (user, drama) 只保留一行，episode_id 记最近看到的那一集，

@@ -41,12 +41,22 @@ func (s *Server) adminListComments(c *gin.Context) {
 		response.ServerError(c, "查询评论失败")
 		return
 	}
-	userMap := s.collectCommentUsers(comments)
+	userIDs := make([]uint64, 0, len(comments)*2)
+	for _, cm := range comments {
+		userIDs = append(userIDs, cm.UserID)
+		if cm.ReplyToUserID != nil {
+			userIDs = append(userIDs, *cm.ReplyToUserID)
+		}
+	}
+	userMap := s.usersByIDs(userIDs)
 	dramaTitles := s.attachDramaTitlesForComments(comments)
 	list := make([]gin.H, 0, len(comments))
 	for _, cm := range comments {
-		view := commentView(cm, userMap[cm.UserID])
-		view["drama_id"] = cm.DramaID
+		var replyTo *model.User
+		if cm.ReplyToUserID != nil {
+			replyTo = userMap[*cm.ReplyToUserID]
+		}
+		view := commentView(cm, userMap[cm.UserID], replyTo, false)
 		view["drama_title"] = dramaTitles[cm.DramaID]
 		list = append(list, view)
 	}

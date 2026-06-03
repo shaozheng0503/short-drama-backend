@@ -34,6 +34,8 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		&model.PlayHistory{},
 		&model.UserAction{},
 		&model.Comment{},
+		&model.CommentLike{},
+		&model.AppMessage{},
 		&model.Product{},
 		&model.Order{},
 		&model.EpisodeUnlock{},

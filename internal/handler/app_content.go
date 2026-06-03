@@ -108,6 +108,14 @@ func (s *Server) homeFeedDramaList(dramas []model.Drama) []gin.H {
 		}
 	}
 
+	// 批量统计各首集的评论数（评论软删，Model(&Comment{}) 自动带 deleted_at IS NULL）。
+	// 首页是有界小列表（≤10 集），读时 COUNT 即可，无需维护冗余计数列。
+	firstEpisodeIDs := make([]uint64, 0, len(firstEpisodeByDrama))
+	for _, episode := range firstEpisodeByDrama {
+		firstEpisodeIDs = append(firstEpisodeIDs, episode.ID)
+	}
+	commentCountByEpisode := s.commentCountByEpisodeIDs(firstEpisodeIDs)
+
 	for _, drama := range dramas {
 		view := dramaCardView(drama)
 		if episode, ok := firstEpisodeByDrama[drama.ID]; ok {
@@ -117,6 +125,7 @@ func (s *Server) homeFeedDramaList(dramas []model.Drama) []gin.H {
 				"title":            episode.Title,
 				"play_url":         episode.VideoURL,
 				"duration_seconds": episode.DurationSeconds,
+				"comment_count":    commentCountByEpisode[episode.ID],
 			}
 		} else {
 			view["first_episode"] = nil
@@ -124,6 +133,28 @@ func (s *Server) homeFeedDramaList(dramas []model.Drama) []gin.H {
 		out = append(out, view)
 	}
 	return out
+}
+
+// commentCountByEpisodeIDs 批量统计每个剧集的评论数，返回 episode_id -> 评论数。
+// 没有评论的剧集不会出现在 map 中，调用方取零值即可（map 取不到默认 0）。
+func (s *Server) commentCountByEpisodeIDs(episodeIDs []uint64) map[uint64]int64 {
+	counts := make(map[uint64]int64, len(episodeIDs))
+	if len(episodeIDs) == 0 {
+		return counts
+	}
+	var rows []struct {
+		EpisodeID uint64
+		Cnt       int64
+	}
+	s.db.Model(&model.Comment{}).
+		Select("episode_id, count(*) as cnt").
+		Where("episode_id IN ?", episodeIDs).
+		Group("episode_id").
+		Scan(&rows)
+	for _, r := range rows {
+		counts[r.EpisodeID] = r.Cnt
+	}
+	return counts
 }
 
 func (s *Server) appListDramas(c *gin.Context) {
@@ -333,9 +364,15 @@ func (s *Server) appListEpisodes(c *gin.Context) {
 		}
 	}
 
+	episodeIDs := make([]uint64, len(episodes))
+	for i, ep := range episodes {
+		episodeIDs[i] = ep.ID
+	}
+	commentCountByEpisode := s.commentCountByEpisodeIDs(episodeIDs)
+
 	views := make([]gin.H, 0, len(episodes))
 	for _, ep := range episodes {
-		views = append(views, episodeAppView(ep, drama.FreeEpisodes, unlocked[ep.ID], liked[ep.ID]))
+		views = append(views, episodeAppView(ep, drama.FreeEpisodes, unlocked[ep.ID], liked[ep.ID], commentCountByEpisode[ep.ID]))
 	}
 	response.OK(c, gin.H{"list": views})
 }
