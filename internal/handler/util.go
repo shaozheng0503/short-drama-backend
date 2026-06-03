@@ -156,7 +156,7 @@ func episodeAdminView(e model.Episode) gin.H {
 	}
 }
 
-func episodeAppView(e model.Episode, freeEpisodes int, unlocked, liked bool) gin.H {
+func episodeAppView(e model.Episode, freeEpisodes int, unlocked, liked bool, commentCount int64) gin.H {
 	isFree := e.EpisodeNo <= freeEpisodes
 	return gin.H{
 		"id":               e.ID,
@@ -167,6 +167,7 @@ func episodeAppView(e model.Episode, freeEpisodes int, unlocked, liked bool) gin
 		"is_locked":        !isFree && !unlocked,
 		"like_count":       e.LikeCount,
 		"liked":            liked,
+		"comment_count":    commentCount,
 	}
 }
 

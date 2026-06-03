@@ -155,6 +155,7 @@ func (s *Server) Router() *gin.Engine {
 	app.GET("/dramas/:id", s.appDramaDetail)
 	app.GET("/dramas/:id/episodes", s.appListEpisodes)
 	app.GET("/dramas/:id/comments", s.appListComments)
+	app.GET("/comments/:id/replies", s.appListReplies) // 楼中楼：某条顶层评论下的回复列表（匿名可看）
 	app.GET("/search", s.appSearch)
 	app.GET("/search/hot", s.getHotSearch)
 	app.GET("/products", s.appListProducts)
@@ -166,6 +167,10 @@ func (s *Server) Router() *gin.Engine {
 	appAuth.PUT("/me", s.appUpdateMe)
 	appAuth.GET("/me/favorites", s.appListFavorites)
 	appAuth.GET("/me/likes", s.appListLikes) // 我的点赞：点赞过的剧集（集级）
+	// 消息页：评论回复 / 评论点赞 两类站内信 + 已读上报
+	appAuth.GET("/messages", s.appListMessages)
+	appAuth.POST("/messages/read-all", s.appMarkAllMessagesRead)
+	appAuth.POST("/messages/:id/read", s.appMarkMessageRead)
 	appAuth.GET("/episodes/:id/play", s.appPlayEpisode)
 	appAuth.POST("/play-history", s.appUpsertPlayHistory)
 	appAuth.GET("/play-history", s.appListPlayHistory)
@@ -175,7 +180,9 @@ func (s *Server) Router() *gin.Engine {
 	appAuth.POST("/dramas/:id/favorite", s.appFavoriteDrama)
 	appAuth.DELETE("/dramas/:id/favorite", s.appUnfavoriteDrama)
 	appAuth.POST("/dramas/:id/share", s.appShareDrama)
-	appAuth.POST("/dramas/:id/comments", s.appCreateComment)
+	appAuth.POST("/dramas/:id/comments", s.appCreateComment) // 顶层评论 / 楼中楼回复（body 带 parent_id 即回复）
+	appAuth.POST("/comments/:id/like", s.appLikeComment)     // 评论点赞
+	appAuth.DELETE("/comments/:id/like", s.appUnlikeComment) // 取消评论点赞
 	appAuth.POST("/orders", s.idempotencyMiddleware("app"), s.appCreateOrder)
 	appAuth.GET("/orders/:order_no", s.appGetOrder)
 	appAuth.POST("/episodes/:id/unlock", s.appUnlockEpisode)
