@@ -61,7 +61,7 @@ func (s *Server) commonImageUploadSign(c *gin.Context) {
 		ext = "jpg"
 	}
 	if !allowedImageExt[ext] {
-		response.InvalidParam(c, "ext 不允许，仅支持 jpg/jpeg/png/webp/gif")
+		response.InvalidParam(c, "ext 不允许，仅支持 jpg/jpeg/png/bmp/webp/gif")
 		return
 	}
 	scene := req.Scene
