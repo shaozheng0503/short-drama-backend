@@ -209,6 +209,7 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.GET("/dashboard", s.creatorDashboard)
 	creatorAuth.GET("/categories", s.creatorListCategories)
 	creatorAuth.GET("/config/pricing", s.creatorGetPricingConfig)
+	creatorAuth.GET("/config/cover-specs", s.creatorGetCoverSpecs) // 漫剧封面上传规格（比例/分辨率/大小/格式）
 	creatorAuth.GET("/dramas", s.creatorListDramas)
 	creatorAuth.POST("/dramas", s.creatorCreateDrama)
 	creatorAuth.GET("/dramas/:id", s.creatorGetDrama)

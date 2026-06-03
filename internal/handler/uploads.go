@@ -28,8 +28,9 @@ type imageSignRequest struct {
 }
 
 // allowedImageExt：限制后缀，避免被当上传通道传任意文件。
+// bmp 为漫剧封面 7:10 规格所需（详见 GET /creator/config/cover-specs）。
 var allowedImageExt = map[string]bool{
-	"jpg": true, "jpeg": true, "png": true, "webp": true, "gif": true,
+	"jpg": true, "jpeg": true, "png": true, "webp": true, "gif": true, "bmp": true,
 }
 
 // imageContentType 按 ext 推 MIME；image-sign 把这个回给客户端，让 PUT 时按这个
@@ -41,6 +42,7 @@ var imageContentType = map[string]string{
 	"png":  "image/png",
 	"webp": "image/webp",
 	"gif":  "image/gif",
+	"bmp":  "image/bmp",
 }
 
 // commonImageUploadSign 返回 COS PUT 预签名。前端拿到 url 后 PUT 文件原文即可。
