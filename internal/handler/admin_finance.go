@@ -3,11 +3,14 @@ package handler
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
+	"ai-drama-platform/internal/billing"
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
+	"ai-drama-platform/internal/payment"
 	"ai-drama-platform/internal/response"
 	"ai-drama-platform/internal/sms"
 
@@ -763,3 +766,102 @@ var (
 	errWithdrawalStatus   = errors.New("withdrawal status invalid")
 	errFrozenInsufficient = errors.New("frozen balance insufficient")
 )
+
+// === 订单退款 / 主动查单 (管理端) ===
+
+type adminRefundOrderRequest struct {
+	AmountCents int64  `json:"amount_cents" binding:"required,gt=0"`
+	Reason      string `json:"reason"`
+	// 客户端可显式带 refund_no 做强幂等;为空时由服务端生成"REF-{orderNo}-{ts}-{rand}"。
+	RefundNo string `json:"refund_no"`
+}
+
+// adminRefundOrder POST /v1/admin/orders/:order_no/refund
+// 仅财务角色可调用。支持部分退;同一 refund_no 重入幂等。
+func (s *Server) adminRefundOrder(c *gin.Context) {
+	orderNo := c.Param("order_no")
+	if orderNo == "" {
+		response.InvalidParam(c, "order_no 必填")
+		return
+	}
+	var req adminRefundOrderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "请求体不合法:"+err.Error())
+		return
+	}
+	refundNo := strings.TrimSpace(req.RefundNo)
+	if refundNo == "" {
+		refundNo = generateRefundNo(orderNo)
+	}
+
+	order, err := s.billing.RefundOrder(orderNo, refundNo, req.AmountCents, req.Reason)
+	if err != nil {
+		switch {
+		case errors.Is(err, billing.ErrOrderNotFound):
+			response.NotFound(c, "订单不存在")
+		case errors.Is(err, billing.ErrRefundNotAllowed):
+			response.Conflict(c, "订单状态不允许退款")
+		case errors.Is(err, billing.ErrRefundAmountInvalid):
+			response.InvalidParam(c, "退款金额非法,可能超出剩余可退金额")
+		case errors.Is(err, billing.ErrRefundNoRequired):
+			response.InvalidParam(c, "refund_no 必填")
+		case errors.Is(err, payment.ErrRefundFailed):
+			response.ServerError(c, "渠道侧退款失败,请稍后重试或查询渠道日志")
+		case errors.Is(err, payment.ErrProviderUnavailable):
+			response.ServerError(c, "支付渠道不可用,请检查密钥配置")
+		default:
+			response.ServerError(c, "退款失败:"+err.Error())
+		}
+		return
+	}
+	response.OK(c, gin.H{
+		"order_no":            order.OrderNo,
+		"status":              order.Status,
+		"amount_cents":        order.AmountCents,
+		"refund_amount_cents": order.RefundAmountCents,
+		"refund_no":           order.RefundNo,
+		"platform_refund_no":  order.PlatformRefundNo,
+		"refunded_at":         order.RefundedAt,
+		"refund_reason":       order.RefundReason,
+	})
+}
+
+// adminSyncOrder POST /v1/admin/orders/:order_no/sync
+// 兜底:webhook 长时间未到或丢失时,主动调渠道查单回写本地。
+func (s *Server) adminSyncOrder(c *gin.Context) {
+	orderNo := c.Param("order_no")
+	if orderNo == "" {
+		response.InvalidParam(c, "order_no 必填")
+		return
+	}
+	order, err := s.billing.SyncOrderStatus(orderNo)
+	if err != nil {
+		switch {
+		case errors.Is(err, billing.ErrOrderNotFound):
+			response.NotFound(c, "订单不存在")
+		case errors.Is(err, payment.ErrUnsupportedMethod):
+			response.InvalidParam(c, "订单支付方式不支持查单")
+		case errors.Is(err, payment.ErrProviderUnavailable):
+			response.ServerError(c, "支付渠道不可用,请检查密钥配置")
+		default:
+			response.ServerError(c, "查单失败:"+err.Error())
+		}
+		return
+	}
+	response.OK(c, gin.H{
+		"order_no":            order.OrderNo,
+		"status":              order.Status,
+		"amount_cents":        order.AmountCents,
+		"platform_trade_no":   order.PlatformTradeNo,
+		"paid_at":             order.PaidAt,
+		"refund_amount_cents": order.RefundAmountCents,
+		"refunded_at":         order.RefundedAt,
+	})
+}
+
+// generateRefundNo 退款单号:REF-{orderNo}-{Unix 秒}-{4 位随机}。
+// 仅作幂等键,不进 DB 唯一约束(同一笔多次部分退款会有多个 refund_no);
+// 客户端可自行传入以做强幂等。
+func generateRefundNo(orderNo string) string {
+	return fmt.Sprintf("REF-%s-%d-%04d", orderNo, time.Now().Unix(), rand.Intn(10000))
+}

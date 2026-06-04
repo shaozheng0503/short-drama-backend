@@ -1,7 +1,7 @@
 # 本地凭证 / 密钥（永远不要提交）
-.env
-.env.local
-.env.*.local
+# .env* 兜住所有 .env 变体（含 .env.save / .env.bak.* 等备份），仅放行示例文件
+.env*
+!.env.example
 *.pem
 *.key
 secrets/

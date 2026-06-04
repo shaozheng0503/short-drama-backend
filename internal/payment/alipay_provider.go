@@ -2,11 +2,14 @@ package payment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"ai-drama-platform/internal/config"
 
@@ -26,16 +29,48 @@ type AlipayProvider struct {
 
 // NewAlipayProvider 初始化支付宝客户端。production = !sandbox：
 // 沙箱走 openapi.alipaydev.com，生产走 openapi.alipay.com（SDK 内部按 flag 切网关）。
+//
+// 私钥 / 公钥优先用文件路径（*_PATH），避免把 PEM 文本写进 .env/commit/聊天，泄漏面更小；
+// 没填路径时回退读环境变量里的字符串。
 func NewAlipayProvider(cfg config.Config) (*AlipayProvider, error) {
-	client, err := alipay.New(cfg.AlipayAppID, cfg.AlipayPrivateKey, !cfg.AlipaySandbox)
+	privateKey, err := readAlipayMaterial(cfg.AlipayPrivateKeyPath, cfg.AlipayPrivateKey, "ALIPAY_PRIVATE_KEY")
+	if err != nil {
+		return nil, err
+	}
+	publicKey, err := readAlipayMaterial(cfg.AlipayPublicKeyPath, cfg.AlipayPublicKey, "ALIPAY_PUBLIC_KEY")
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := alipay.New(cfg.AlipayAppID, privateKey, !cfg.AlipaySandbox)
 	if err != nil {
 		return nil, fmt.Errorf("alipay 客户端初始化: %w", err)
 	}
 	// 公钥模式：载入支付宝公钥用于回调验签。
-	if err := client.LoadAliPayPublicKey(cfg.AlipayPublicKey); err != nil {
+	if err := client.LoadAliPayPublicKey(publicKey); err != nil {
 		return nil, fmt.Errorf("加载支付宝公钥: %w", err)
 	}
 	return &AlipayProvider{cfg: cfg, client: client}, nil
+}
+
+// readAlipayMaterial 优先用文件路径；没有路径就回退到内联字符串；都没有就报错。
+// 这样 .env 里既可以写文件路径（推荐，私钥不进 env），也可以保留旧的内联方式。
+func readAlipayMaterial(path, inline, envName string) (string, error) {
+	if path != "" {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("读取 %s 文件(%s): %w", envName, path, err)
+		}
+		s := strings.TrimSpace(string(b))
+		if s == "" {
+			return "", fmt.Errorf("%s 文件(%s)为空", envName, path)
+		}
+		return s, nil
+	}
+	if inline != "" {
+		return inline, nil
+	}
+	return "", fmt.Errorf("%s 未配置（请填 *_PATH 或内联字符串）", envName)
 }
 
 func (*AlipayProvider) Method() string { return "alipay" }
@@ -91,7 +126,7 @@ func (p *AlipayProvider) VerifyAndParse(_ map[string]string, body []byte) (*Webh
 	if err != nil {
 		return nil, err
 	}
-	// DecodeNotification 内部完成验签 + 解析；验签失败统一抛 ErrVerifyFailed。
+	// DecodeNotification 内部完成验签 + 解析;验签失败统一抛 ErrVerifyFailed。
 	noti, err := p.client.DecodeNotification(context.Background(), values)
 	if err != nil {
 		return nil, ErrVerifyFailed
@@ -103,6 +138,98 @@ func (p *AlipayProvider) VerifyAndParse(_ map[string]string, body []byte) (*Webh
 		PlatformTradeNo: noti.TradeNo,
 		AmountCents:     yuanToCents(noti.TotalAmount),
 	}, nil
+}
+
+// QueryOrder 主动查渠道侧订单。
+// 支付宝 trade_status 归一化:WAIT_BUYER_PAY→pending,TRADE_CLOSED→closed,
+// TRADE_SUCCESS→paid,TRADE_FINISHED→refunded(全额退款后渠道侧自动落该状态)。
+// 订单根本未创建/已被清理时,SDK 返回 ACQ.TRADE_NOT_EXIST(Error.Code != "10000"),
+// 这里映射为 ErrOrderNotFound 由上层判断;其余错误透传。
+func (p *AlipayProvider) QueryOrder(orderNo string) (*OrderState, error) {
+	rsp, err := p.client.TradeQuery(context.Background(), alipay.TradeQuery{OutTradeNo: orderNo})
+	if err != nil {
+		return nil, fmt.Errorf("alipay trade query: %w", err)
+	}
+	if !rsp.IsSuccess() {
+		// 业务码 40004 + 子码 ACQ.TRADE_NOT_EXIST = 订单不存在(尚未上送过支付)
+		if rsp.SubCode == "ACQ.TRADE_NOT_EXIST" {
+			return nil, errors.New("alipay trade not exist")
+		}
+		return nil, fmt.Errorf("alipay trade query failed: code=%s sub=%s msg=%s", rsp.Code, rsp.SubCode, rsp.Msg)
+	}
+	state := &OrderState{
+		OrderNo:         rsp.OutTradeNo,
+		PlatformTradeNo: rsp.TradeNo,
+		AmountCents:     yuanToCents(rsp.TotalAmount),
+	}
+	switch rsp.TradeStatus {
+	case alipay.TradeStatusWaitBuyerPay:
+		state.Status = StatusPending
+	case alipay.TradeStatusClosed:
+		state.Status = StatusClosed
+	case alipay.TradeStatusSuccess:
+		state.Status = StatusPaid
+		if t := parseAlipayTime(rsp.SendPayDate); !t.IsZero() {
+			state.PaidAt = &t
+		}
+	case alipay.TradeStatusFinished:
+		state.Status = StatusRefunded
+		if t := parseAlipayTime(rsp.SendPayDate); !t.IsZero() {
+			state.PaidAt = &t
+		}
+	default:
+		state.Status = string(rsp.TradeStatus) // 兜底:把渠道原状态透出
+	}
+	return state, nil
+}
+
+// Refund 调 alipay.trade.refund;同 OutRequestNo 重入由支付宝保证幂等。
+// 失败统一返回 ErrRefundFailed,RawMessage 透出原始 sub_msg 便于排障。
+func (p *AlipayProvider) Refund(input RefundInput) (*RefundResult, error) {
+	if input.RefundNo == "" {
+		return nil, fmt.Errorf("alipay refund: RefundNo 必填(支付宝侧 out_request_no)")
+	}
+	if input.AmountCents <= 0 {
+		return nil, fmt.Errorf("alipay refund: 金额必须 > 0")
+	}
+	req := alipay.TradeRefund{
+		OutTradeNo:   input.OrderNo,
+		TradeNo:      input.PlatformTradeNo,
+		RefundAmount: centsToYuan(input.AmountCents),
+		RefundReason: input.Reason,
+		OutRequestNo: input.RefundNo,
+	}
+	rsp, err := p.client.TradeRefund(context.Background(), req)
+	if err != nil {
+		return nil, fmt.Errorf("alipay trade refund: %w", err)
+	}
+	if !rsp.IsSuccess() {
+		return &RefundResult{
+			Success:    false,
+			RefundNo:   input.RefundNo,
+			RawMessage: fmt.Sprintf("code=%s sub=%s msg=%s sub_msg=%s", rsp.Code, rsp.SubCode, rsp.Msg, rsp.SubMsg),
+		}, ErrRefundFailed
+	}
+	return &RefundResult{
+		Success:          true,
+		RefundNo:         input.RefundNo,
+		PlatformRefundNo: rsp.TradeNo, // 支付宝退款无独立流水号,沿用 trade_no
+		RefundedAt:       time.Now(),
+	}, nil
+}
+
+// parseAlipayTime 解析支付宝时间字符串("2006-01-02 15:04:05",本地时区即 +08:00)。
+// 无法解析返回零值,调用方按 IsZero 判断。
+func parseAlipayTime(s string) time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := time.ParseInLocation("2006-01-02 15:04:05", s, time.Local)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 // centsToYuan 把「分」转成支付宝要求的「元，两位小数」字符串。990 → "9.90"。

@@ -312,6 +312,9 @@ func (s *Server) Router() *gin.Engine {
 
 	adminAuth.GET("/orders", s.adminListOrders)
 	adminAuth.GET("/orders/:order_no", s.adminGetOrder)
+	// 退款 / 主动查单:仅财务角色;路径与现有 orders 同前缀,便于按订单聚合权限。
+	adminAuth.POST("/orders/:order_no/refund", s.requireAdminRole(model.AdminRoleFinance), s.adminRefundOrder)
+	adminAuth.POST("/orders/:order_no/sync", s.requireAdminRole(model.AdminRoleFinance), s.adminSyncOrder)
 
 	adminAuth.GET("/withdrawals", s.adminListWithdrawals)
 	adminAuth.POST("/withdrawals/:id/approve", s.requireAdminRole(model.AdminRoleFinance), s.adminApproveWithdrawal)
