@@ -3,6 +3,7 @@ package payment
 import (
 	"errors"
 	"log"
+	"time"
 
 	"ai-drama-platform/internal/config"
 )
@@ -28,16 +29,66 @@ type WebhookEvent struct {
 	AmountCents     int64
 }
 
+// OrderState 主动查单返回的渠道侧订单状态;用于 webhook 丢失时由后台兜底同步。
+//
+//	Status 沿用本地 OrderStatus 词表(pending / paid / closed / refunded),由 Provider 把渠道侧
+//	的状态归一化到这套词表;PaidAt 没有时为 nil(例如未支付订单)。
+type OrderState struct {
+	OrderNo         string
+	Status          string
+	PlatformTradeNo string
+	AmountCents     int64
+	PaidAt          *time.Time
+}
+
+// RefundInput 发起退款的最小参数。
+//
+//	RefundNo 是商户侧退款单号,要保证同一订单"同号同语义";支付宝/微信都用它做幂等键,
+//	部分退款必传;同一单退款额可以等于剩余可退金额(全退)或更小(部分退)。
+type RefundInput struct {
+	OrderNo         string // 商户订单号
+	PlatformTradeNo string // 渠道交易号(可空,SDK 会按订单号查)
+	RefundNo        string // 商户退款单号(幂等键)
+	AmountCents     int64  // 本次退款金额
+	Reason          string // 退款原因(可空)
+}
+
+// RefundResult Provider 退款返回。
+//
+//	Success=true 表示渠道侧已受理(同步退款) 或 已退款成功;
+//	PlatformRefundNo 是渠道侧的退款流水号,有就回填,没有就空。
+//	RefundedAt 没有就取本地 time.Now()(在 billing 层处理),Provider 不强制返回。
+type RefundResult struct {
+	Success          bool
+	RefundNo         string
+	PlatformRefundNo string
+	RefundedAt       time.Time
+	RawMessage       string // 渠道侧原始 message,失败时透出便于排障
+}
+
 type Provider interface {
 	Method() string
 	Prepay(input PrepayInput) (PrepayParams, error)
 	VerifyAndParse(headers map[string]string, body []byte) (*WebhookEvent, error)
+	// QueryOrder 主动查单。返回的 Status 已按本地词表归一化。
+	QueryOrder(orderNo string) (*OrderState, error)
+	// Refund 发起退款。同 RefundNo 重入要保持幂等。
+	Refund(input RefundInput) (*RefundResult, error)
 }
 
 var (
 	ErrProviderUnavailable = errors.New("支付 provider 不可用")
 	ErrVerifyFailed        = errors.New("支付回调验签失败")
 	ErrUnsupportedMethod   = errors.New("不支持的支付方式")
+	ErrRefundFailed        = errors.New("渠道侧退款失败")
+)
+
+// OrderState.Status 归一化词表,与 model.OrderStatus* 对齐(此处不 import model 防循环依赖)。
+const (
+	StatusPending  = "pending"
+	StatusPaid     = "paid"
+	StatusClosed   = "closed"
+	StatusRefunded = "refunded"
 )
 
 // Registry 持有当前可用的 provider 集合。
@@ -74,7 +125,11 @@ func NewRegistry(cfg config.Config) *Registry {
 	// 支付宝：只要配齐 app_id+应用私钥+支付宝公钥，就启用真实 provider（沙箱或生产由
 	// ALIPAY_SANDBOX 决定）——这样沙箱联调期填了密钥即走真实沙箱，而微信仍可走 dev stub。
 	// 初始化失败（密钥格式错等）降级为 Unavailable，避免无验签兜底。
-	alipayConfigured := cfg.AlipayAppID != "" && cfg.AlipayPrivateKey != "" && cfg.AlipayPublicKey != ""
+	// 密钥可走内联字符串(*_KEY)或文件路径(*_KEY_PATH)任一——与 NewAlipayProvider/readAlipayMaterial
+	// 的读取优先级一致；只检查内联会让路径配置被误判为未配置而降级 Unavailable。
+	alipayConfigured := cfg.AlipayAppID != "" &&
+		(cfg.AlipayPrivateKey != "" || cfg.AlipayPrivateKeyPath != "") &&
+		(cfg.AlipayPublicKey != "" || cfg.AlipayPublicKeyPath != "")
 	switch {
 	case alipayConfigured:
 		ap, err := NewAlipayProvider(cfg)

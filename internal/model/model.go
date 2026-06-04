@@ -106,11 +106,12 @@ const (
 )
 
 const (
-	OrderStatusPending  = "pending"
-	OrderStatusPaid     = "paid"
-	OrderStatusFailed   = "failed"
-	OrderStatusClosed   = "closed"
-	OrderStatusRefunded = "refunded"
+	OrderStatusPending          = "pending"
+	OrderStatusPaid             = "paid"
+	OrderStatusFailed           = "failed"
+	OrderStatusClosed           = "closed"
+	OrderStatusRefunded         = "refunded"          // 全额退款
+	OrderStatusPartialRefunded  = "partial_refunded"  // 部分退款,后续可继续退
 )
 
 const (
@@ -505,8 +506,15 @@ type Order struct {
 	Status          string     `gorm:"column:status;size:20;default:pending;index" json:"status"`
 	PaidAt          *time.Time `gorm:"column:paid_at" json:"paid_at"`
 	ExpiredAt       *time.Time `gorm:"column:expired_at" json:"expired_at"`
-	CreatedAt       time.Time  `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt       time.Time  `gorm:"column:updated_at" json:"updated_at"`
+	// 退款相关字段(2026-06 加):RefundAmountCents 累计已退金额(支持多次部分退);
+	// RefundNo 是最近一次退款的商户单号,PlatformRefundNo 是渠道侧退款流水。
+	RefundAmountCents int64      `gorm:"column:refund_amount_cents;default:0" json:"refund_amount_cents"`
+	RefundedAt        *time.Time `gorm:"column:refunded_at" json:"refunded_at"`
+	RefundReason      string     `gorm:"column:refund_reason;size:255" json:"refund_reason"`
+	RefundNo          string     `gorm:"column:refund_no;size:64;index" json:"refund_no"`
+	PlatformRefundNo  string     `gorm:"column:platform_refund_no;size:128" json:"platform_refund_no"`
+	CreatedAt         time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt         time.Time  `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (Order) TableName() string { return "orders" }

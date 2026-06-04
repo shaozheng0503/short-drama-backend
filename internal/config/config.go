@@ -110,11 +110,13 @@ type Config struct {
 	WechatMchPrivateKeyPath string // 商户 API 私钥文件路径 apiclient_key.pem
 	WechatNotifyURL        string // 异步通知地址 https://<域名>/v1/webhooks/wechat/pay
 
-	AlipayAppID      string
-	AlipayPrivateKey string
-	AlipayPublicKey  string
-	AlipaySandbox    bool   // true=沙箱网关，false=生产网关（默认沙箱，更安全）
-	AlipayNotifyURL  string // 异步通知地址，公网可达：https://<域名>/v1/webhooks/alipay/pay
+	AlipayAppID            string
+	AlipayPrivateKey       string // 兼容老写法：私钥 PEM 文本直接写在 .env
+	AlipayPrivateKeyPath   string // 推荐：私钥 PEM 文件路径（避免密钥进 .env/commit/聊天，泄漏面更小）
+	AlipayPublicKey        string
+	AlipayPublicKeyPath    string
+	AlipaySandbox          bool   // true=沙箱网关，false=生产网关（默认沙箱，更安全）
+	AlipayNotifyURL        string // 异步通知地址，公网可达：https://<域名>/v1/webhooks/alipay/pay
 }
 
 func Load() Config {
@@ -203,11 +205,13 @@ func Load() Config {
 		WechatMchPrivateKeyPath: getEnv("WECHAT_MCH_PRIVATE_KEY_PATH", ""),
 		WechatNotifyURL:         getEnv("WECHAT_NOTIFY_URL", ""),
 
-		AlipayAppID:      getEnv("ALIPAY_APP_ID", ""),
-		AlipayPrivateKey: getEnv("ALIPAY_PRIVATE_KEY", ""),
-		AlipayPublicKey:  getEnv("ALIPAY_PUBLIC_KEY", ""),
-		AlipaySandbox:    getEnvBool("ALIPAY_SANDBOX", true),
-		AlipayNotifyURL:  getEnv("ALIPAY_NOTIFY_URL", ""),
+		AlipayAppID:          getEnv("ALIPAY_APP_ID", ""),
+		AlipayPrivateKey:     getEnv("ALIPAY_PRIVATE_KEY", ""),
+		AlipayPrivateKeyPath: getEnv("ALIPAY_PRIVATE_KEY_PATH", ""),
+		AlipayPublicKey:      getEnv("ALIPAY_PUBLIC_KEY", ""),
+		AlipayPublicKeyPath:  getEnv("ALIPAY_PUBLIC_KEY_PATH", ""),
+		AlipaySandbox:        getEnvBool("ALIPAY_SANDBOX", true),
+		AlipayNotifyURL:      getEnv("ALIPAY_NOTIFY_URL", ""),
 	}
 }
 

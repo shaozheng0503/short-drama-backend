@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"ai-drama-platform/internal/config"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments/app"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments/h5"
+	"github.com/wechatpay-apiv3/wechatpay-go/services/refunddomestic"
 	"github.com/wechatpay-apiv3/wechatpay-go/utils"
 )
 
@@ -155,4 +157,107 @@ func strVal(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// QueryOrder 调微信 /v3/pay/transactions/out-trade-no/{out_trade_no} 主动查单。
+// trade_state 归一化:SUCCESS→paid, REFUND→refunded, CLOSED/REVOKED→closed,
+// NOTPAY/USERPAYING→pending,其它(PAYERROR 等)按原值透出。
+func (p *WechatProvider) QueryOrder(orderNo string) (*OrderState, error) {
+	svc := app.AppApiService{Client: p.client}
+	tx, _, err := svc.QueryOrderByOutTradeNo(context.Background(), app.QueryOrderByOutTradeNoRequest{
+		OutTradeNo: core.String(orderNo),
+		Mchid:      core.String(p.cfg.WechatMchID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("wechat query order: %w", err)
+	}
+	state := &OrderState{
+		OrderNo:         strVal(tx.OutTradeNo),
+		PlatformTradeNo: strVal(tx.TransactionId),
+	}
+	if tx.Amount != nil && tx.Amount.Total != nil {
+		state.AmountCents = *tx.Amount.Total
+	}
+	ts := strVal(tx.TradeState)
+	switch ts {
+	case "SUCCESS":
+		state.Status = StatusPaid
+		if tx.SuccessTime != nil && *tx.SuccessTime != "" {
+			if t, perr := time.Parse(time.RFC3339, *tx.SuccessTime); perr == nil {
+				state.PaidAt = &t
+			}
+		}
+	case "REFUND":
+		state.Status = StatusRefunded
+	case "CLOSED", "REVOKED":
+		state.Status = StatusClosed
+	case "NOTPAY", "USERPAYING":
+		state.Status = StatusPending
+	default:
+		state.Status = ts
+	}
+	return state, nil
+}
+
+// Refund 调微信 /v3/refund/domestic/refunds。同 OutRefundNo 重入由微信保证幂等。
+// 微信退款是异步的:本接口返回 PROCESSING 也算成功受理,真正到账要等退款回调。
+func (p *WechatProvider) Refund(input RefundInput) (*RefundResult, error) {
+	if input.RefundNo == "" {
+		return nil, fmt.Errorf("wechat refund: RefundNo 必填(微信侧 out_refund_no)")
+	}
+	if input.AmountCents <= 0 {
+		return nil, fmt.Errorf("wechat refund: 金额必须 > 0")
+	}
+	// 微信退款需要传"原订单总金额",这里走主动查单兜底拿;调用方也可在 PrepayParams 里把
+	// AmountCents 透出来,这里宁可多花一次 RTT 也保正确。
+	state, err := p.QueryOrder(input.OrderNo)
+	if err != nil {
+		return nil, fmt.Errorf("wechat refund 查原单失败: %w", err)
+	}
+	if state.AmountCents <= 0 {
+		return nil, fmt.Errorf("wechat refund: 原订单金额未知,无法构造请求")
+	}
+
+	svc := refunddomestic.RefundsApiService{Client: p.client}
+	resp, _, err := svc.Create(context.Background(), refunddomestic.CreateRequest{
+		OutTradeNo:  core.String(input.OrderNo),
+		OutRefundNo: core.String(input.RefundNo),
+		Reason:      core.String(input.Reason),
+		Amount: &refunddomestic.AmountReq{
+			Refund:   core.Int64(input.AmountCents),
+			Total:    core.Int64(state.AmountCents),
+			Currency: core.String("CNY"),
+		},
+	})
+	if err != nil {
+		return &RefundResult{
+			Success:    false,
+			RefundNo:   input.RefundNo,
+			RawMessage: err.Error(),
+		}, ErrRefundFailed
+	}
+
+	result := &RefundResult{
+		Success:          true,
+		RefundNo:         input.RefundNo,
+		PlatformRefundNo: strVal(resp.RefundId),
+		RefundedAt:       time.Now(),
+	}
+	// status: SUCCESS / PROCESSING / CLOSED / ABNORMAL
+	if resp.Status != nil {
+		s := string(*resp.Status)
+		switch s {
+		case "SUCCESS":
+			if resp.SuccessTime != nil && !resp.SuccessTime.IsZero() {
+				result.RefundedAt = *resp.SuccessTime
+			}
+		case "PROCESSING":
+			// 微信退款异步,Success=true 但等回调最终确认;无需特殊处理。
+		default: // CLOSED / ABNORMAL
+			result.Success = false
+			result.RawMessage = "wechat refund status=" + s
+			return result, ErrRefundFailed
+		}
+	}
+	return result, nil
 }
