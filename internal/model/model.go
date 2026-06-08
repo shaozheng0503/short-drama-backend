@@ -59,11 +59,14 @@ const (
 //   - rejected ：审核驳回
 //
 // 典型组合：
-//   draft × approved/default     纯草稿，未提交
+//   draft × pending/default        纯草稿，未提交（未提交时不应展示"审核通过"，用 pending 表达"尚未过审"）
 //   reviewing × pending            已提交，待审核
 //   draft × rejected               驳回后回到草稿
 //   awaiting_publish × approved    审核通过，待上架
 //   published × approved           已上架
+//
+// 注意：草稿与"已提交待审"都是 audit_status=pending，靠 status 区分——
+//   admin「待审核」队列须按 status=reviewing 取，不能只按 audit_status=pending（否则未提交草稿会混进来）。
 //
 // 转换规则：
 //   - submit        ：status → reviewing；audit_status → pending
@@ -310,7 +313,7 @@ type Drama struct {
 	FreeEpisodes  int     `gorm:"column:free_episodes;default:0" json:"free_episodes"`
 	PriceCents    int64   `gorm:"column:price_cents;default:0" json:"price_cents"`
 	Status        string  `gorm:"column:status;size:20;default:draft;index" json:"status"`
-	AuditStatus   string  `gorm:"column:audit_status;size:20;default:approved;index" json:"audit_status"`
+	AuditStatus   string  `gorm:"column:audit_status;size:20;default:pending;index" json:"audit_status"`
 	AuditReason   string  `gorm:"column:audit_reason;size:255" json:"audit_reason"`
 	AuditSubmittedAt *time.Time `gorm:"column:audit_submitted_at;index" json:"audit_submitted_at"`
 	// MVP 整剧一次审核，仅用 audit_status；以下 video_* 列保留兼容老库，接口不再暴露。

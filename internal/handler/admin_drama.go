@@ -44,7 +44,11 @@ func (s *Server) adminListDramas(c *gin.Context) {
 	// 取值：pending / approved / rejected；非法值直接 400，避免静默返空。
 	if v := c.Query("audit_status"); v != "" {
 		switch v {
-		case model.DramaAuditPending, model.DramaAuditApproved, model.DramaAuditRejected:
+		case model.DramaAuditPending:
+			// 草稿(未提交)与"已提交待审"都是 audit_status=pending，靠 status 区分。
+			// 「待审核」队列只要真正提交过的(status=reviewing)，排除未提交草稿，避免污染审核列表。
+			q = q.Where("audit_status = ? AND status <> ?", v, model.DramaStatusDraft)
+		case model.DramaAuditApproved, model.DramaAuditRejected:
 			q = q.Where("audit_status = ?", v)
 		default:
 			response.InvalidParam(c, "audit_status 只能是 pending/approved/rejected")
