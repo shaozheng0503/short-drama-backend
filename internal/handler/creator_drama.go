@@ -291,7 +291,7 @@ func (s *Server) creatorCreateDrama(c *gin.Context) {
 	drama := model.Drama{
 		Title:        *req.Title,
 		Status:       model.DramaStatusDraft,
-		AuditStatus:  model.DramaAuditApproved, // 默认通过，admin 可单独驳回
+		AuditStatus:  model.DramaAuditPending, // 新建草稿尚未提交审核：默认 pending，避免前端把未审作品显示成"审核通过"。提交审核(submit)/admin 通过后才转 approved。
 		CreatorID:    &creatorID,
 		FreeEpisodes: freeEp,
 		PriceCents:   priceCents,
