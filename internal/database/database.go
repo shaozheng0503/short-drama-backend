@@ -54,6 +54,9 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 	if err := ensureInitialAdmin(db, cfg); err != nil {
 		return nil, err
 	}
+	if err := ensureRoleAdmins(db, cfg); err != nil {
+		return nil, err
+	}
 	if err := seed.EnsureThemeCategories(db); err != nil {
 		return nil, err
 	}
@@ -156,6 +159,47 @@ func ensureInitialAdmin(db *gorm.DB, cfg config.Config) error {
 		return err
 	}
 	log.Printf("seeded initial admin: username=%s", cfg.AdminInitUsername)
+	return nil
+}
+
+// ensureRoleAdmins 按需补齐分角色管理端账号：finance（财务）与 auditor（审核）。
+// 密码沿用 ADMIN_INIT_PASSWORD —— 与超管 admin 同源（"和 admin 一样"）。
+// 幂等：按 username 判断，已存在则跳过、绝不覆盖（避免把别人改过的密码冲掉）。
+func ensureRoleAdmins(db *gorm.DB, cfg config.Config) error {
+	if cfg.AdminInitPassword == "" {
+		return nil
+	}
+	roleAccounts := []struct {
+		username string
+		role     string
+	}{
+		{"finance", model.AdminRoleFinance},
+		{"auditor", model.AdminRoleAuditor},
+	}
+	for _, ra := range roleAccounts {
+		var existing model.Admin
+		err := db.Where("username = ?", ra.username).First(&existing).Error
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(cfg.AdminInitPassword), cfg.BcryptCost)
+		if err != nil {
+			return err
+		}
+		admin := model.Admin{
+			Username:     ra.username,
+			PasswordHash: string(hash),
+			Role:         ra.role,
+			Status:       model.StatusActive,
+		}
+		if err := db.Create(&admin).Error; err != nil {
+			return err
+		}
+		log.Printf("seeded role admin: username=%s role=%s", ra.username, ra.role)
+	}
 	return nil
 }
 
