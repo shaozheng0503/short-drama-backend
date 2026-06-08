@@ -48,6 +48,8 @@ func (s *Server) creatorDashboard(c *gin.Context) {
 		"total_play_count":   totalPlay,
 		"today_income_cents": todayIncome,
 		"today_play_count":   todayPlay,
+		// 数据更新时间：收入/播放统计在下单支付时实时累加，数据即实时，返回当前时间。
+		"data_updated_at": time.Now(),
 	})
 }
 
@@ -93,6 +95,10 @@ func (s *Server) creatorDataOverview(c *gin.Context) {
 	s.db.Model(&model.Drama{}).Where("creator_id = ? AND created_at >= ? AND created_at < ?",
 		cid, prevStart, prevStart.AddDate(0, 0, dayCount)).Count(&prevNewDramas)
 
+	// 退款金额（创作者份额，与变现收入同口径）：按 refunded_at 落在区间内的订单退款额 × 分成比例。
+	curRefund := s.sumCreatorRefundShare(cid, start, end.AddDate(0, 0, 1))
+	prevRefund := s.sumCreatorRefundShare(cid, prevStart, prevStart.AddDate(0, 0, dayCount))
+
 	// 收入趋势图：区间内按日聚合
 	type dayAgg struct {
 		StatDate string
@@ -119,8 +125,7 @@ func (s *Server) creatorDataOverview(c *gin.Context) {
 		"new_dramas": withDelta(curNewDramas, prevNewDramas),
 		"play_count": withDelta(curPlay, prevPlay),
 		"income_cents": withDelta(curIncome, prevIncome),
-		// 退款金额：依赖真支付/退款功能，尚未接入，先恒为 0 占位（环比同样为 0）。
-		"refund_cents":  withDelta(0, 0),
+		"refund_cents":  withDelta(curRefund, prevRefund),
 		"income_trend":  trend,
 	})
 }
@@ -134,6 +139,18 @@ func (s *Server) sumCreatorStats(cid uint64, start, end string) (play, income in
 		Where("creator_id = ? AND stat_date >= ? AND stat_date <= ?", cid, start, end).
 		Select("COALESCE(SUM(income_cents),0)").Scan(&income)
 	return
+}
+
+// sumCreatorRefundShare 统计 [startInclusive, endExclusive) 内、该创作者剧目订单退款额中的创作者份额。
+// 口径与变现收入一致（创作者份额 = 退款额 × 分成比例）。注：refund_amount_cents 为订单累计退款额，
+// 按最后退款时间 refunded_at 归入区间，多次部分退款的极端情形可能有跨区间归并误差（MVP 可接受）。
+func (s *Server) sumCreatorRefundShare(cid uint64, startInclusive, endExclusive time.Time) int64 {
+	var gross int64
+	s.db.Table("orders o").
+		Joins("JOIN dramas d ON d.id = o.drama_id").
+		Where("d.creator_id = ? AND o.refunded_at >= ? AND o.refunded_at < ?", cid, startInclusive, endExclusive).
+		Select("COALESCE(SUM(o.refund_amount_cents),0)").Scan(&gross)
+	return int64(math.Round(float64(gross) * s.cfg.CreatorShareRate))
 }
 
 // withDelta 返回 {value, prev, delta_percent}。环比%=四舍五入到 1 位小数；prev=0 时 delta_percent=null（前端显示"--"）。
