@@ -1,12 +1,30 @@
 package handler
 
 import (
+	"time"
+
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/response"
 
 	"github.com/gin-gonic/gin"
 )
+
+// orderStatusFilterList 把 status 查询参数（all/pending/paid）解析成要纳入的订单状态列表。
+// 非法值写 400 并返回 ok=false。flat 列表与分组列表共用。
+func orderStatusFilterList(c *gin.Context) ([]string, bool) {
+	switch c.Query("status") {
+	case "", "all":
+		return orderVisibleStatuses, true
+	case model.OrderStatusPending:
+		return []string{model.OrderStatusPending}, true
+	case model.OrderStatusPaid:
+		return orderPaidStatuses, true
+	default:
+		response.InvalidParam(c, "status 只能是 all/pending/paid")
+		return nil, false
+	}
+}
 
 // appListOrders —— APP「我的订单」列表。
 // 一集一单：每条订单对应一集购买。支持 status=all/pending/paid 过滤 + 分页，
@@ -15,17 +33,16 @@ func (s *Server) appListOrders(c *gin.Context) {
 	uid := middleware.CurrentID(c)
 	page, pageSize := paginate(c)
 
-	q := s.db.Model(&model.Order{}).Where("user_id = ?", uid)
-	switch c.Query("status") {
-	case "", "all":
-		q = q.Where("status IN ?", orderVisibleStatuses)
-	case model.OrderStatusPending:
-		q = q.Where("status = ?", model.OrderStatusPending)
-	case model.OrderStatusPaid:
-		q = q.Where("status IN ?", orderPaidStatuses)
-	default:
-		response.InvalidParam(c, "status 只能是 all/pending/paid")
+	statuses, ok := orderStatusFilterList(c)
+	if !ok {
 		return
+	}
+	q := s.db.Model(&model.Order{}).Where("user_id = ? AND status IN ?", uid, statuses)
+	// drama_id 过滤：分组视图点开某剧时拉该剧明细用。
+	if v := c.Query("drama_id"); v != "" {
+		if id := parseUint(v); id > 0 {
+			q = q.Where("drama_id = ?", id)
+		}
 	}
 
 	var total int64
@@ -79,6 +96,117 @@ func (s *Server) appListOrders(c *gin.Context) {
 	}
 
 	resp := pageResp(list, page, pageSize, total)
+	resp["counts"] = s.orderStatusCounts(uid)
+	response.OK(c, resp)
+}
+
+// appListOrdersGrouped —— 「我的订单」按短剧折叠视图。
+// 同一短剧的订单聚合成一组：折叠态显示短剧 + 总额(total_amount_cents) + 已购集数 + 笔数；
+// 组内 orders[] 是展开态明细（每单买了哪些集）。按短剧分页（page/page_size = 组数），
+// 组按该剧最近下单时间倒序。status=all/pending/paid 过滤；三态计数仍是订单级全量。
+func (s *Server) appListOrdersGrouped(c *gin.Context) {
+	uid := middleware.CurrentID(c)
+	page, pageSize := paginate(c)
+	statuses, ok := orderStatusFilterList(c)
+	if !ok {
+		return
+	}
+
+	// 总组数（distinct drama）用于分页
+	var totalGroups int64
+	s.db.Model(&model.Order{}).
+		Where("user_id = ? AND status IN ?", uid, statuses).
+		Distinct("drama_id").Count(&totalGroups)
+
+	// 本页短剧组 + 聚合（总额/笔数/最近下单时间）
+	type groupAgg struct {
+		DramaID    uint64
+		TotalCents int64
+		OrderCnt   int64
+		LastAt     time.Time
+	}
+	var aggs []groupAgg
+	s.db.Model(&model.Order{}).
+		Select("drama_id, COALESCE(SUM(amount_cents),0) as total_cents, COUNT(*) as order_cnt, MAX(created_at) as last_at").
+		Where("user_id = ? AND status IN ?", uid, statuses).
+		Group("drama_id").Order("last_at desc").
+		Offset((page - 1) * pageSize).Limit(pageSize).Scan(&aggs)
+
+	if len(aggs) == 0 {
+		resp := pageResp([]gin.H{}, page, pageSize, totalGroups)
+		resp["counts"] = s.orderStatusCounts(uid)
+		response.OK(c, resp)
+		return
+	}
+
+	dramaIDs := make([]uint64, 0, len(aggs))
+	for _, a := range aggs {
+		dramaIDs = append(dramaIDs, a.DramaID)
+	}
+	dramas := s.loadDramaBrief(dramaIDs)
+	purchased := s.purchasedEpisodeCounts(uid, dramaIDs)
+
+	// 本页各短剧的订单明细（展开用）
+	var orders []model.Order
+	s.db.Where("user_id = ? AND status IN ? AND drama_id IN ?", uid, statuses, dramaIDs).
+		Order("created_at desc").Find(&orders)
+
+	episodeIDs := make([]uint64, 0, len(orders))
+	for _, o := range orders {
+		if len(o.EpisodeIDs) > 0 {
+			episodeIDs = append(episodeIDs, o.EpisodeIDs...)
+		} else {
+			episodeIDs = append(episodeIDs, o.EpisodeID)
+		}
+	}
+	episodes := s.loadEpisodeBrief(episodeIDs)
+
+	ordersByDrama := map[uint64][]gin.H{}
+	pendingByDrama := map[uint64]bool{}
+	for _, o := range orders {
+		ids := o.EpisodeIDs
+		if len(ids) == 0 {
+			ids = []uint64{o.EpisodeID}
+		}
+		eps := make([]gin.H, 0, len(ids))
+		for _, id := range ids {
+			if ev := episodes[id]; ev != nil {
+				eps = append(eps, ev)
+			}
+		}
+		if o.Status == model.OrderStatusPending {
+			pendingByDrama[o.DramaID] = true
+		}
+		ordersByDrama[o.DramaID] = append(ordersByDrama[o.DramaID], gin.H{
+			"order_no":            o.OrderNo,
+			"status":              o.Status,
+			"amount_cents":        o.AmountCents,
+			"refund_amount_cents": o.RefundAmountCents,
+			"created_at":          o.CreatedAt,
+			"paid_at":             o.PaidAt,
+			"episode_count":       len(ids),
+			"episodes":            eps, // 该单购买的集（单集=1条，批量=N条）
+		})
+	}
+
+	groups := make([]gin.H, 0, len(aggs))
+	for _, a := range aggs {
+		ods := ordersByDrama[a.DramaID]
+		if ods == nil {
+			ods = []gin.H{}
+		}
+		groups = append(groups, gin.H{
+			"drama":              dramas[a.DramaID],
+			"total_amount_cents": a.TotalCents, // 折叠后显示的总额
+			"order_count":        a.OrderCnt,
+			"purchased_episodes": purchased[a.DramaID], // 该剧累计已购集数
+			"has_pending":        pendingByDrama[a.DramaID],
+			"last_order_at":      a.LastAt,
+			"orders":             ods, // 展开态：该剧各订单及所买集明细
+		})
+	}
+
+	resp := pageResp(groups, page, pageSize, totalGroups)
 	resp["counts"] = s.orderStatusCounts(uid)
 	response.OK(c, resp)
 }

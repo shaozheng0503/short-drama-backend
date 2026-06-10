@@ -187,6 +187,7 @@ func (s *Server) Router() *gin.Engine {
 	appAuth.POST("/orders/batch/preview", s.appBatchOrderPreview)
 	appAuth.POST("/orders/batch", s.idempotencyMiddleware("app"), s.appCreateBatchOrder)
 	appAuth.GET("/orders", s.appListOrders)
+	appAuth.GET("/orders/grouped", s.appListOrdersGrouped) // 按短剧折叠视图
 	appAuth.GET("/orders/:order_no", s.appGetOrder)
 	appAuth.POST("/episodes/:id/unlock", s.appUnlockEpisode)
 
