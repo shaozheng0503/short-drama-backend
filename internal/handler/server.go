@@ -184,6 +184,8 @@ func (s *Server) Router() *gin.Engine {
 	appAuth.POST("/comments/:id/like", s.appLikeComment)     // 评论点赞
 	appAuth.DELETE("/comments/:id/like", s.appUnlikeComment) // 取消评论点赞
 	appAuth.POST("/orders", s.idempotencyMiddleware("app"), s.appCreateOrder)
+	appAuth.POST("/orders/batch/preview", s.appBatchOrderPreview)
+	appAuth.POST("/orders/batch", s.idempotencyMiddleware("app"), s.appCreateBatchOrder)
 	appAuth.GET("/orders", s.appListOrders)
 	appAuth.GET("/orders/:order_no", s.appGetOrder)
 	appAuth.POST("/episodes/:id/unlock", s.appUnlockEpisode)

@@ -503,6 +503,9 @@ type Order struct {
 	ProductID       *uint64    `gorm:"column:product_id" json:"product_id"`
 	DramaID         uint64     `gorm:"column:drama_id;index" json:"drama_id"`
 	EpisodeID       uint64     `gorm:"column:episode_id;index" json:"episode_id"`
+	// 选集购买：批量单在此存集 id 清单（一单多集）；单集单留空、仍用 episode_id。
+	// serializer:json 落库为 json 文本；episode_unlocks 仍是解锁唯一真相源。
+	EpisodeIDs      []uint64   `gorm:"column:episode_ids;serializer:json" json:"episode_ids,omitempty"`
 	AmountCents     int64      `gorm:"column:amount_cents" json:"amount_cents"`
 	PaymentMethod   string     `gorm:"column:payment_method;size:20" json:"payment_method"`
 	PlatformTradeNo string     `gorm:"column:platform_trade_no;size:128;index" json:"platform_trade_no"`
