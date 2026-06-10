@@ -94,6 +94,97 @@ func (s *Server) appCreateOrder(c *gin.Context) {
 	})
 }
 
+// respondBillingOrderError 把 billing 下单错误统一映射为 HTTP 响应（批量/单集共用）。
+func respondBillingOrderError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, billing.ErrEpisodeNotFound):
+		response.NotFound(c, "剧集不存在")
+	case errors.Is(err, billing.ErrEpisodeNotReady):
+		response.InvalidParam(c, "存在尚未就绪的剧集，不能下单")
+	case errors.Is(err, billing.ErrDramaNotFound):
+		response.NotFound(c, "短剧不存在")
+	case errors.Is(err, billing.ErrDramaNotAvailable):
+		response.InvalidParam(c, "短剧未上架或已下架，不能下单")
+	case errors.Is(err, billing.ErrOrderEpisodeMatch):
+		response.InvalidParam(c, "存在不属于该短剧的剧集")
+	case errors.Is(err, billing.ErrEpisodeFree):
+		response.InvalidParam(c, "包含免费集，无需购买")
+	case errors.Is(err, billing.ErrAmountInvalid):
+		response.InvalidParam(c, "短剧未设置单集价格")
+	case errors.Is(err, payment.ErrUnsupportedMethod):
+		response.InvalidParam(c, "payment_method 仅支持 wechat / alipay")
+	case errors.Is(err, payment.ErrProviderUnavailable):
+		response.FailWithData(c, response.CodeThirdPartyError, "支付通道暂不可用", nil)
+	default:
+		log.Printf("[order] err=%v", err)
+		response.ServerError(c, "下单失败")
+	}
+}
+
+type createBatchOrderRequest struct {
+	DramaID       uint64   `json:"drama_id" binding:"required"`
+	EpisodeIDs    []uint64 `json:"episode_ids" binding:"required"`
+	PaymentMethod string   `json:"payment_method" binding:"required"`
+	PayScene      string   `json:"pay_scene"` // 支付宝多端：app（默认）/ wap
+}
+
+// appCreateBatchOrder —— 选集购买：一笔订单买多集。POST /v1/app/orders/batch
+// 自动剔除免费 / 已解锁集，金额 = 可购买集数 × 单价；可购买为空 → {already_unlocked:true}。
+func (s *Server) appCreateBatchOrder(c *gin.Context) {
+	uid := middleware.CurrentID(c)
+	var req createBatchOrderRequest
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.EpisodeIDs) == 0 {
+		response.InvalidParam(c, "drama_id / episode_ids / payment_method 必填")
+		return
+	}
+	outcome, err := s.billing.CreateBatchOrder(uid, req.DramaID, req.EpisodeIDs, req.PaymentMethod, req.PayScene, c.ClientIP())
+	if err != nil {
+		respondBillingOrderError(c, err)
+		return
+	}
+	if outcome.AlreadyUnlocked {
+		response.OK(c, gin.H{"already_unlocked": true})
+		return
+	}
+	o := outcome.Order
+	response.OK(c, gin.H{
+		"order_no":       o.OrderNo,
+		"amount_cents":   o.AmountCents,
+		"episode_count":  len(o.EpisodeIDs),
+		"episode_ids":    o.EpisodeIDs,
+		"payment_method": o.PaymentMethod,
+		"pay_params":     outcome.PayParams,
+		"expired_at":     o.ExpiredAt,
+	})
+}
+
+type batchPreviewRequest struct {
+	DramaID    uint64   `json:"drama_id" binding:"required"`
+	EpisodeIDs []uint64 `json:"episode_ids" binding:"required"`
+}
+
+// appBatchOrderPreview —— 选集购买试算（只读，不下单）。POST /v1/app/orders/batch/preview
+func (s *Server) appBatchOrderPreview(c *gin.Context) {
+	uid := middleware.CurrentID(c)
+	var req batchPreviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.EpisodeIDs) == 0 {
+		response.InvalidParam(c, "drama_id / episode_ids 必填")
+		return
+	}
+	q, err := s.billing.QuoteBatch(uid, req.DramaID, req.EpisodeIDs)
+	if err != nil {
+		respondBillingOrderError(c, err)
+		return
+	}
+	response.OK(c, gin.H{
+		"unit_price_cents":             q.UnitPriceCents,
+		"buyable_episode_ids":          q.BuyableEpisodeIDs,
+		"buyable_count":                len(q.BuyableEpisodeIDs),
+		"already_unlocked_episode_ids": q.AlreadyUnlocked,
+		"amount_cents":                 q.AmountCents,
+	})
+}
+
 func (s *Server) appGetOrder(c *gin.Context) {
 	uid := middleware.CurrentID(c)
 	orderNo := c.Param("order_no")

@@ -80,10 +80,28 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 }
 
 func ensureIndexes(db *gorm.DB) error {
+	// 单集 pending 单去重索引。选集购买的批量单 episode_id=0，同用户多张批量单会在
+	// (user_id, episode_id) 上互撞，故条件加 episode_id <> 0，只约束单集单；批量单去重靠
+	// advisory lock(user+drama) + Idempotency-Key。下面 DO 块仅在旧条件索引上做一次性重建，
+	// reload 不重复 drop（避免零停机窗口里短暂丢失唯一约束）。
+	if err := db.Exec(`
+		DO $$
+		BEGIN
+		  IF EXISTS (
+		    SELECT 1 FROM pg_indexes
+		    WHERE indexname = 'idx_orders_user_episode_pending'
+		      AND indexdef NOT LIKE '%episode_id <> 0%'
+		  ) THEN
+		    DROP INDEX idx_orders_user_episode_pending;
+		  END IF;
+		END $$;
+	`).Error; err != nil {
+		return err
+	}
 	if err := db.Exec(`
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_user_episode_pending
 		ON orders (user_id, episode_id)
-		WHERE status = 'pending'
+		WHERE status = 'pending' AND episode_id <> 0
 	`).Error; err != nil {
 		return err
 	}

@@ -56,6 +56,14 @@ func (s *Server) appListOrders(c *gin.Context) {
 
 	list := make([]gin.H, 0, len(orders))
 	for _, o := range orders {
+		// 选集购买：批量单 episode_count=N、episode 为 null；单集单 episode_count=1、episode 带集号。
+		episodeCount := 1
+		var episodeView gin.H
+		if len(o.EpisodeIDs) > 0 {
+			episodeCount = len(o.EpisodeIDs)
+		} else {
+			episodeView = episodes[o.EpisodeID]
+		}
 		list = append(list, gin.H{
 			"order_no":            o.OrderNo,
 			"status":              o.Status,
@@ -64,7 +72,8 @@ func (s *Server) appListOrders(c *gin.Context) {
 			"created_at":          o.CreatedAt, // 下单时间
 			"paid_at":             o.PaidAt,    // 支付时间（未支付为 null）
 			"drama":               dramas[o.DramaID],
-			"episode":             episodes[o.EpisodeID],
+			"episode":             episodeView,  // 批量单为 null
+			"episode_count":       episodeCount, // 本单集数（单集=1，批量=N）
 			"purchased_episodes":  purchased[o.DramaID], // 该剧累计已购集数（已购 X）
 		})
 	}

@@ -190,6 +190,140 @@ func (s *Service) attachPayParams(order *model.Order, method, payScene, clientIP
 	return &CreateOrderOutcome{Order: order, PayParams: params}, nil
 }
 
+// BatchQuote 选集购买试算：可购买集（剔除免费/已解锁）+ 已解锁集 + 金额。
+type BatchQuote struct {
+	DramaID           uint64
+	BuyableEpisodeIDs []uint64
+	AlreadyUnlocked   []uint64
+	UnitPriceCents    int64
+	AmountCents       int64
+}
+
+// quoteBatch 校验并试算选集购买。硬错误（整批拒绝）：集不存在 / 不属于该剧 / 未就绪 / 短剧未发布或无单价。
+// 软跳过（不计入可购买）：免费集、已解锁集。可购买 = 付费集 ∩ 未解锁。
+func (s *Service) quoteBatch(tx *gorm.DB, userID, dramaID uint64, episodeIDs []uint64) (*BatchQuote, error) {
+	seen := map[uint64]bool{}
+	ids := make([]uint64, 0, len(episodeIDs))
+	for _, id := range episodeIDs {
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, ErrEpisodeNotFound
+	}
+
+	var drama model.Drama
+	if err := tx.First(&drama, dramaID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrDramaNotFound
+		}
+		return nil, err
+	}
+	if drama.Status != model.DramaStatusPublished {
+		return nil, ErrDramaNotAvailable
+	}
+	if drama.PriceCents <= 0 {
+		return nil, ErrAmountInvalid
+	}
+
+	var eps []model.Episode
+	if err := tx.Where("id IN ?", ids).Find(&eps).Error; err != nil {
+		return nil, err
+	}
+	if len(eps) != len(ids) {
+		return nil, ErrEpisodeNotFound // 有不存在的集
+	}
+	for _, ep := range eps {
+		if ep.DramaID != dramaID {
+			return nil, ErrOrderEpisodeMatch
+		}
+		if ep.Status != model.EpisodeStatusReady {
+			return nil, ErrEpisodeNotReady
+		}
+	}
+
+	// 已解锁集（剔除）
+	var unlockedIDs []uint64
+	if err := tx.Model(&model.EpisodeUnlock{}).
+		Where("user_id = ? AND episode_id IN ?", userID, ids).
+		Pluck("episode_id", &unlockedIDs).Error; err != nil {
+		return nil, err
+	}
+	unlockedSet := map[uint64]bool{}
+	for _, id := range unlockedIDs {
+		unlockedSet[id] = true
+	}
+	freeSet := map[uint64]bool{}
+	for _, ep := range eps {
+		if ep.EpisodeNo <= drama.FreeEpisodes {
+			freeSet[ep.ID] = true
+		}
+	}
+	buyable := make([]uint64, 0, len(ids))
+	for _, id := range ids {
+		if !unlockedSet[id] && !freeSet[id] { // 付费且未解锁才买
+			buyable = append(buyable, id)
+		}
+	}
+	return &BatchQuote{
+		DramaID:           dramaID,
+		BuyableEpisodeIDs: buyable,
+		AlreadyUnlocked:   unlockedIDs,
+		UnitPriceCents:    drama.PriceCents,
+		AmountCents:       int64(len(buyable)) * drama.PriceCents,
+	}, nil
+}
+
+// QuoteBatch 选集购买试算（只读，不下单），供前端展示价格 + 哪些已拥有。
+func (s *Service) QuoteBatch(userID, dramaID uint64, episodeIDs []uint64) (*BatchQuote, error) {
+	return s.quoteBatch(s.db, userID, dramaID, episodeIDs)
+}
+
+// CreateBatchOrder 选集购买：一笔订单覆盖多集（episode_ids 清单），金额 = 可购买集数 × 单价。
+// 自动剔除免费 / 已解锁集；可购买为空（全已解锁/全免费）→ AlreadyUnlocked。
+func (s *Service) CreateBatchOrder(userID, dramaID uint64, episodeIDs []uint64, method, payScene, clientIP string) (*CreateOrderOutcome, error) {
+	if method != model.PaymentMethodWechat && method != model.PaymentMethodAlipay {
+		return nil, payment.ErrUnsupportedMethod
+	}
+	now := time.Now()
+	var order model.Order
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 同一 user+drama 串行，避免并发重复下批量单（叠加端上 Idempotency-Key）。
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(?, ?)", int64(userID), int64(dramaID)).Error; err != nil {
+			return err
+		}
+		quote, err := s.quoteBatch(tx, userID, dramaID, episodeIDs)
+		if err != nil {
+			return err
+		}
+		if len(quote.BuyableEpisodeIDs) == 0 {
+			return ErrAlreadyUnlocked
+		}
+		expiredAt := now.Add(s.cfg.OrderPendingTTL)
+		order = model.Order{
+			OrderNo:       generateOrderNo(),
+			UserID:        userID,
+			DramaID:       dramaID,
+			EpisodeID:     0, // 批量单不绑单集；清单在 EpisodeIDs
+			EpisodeIDs:    quote.BuyableEpisodeIDs,
+			AmountCents:   quote.AmountCents,
+			PaymentMethod: method,
+			Status:        model.OrderStatusPending,
+			ExpiredAt:     &expiredAt,
+		}
+		return tx.Create(&order).Error
+	})
+	if err != nil {
+		if errors.Is(err, ErrAlreadyUnlocked) {
+			return &CreateOrderOutcome{AlreadyUnlocked: true}, nil
+		}
+		return nil, err
+	}
+	return s.attachPayParams(&order, method, payScene, clientIP)
+}
+
 // MarkOrderPaid 在事务里完成订单 → 解锁 → 分账。
 // 重复回调（订单已 paid）幂等返回 nil。
 func (s *Service) MarkOrderPaid(orderNo, platformTradeNo, paymentMethod string, amountCents int64, paidAt time.Time) error {
@@ -230,15 +364,21 @@ func (s *Service) MarkOrderPaid(orderNo, platformTradeNo, paymentMethod string, 
 			return err
 		}
 
-		// 2. 写解锁（重复 ON CONFLICT DO NOTHING）
-		unlock := model.EpisodeUnlock{
-			UserID:    order.UserID,
-			DramaID:   order.DramaID,
-			EpisodeID: order.EpisodeID,
-			OrderID:   &order.ID,
+		// 2. 写解锁（批量单解锁清单里所有集，单集单解锁 episode_id）。重复 ON CONFLICT DO NOTHING。
+		unlockIDs := order.EpisodeIDs
+		if len(unlockIDs) == 0 {
+			unlockIDs = []uint64{order.EpisodeID}
 		}
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&unlock).Error; err != nil {
-			return err
+		for _, epID := range unlockIDs {
+			unlock := model.EpisodeUnlock{
+				UserID:    order.UserID,
+				DramaID:   order.DramaID,
+				EpisodeID: epID,
+				OrderID:   &order.ID,
+			}
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&unlock).Error; err != nil {
+				return err
+			}
 		}
 
 		// 3. 分账（若短剧绑定了创作者）
