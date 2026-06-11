@@ -79,6 +79,12 @@ const (
 	DramaAuditRejected = "rejected"
 )
 
+// 分批审核维度（2026-06-10 会议：短剧审核拆资料内容 / 视频内容 / 合同，本期先做前两项）。
+const (
+	DramaAuditDimensionContent = "content" // 资料内容审核
+	DramaAuditDimensionVideo   = "video"   // 视频内容审核
+)
+
 const (
 	EpisodeStatusUploading = "uploading"
 	EpisodeStatusReady     = "ready"
@@ -316,12 +322,16 @@ type Drama struct {
 	AuditStatus   string  `gorm:"column:audit_status;size:20;default:pending;index" json:"audit_status"`
 	AuditReason   string  `gorm:"column:audit_reason;size:255" json:"audit_reason"`
 	AuditSubmittedAt *time.Time `gorm:"column:audit_submitted_at;index" json:"audit_submitted_at"`
-	// MVP 整剧一次审核，仅用 audit_status；以下 video_* 列保留兼容老库，接口不再暴露。
-	VideoAuditStatus string     `gorm:"column:video_audit_status;size:20;default:'';index" json:"-"`
-	VideoAuditReason string     `gorm:"column:video_audit_reason;size:255" json:"-"`
-	VideoSubmittedAt *time.Time `gorm:"column:video_submitted_at;index" json:"-"`
-	VideoReviewerID  *uint64    `gorm:"column:video_reviewer_id" json:"-"`
-	VideoReviewedAt  *time.Time `gorm:"column:video_reviewed_at" json:"-"`
+	// 分批审核（2026-06-10 会议）：资料内容 + 视频内容各自独立审核，audit_status 为派生总状态
+	//（资料✓且视频✓才 approved；任一 rejected 则 rejected）。合同维度暂沿用 Contract.status，未纳入派生。
+	// 维度状态取值同 audit：pending/approved/rejected；空串视为 pending（未审）。
+	ContentAuditStatus string     `gorm:"column:content_audit_status;size:20;default:'';index" json:"content_audit_status"`
+	ContentAuditReason string     `gorm:"column:content_audit_reason;size:255" json:"content_audit_reason"`
+	VideoAuditStatus   string     `gorm:"column:video_audit_status;size:20;default:'';index" json:"video_audit_status"`
+	VideoAuditReason   string     `gorm:"column:video_audit_reason;size:255" json:"video_audit_reason"`
+	VideoSubmittedAt   *time.Time `gorm:"column:video_submitted_at;index" json:"-"`
+	VideoReviewerID    *uint64    `gorm:"column:video_reviewer_id" json:"-"`
+	VideoReviewedAt    *time.Time `gorm:"column:video_reviewed_at" json:"-"`
 
 	// === 申报级扩展字段（2026-05-27 漫剧上传规格）===
 	IsAI                bool       `gorm:"column:is_ai;default:false" json:"is_ai"`                             // 是否 AI 作品

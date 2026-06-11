@@ -267,6 +267,10 @@ func (s *Server) creatorListDramas(c *gin.Context) {
 			"status":               d.Status,
 			"audit_status":         d.AuditStatus,
 			"audit_reason":         d.AuditReason,
+			"content_audit_status": d.ContentAuditStatus, // 分批审核：资料内容维度
+			"content_audit_reason": d.ContentAuditReason,
+			"video_audit_status":   d.VideoAuditStatus, // 分批审核：视频内容维度
+			"video_audit_reason":   d.VideoAuditReason,
 			"total_episodes":       d.TotalEpisodes,
 			"audience":             d.Audience,
 			"categories":           cats,            // [{id,name,type}...]，含 theme/setting/background/audience 四维全部命中标签
