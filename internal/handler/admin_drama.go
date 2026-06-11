@@ -377,8 +377,13 @@ func (s *Server) adminRejectDrama(c *gin.Context) {
 	updates := map[string]interface{}{
 		"audit_status": model.DramaAuditRejected,
 		"audit_reason": req.Reason,
-		"reviewer_id":  reviewerID,
-		"reviewed_at":  now,
+		// 一键整体驳回：两维度同置驳回(同一原因)，与派生总状态一致；细分驳回走 /audit。
+		"content_audit_status": model.DramaAuditRejected,
+		"content_audit_reason": req.Reason,
+		"video_audit_status":   model.DramaAuditRejected,
+		"video_audit_reason":   req.Reason,
+		"reviewer_id":          reviewerID,
+		"reviewed_at":          now,
 	}
 	// 驳回时的 status 反推：
 	//   - published        → offline（已上线 + 驳回必须立即下架）
@@ -428,8 +433,13 @@ func (s *Server) adminApproveDrama(c *gin.Context) {
 	updates := map[string]interface{}{
 		"audit_status": model.DramaAuditApproved,
 		"audit_reason": "",
-		"reviewer_id":  reviewerID,
-		"reviewed_at":  now,
+		// 一键整体通过：资料 + 视频两维度同时置通过，与派生总状态一致。
+		"content_audit_status": model.DramaAuditApproved,
+		"content_audit_reason": "",
+		"video_audit_status":   model.DramaAuditApproved,
+		"video_audit_reason":   "",
+		"reviewer_id":          reviewerID,
+		"reviewed_at":          now,
 	}
 	// 通过审核 → 进入"待上架"。已经在发布队列 / 已上架的不再动 status，保持幂等。
 	if drama.Status == model.DramaStatusDraft || drama.Status == model.DramaStatusReviewing || drama.Status == model.DramaStatusOffline {
@@ -461,6 +471,171 @@ func (s *Server) signDramaContractsOnApprove(tx *gorm.DB, dramaID uint64) error 
 			model.ContractStatusSigning,
 		}).
 		Update("status", model.ContractStatusSigned).Error
+}
+
+// adminAuditDrama —— 分批审核：按维度(content=资料内容 / video=视频内容)分别通过/驳回。
+// POST /admin/dramas/:id/audit  body {dimension, action(approve/reject), reason}
+// 写入该维度后重算派生总状态(audit_status)：两维度全通过→approved→awaiting_publish+签约+通知；
+// 任一驳回→rejected+状态回退+通知(带各维度原因)；否则 pending(继续待审)。合同维度本期未纳入派生。
+type adminAuditDramaRequest struct {
+	Dimension string `json:"dimension"`
+	Action    string `json:"action"`
+	Reason    string `json:"reason"`
+}
+
+func (s *Server) adminAuditDrama(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var req adminAuditDramaRequest
+	_ = c.ShouldBindJSON(&req)
+	if req.Dimension != model.DramaAuditDimensionContent && req.Dimension != model.DramaAuditDimensionVideo {
+		response.InvalidParam(c, "dimension 只能是 content / video")
+		return
+	}
+	var dimStatus string
+	switch req.Action {
+	case "approve":
+		dimStatus = model.DramaAuditApproved
+		req.Reason = "" // 通过不留原因
+	case "reject":
+		dimStatus = model.DramaAuditRejected
+	default:
+		response.InvalidParam(c, "action 只能是 approve / reject")
+		return
+	}
+	if len(req.Reason) > 255 {
+		response.InvalidParam(c, "reason 不能超过 255 字符")
+		return
+	}
+
+	var drama model.Drama
+	if err := s.db.First(&drama, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "短剧不存在")
+			return
+		}
+		response.ServerError(c, "查询短剧失败")
+		return
+	}
+	now := time.Now()
+	reviewerID := middleware.CurrentID(c)
+
+	dimUpdates := map[string]interface{}{}
+	if req.Dimension == model.DramaAuditDimensionContent {
+		drama.ContentAuditStatus, drama.ContentAuditReason = dimStatus, req.Reason
+		dimUpdates["content_audit_status"], dimUpdates["content_audit_reason"] = dimStatus, req.Reason
+	} else {
+		drama.VideoAuditStatus, drama.VideoAuditReason = dimStatus, req.Reason
+		dimUpdates["video_audit_status"], dimUpdates["video_audit_reason"] = dimStatus, req.Reason
+	}
+
+	var outcome dramaAuditOutcome
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.Drama{}).Where("id = ?", id).Updates(dimUpdates).Error; err != nil {
+			return err
+		}
+		o, err := s.recomputeDramaAuditTx(tx, &drama, reviewerID, now)
+		if err != nil {
+			return err
+		}
+		outcome = o
+		return nil
+	})
+	if err != nil {
+		response.ServerError(c, "审核失败")
+		return
+	}
+	s.db.First(&drama, id)
+	if outcome.NotifyTitle != "" && drama.CreatorID != nil {
+		s.sendNotification(*drama.CreatorID, outcome.NotifyTitle, outcome.NotifyContent, "")
+	}
+	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
+}
+
+type dramaAuditOutcome struct {
+	Overall       string
+	NotifyTitle   string
+	NotifyContent string
+}
+
+// recomputeDramaAuditTx 据 drama 的资料/视频维度状态重算总 audit_status，并在 tx 内推进 status + 合同。
+// 调用前 drama 的 *AuditStatus/*AuditReason 须为最新值。空维度按 pending 处理。
+func (s *Server) recomputeDramaAuditTx(tx *gorm.DB, drama *model.Drama, reviewerID uint64, now time.Time) (dramaAuditOutcome, error) {
+	norm := func(v string) string {
+		if v == "" {
+			return model.DramaAuditPending
+		}
+		return v
+	}
+	content, video := norm(drama.ContentAuditStatus), norm(drama.VideoAuditStatus)
+
+	var overall, reason string
+	switch {
+	case content == model.DramaAuditRejected || video == model.DramaAuditRejected:
+		overall = model.DramaAuditRejected
+		var parts []string
+		if content == model.DramaAuditRejected {
+			parts = append(parts, "资料："+orDefaultStr(drama.ContentAuditReason, "未通过"))
+		}
+		if video == model.DramaAuditRejected {
+			parts = append(parts, "视频："+orDefaultStr(drama.VideoAuditReason, "未通过"))
+		}
+		reason = strings.Join(parts, "；")
+	case content == model.DramaAuditApproved && video == model.DramaAuditApproved:
+		overall = model.DramaAuditApproved
+	default:
+		overall = model.DramaAuditPending
+	}
+
+	updates := map[string]interface{}{
+		"audit_status": overall,
+		"audit_reason": reason,
+		"reviewer_id":  reviewerID,
+		"reviewed_at":  now,
+	}
+	switch overall {
+	case model.DramaAuditApproved:
+		if drama.Status == model.DramaStatusDraft || drama.Status == model.DramaStatusReviewing || drama.Status == model.DramaStatusOffline {
+			updates["status"] = model.DramaStatusAwaitingPublish
+		}
+	case model.DramaAuditRejected:
+		switch drama.Status {
+		case model.DramaStatusPublished:
+			updates["status"] = model.DramaStatusOffline
+		case model.DramaStatusAwaitingPublish, model.DramaStatusReviewing:
+			updates["status"] = model.DramaStatusDraft
+		}
+	}
+	if err := tx.Model(&model.Drama{}).Where("id = ?", drama.ID).Updates(updates).Error; err != nil {
+		return dramaAuditOutcome{}, err
+	}
+
+	out := dramaAuditOutcome{Overall: overall}
+	switch overall {
+	case model.DramaAuditApproved:
+		if err := s.signDramaContractsOnApprove(tx, drama.ID); err != nil {
+			return dramaAuditOutcome{}, err
+		}
+		out.NotifyTitle = "作品审核通过"
+		out.NotifyContent = "您的作品《" + drama.Title + "》已审核通过，可以发布上架。"
+	case model.DramaAuditRejected:
+		out.NotifyTitle = "作品审核未通过"
+		out.NotifyContent = "您的作品《" + drama.Title + "》审核未通过，请修改后重新提交。"
+		if reason != "" {
+			out.NotifyContent += "驳回原因：" + reason
+		}
+	}
+	return out, nil
+}
+
+func orDefaultStr(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
 }
 
 // adminDeleteDrama —— 仅 draft 状态允许删除，避免误删已上架/曾发布过的剧。

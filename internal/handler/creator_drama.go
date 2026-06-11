@@ -762,9 +762,14 @@ func (s *Server) creatorSubmitDrama(c *gin.Context) {
 			"status":             model.DramaStatusReviewing,
 			"audit_status":       model.DramaAuditPending,
 			"audit_reason":       "",
-			"audit_submitted_at": nowTimePtr(),
-			"reviewer_id":        nil,
-			"reviewed_at":        nil,
+			// 分批审核：提交时资料 + 视频两维度都置 pending、清旧原因，等 admin 分别审。
+			"content_audit_status": model.DramaAuditPending,
+			"content_audit_reason": "",
+			"video_audit_status":   model.DramaAuditPending,
+			"video_audit_reason":   "",
+			"audit_submitted_at":   nowTimePtr(),
+			"reviewer_id":          nil,
+			"reviewed_at":          nil,
 		}).Error; err != nil {
 			return err
 		}

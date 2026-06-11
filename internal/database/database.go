@@ -105,6 +105,14 @@ func ensureIndexes(db *gorm.DB) error {
 	`).Error; err != nil {
 		return err
 	}
+	// 分批审核迁移：新加的资料/视频维度列对存量初始为空，按当前 audit_status 回填一次，
+	// 保证已通过的存量剧在"派生总状态"下仍为 approved（不被误判回退）。仅填空值行，幂等。
+	if err := db.Exec(`UPDATE dramas SET content_audit_status = audit_status WHERE content_audit_status = '' AND audit_status <> ''`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`UPDATE dramas SET video_audit_status = audit_status WHERE video_audit_status = '' AND audit_status <> ''`).Error; err != nil {
+		return err
+	}
 	// 观看历史「一剧一条」迁移：删除旧的 (user,episode) 唯一索引，对存量去重（每个 user+drama 仅留最近一条），
 	// 再建 (user,drama) 唯一索引。幂等，重复执行安全。
 	if err := db.Exec(`DROP INDEX IF EXISTS uniq_user_episode`).Error; err != nil {

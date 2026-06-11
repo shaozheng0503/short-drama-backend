@@ -107,9 +107,14 @@ func dramaAdminView(d model.Drama, categoryName, creatorName string) gin.H {
 		"price_cents":    d.PriceCents,
 		"sort_order":     d.SortOrder,
 		"status":         d.Status,
-		"audit_status":   d.AuditStatus,
+		"audit_status":   d.AuditStatus, // 派生总状态：资料✓且视频✓才 approved
 		"audit_reason":   d.AuditReason,
-		"audit_submitted_at": d.AuditSubmittedAt,
+		// 分批审核维度（资料内容 / 视频内容），各带状态 + 备注；前端可展示"哪项没过、原因"
+		"content_audit_status": d.ContentAuditStatus,
+		"content_audit_reason": d.ContentAuditReason,
+		"video_audit_status":   d.VideoAuditStatus,
+		"video_audit_reason":   d.VideoAuditReason,
+		"audit_submitted_at":   d.AuditSubmittedAt,
 		"reviewer_id":        d.ReviewerID,
 		"reviewed_at":        d.ReviewedAt,
 		// 申报级扩展字段
