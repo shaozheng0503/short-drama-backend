@@ -17,8 +17,9 @@ type PrepayInput struct {
 	AmountCents int64
 	Subject     string
 	UserID      uint64
-	Scene       string // 多端：app（默认）/ wap(h5)；微信 / 支付宝按此选产品
-	ClientIP    string // 微信 H5 支付必填 payer_client_ip；其它场景可空
+	Scene       string    // 多端：app（默认）/ wap(h5)；微信 / 支付宝按此选产品
+	ClientIP    string    // 微信 H5 支付必填 payer_client_ip；其它场景可空
+	ExpireAt    time.Time // 第三方支付有效期（绝对时间）；零值表示不显式设置走渠道默认。必须早于本地关单时间，防"已关单仍可支付"资损。
 }
 
 // WebhookEvent 解析回调后得到的标准化事件。
@@ -74,6 +75,9 @@ type Provider interface {
 	QueryOrder(orderNo string) (*OrderState, error)
 	// Refund 发起退款。同 RefundNo 重入要保持幂等。
 	Refund(input RefundInput) (*RefundResult, error)
+	// CloseOrder 关闭渠道侧未支付订单，作废其支付链接，防"本地已关单但渠道仍可支付"资损。
+	// 渠道侧订单不存在 / 已关闭 / 已支付等情况按幂等处理（不返回错误）。
+	CloseOrder(orderNo string) error
 }
 
 var (

@@ -183,6 +183,7 @@ func (s *Server) Router() *gin.Engine {
 	appAuth.POST("/dramas/:id/comments", s.appCreateComment) // 顶层评论 / 楼中楼回复（body 带 parent_id 即回复）
 	appAuth.POST("/comments/:id/like", s.appLikeComment)     // 评论点赞
 	appAuth.DELETE("/comments/:id/like", s.appUnlikeComment) // 取消评论点赞
+	appAuth.POST("/orders/preview", s.appOrderPreview) // 单集下单前试算：展示实付金额
 	appAuth.POST("/orders", s.idempotencyMiddleware("app"), s.appCreateOrder)
 	appAuth.POST("/orders/batch/preview", s.appBatchOrderPreview)
 	appAuth.POST("/orders/batch", s.idempotencyMiddleware("app"), s.appCreateBatchOrder)

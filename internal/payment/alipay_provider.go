@@ -90,6 +90,9 @@ func (p *AlipayProvider) Prepay(input PrepayInput) (PrepayParams, error) {
 		req.TotalAmount = amount
 		req.ProductCode = "QUICK_WAP_WAY"
 		req.NotifyURL = p.cfg.AlipayNotifyURL
+		if !input.ExpireAt.IsZero() {
+			req.TimeExpire = input.ExpireAt.Format("2006-01-02 15:04:05")
+		}
 		u, err := p.client.TradeWapPay(req)
 		if err != nil {
 			return nil, fmt.Errorf("alipay wap prepay: %w", err)
@@ -107,6 +110,9 @@ func (p *AlipayProvider) Prepay(input PrepayInput) (PrepayParams, error) {
 		req.TotalAmount = amount
 		req.ProductCode = "QUICK_MSECURITY_PAY"
 		req.NotifyURL = p.cfg.AlipayNotifyURL
+		if !input.ExpireAt.IsZero() {
+			req.TimeExpire = input.ExpireAt.Format("2006-01-02 15:04:05")
+		}
 		orderStr, err := p.client.TradeAppPay(req)
 		if err != nil {
 			return nil, fmt.Errorf("alipay app prepay: %w", err)
@@ -118,6 +124,24 @@ func (p *AlipayProvider) Prepay(input PrepayInput) (PrepayParams, error) {
 			"order_string": orderStr,
 		}, nil
 	}
+}
+
+// CloseOrder 关闭支付宝侧未支付订单（alipay.trade.close），作废其支付链接。
+// 订单不存在 / 已关闭等按幂等处理：不返回错误，让本地关单流程继续。
+func (p *AlipayProvider) CloseOrder(orderNo string) error {
+	rsp, err := p.client.TradeClose(context.Background(), alipay.TradeClose{OutTradeNo: orderNo})
+	if err != nil {
+		return fmt.Errorf("alipay trade close: %w", err)
+	}
+	if rsp.IsSuccess() {
+		return nil
+	}
+	switch rsp.SubCode {
+	// 不存在（从未上送支付）/ 已关闭 / 交易状态非法（如已支付）→ 视为无需再关，幂等返回。
+	case "ACQ.TRADE_NOT_EXIST", "ACQ.TRADE_HAS_CLOSE", "ACQ.TRADE_STATUS_ERROR", "ACQ.REASON_TRADE_STATUS_INVALID":
+		return nil
+	}
+	return fmt.Errorf("alipay trade close failed: code=%s sub=%s msg=%s", rsp.Code, rsp.SubCode, rsp.Msg)
 }
 
 func (p *AlipayProvider) VerifyAndParse(_ map[string]string, body []byte) (*WebhookEvent, error) {

@@ -69,6 +69,12 @@ func (p *DevProvider) QueryOrder(orderNo string) (*OrderState, error) {
 	}, nil
 }
 
+// CloseOrder dev 模式无真实渠道订单，直接幂等返回成功。
+func (p *DevProvider) CloseOrder(orderNo string) error {
+	log.Printf("[payment-dev] close order method=%s order_no=%s", p.method, orderNo)
+	return nil
+}
+
 // Refund dev 模式直接返回成功,RefundedAt=now;不联网。
 func (p *DevProvider) Refund(input RefundInput) (*RefundResult, error) {
 	log.Printf("[payment-dev] refund method=%s order_no=%s refund_no=%s amount=%d reason=%q",

@@ -78,6 +78,14 @@ func Run(cfg config.Config, opts Options) Report {
 	if cfg.OrderPendingTTL <= 0 {
 		report.add(SeverityError, "order_pending_ttl_invalid", "ORDER_PENDING_TTL_SECONDS 必须大于 0")
 	}
+	if cfg.PaymentExpire <= 0 {
+		report.add(SeverityError, "payment_expire_invalid", "PAYMENT_EXPIRE_SECONDS 必须大于 0")
+	}
+	// 第三方支付有效期必须严格短于本地关单时间，否则会出现"本地已关单但渠道仍可支付"的资损窗口。
+	if cfg.PaymentExpire > 0 && cfg.OrderPendingTTL > 0 && cfg.PaymentExpire >= cfg.OrderPendingTTL {
+		report.add(SeverityError, "payment_expire_ge_order_ttl",
+			fmt.Sprintf("PAYMENT_EXPIRE_SECONDS(%s) 必须严格小于 ORDER_PENDING_TTL_SECONDS(%s)，否则渠道侧仍可支付已被本地关闭的订单（资损）", cfg.PaymentExpire, cfg.OrderPendingTTL))
+	}
 	if cfg.IdempotencyTTL <= 0 {
 		report.add(SeverityError, "idempotency_ttl_invalid", "IDEMPOTENCY_TTL_SECONDS 必须大于 0")
 	}

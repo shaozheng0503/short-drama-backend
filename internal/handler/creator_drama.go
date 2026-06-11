@@ -292,9 +292,12 @@ func (s *Server) creatorCreateDrama(c *gin.Context) {
 		Title:        *req.Title,
 		Status:       model.DramaStatusDraft,
 		AuditStatus:  model.DramaAuditPending, // 新建草稿尚未提交审核：默认 pending，避免前端把未审作品显示成"审核通过"。提交审核(submit)/admin 通过后才转 approved。
-		CreatorID:    &creatorID,
-		FreeEpisodes: freeEp,
-		PriceCents:   priceCents,
+		// 分维度状态同步初始化为 pending，与 audit_status 一致，避免新建剧在中台分维度审核列显示成空（—）。
+		ContentAuditStatus: model.DramaAuditPending,
+		VideoAuditStatus:   model.DramaAuditPending,
+		CreatorID:          &creatorID,
+		FreeEpisodes:       freeEp,
+		PriceCents:         priceCents,
 	}
 	applyDramaScalars(&drama, &req)
 	if req.FreeEpisodes != nil && *req.FreeEpisodes >= 0 {
