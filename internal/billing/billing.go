@@ -3,6 +3,7 @@ package billing
 import (
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"time"
 
@@ -13,6 +14,29 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+// orderRef 关单后需要联动作废渠道侧支付链接的订单标识。
+type orderRef struct {
+	OrderNo string
+	Method  string
+}
+
+// closeChannelOrders 在事务外逐个调渠道关单，作废其支付链接（支付宝 trade.close / 微信 closeorder）。
+// 失败只记日志、不阻断本地流程：MarkOrderPaid 已拒绝已关单/过期订单，叠加对账兜底。
+func (s *Service) closeChannelOrders(refs []orderRef) {
+	for _, r := range refs {
+		if r.OrderNo == "" || r.Method == "" {
+			continue
+		}
+		provider, err := s.payments.Get(r.Method)
+		if err != nil {
+			continue
+		}
+		if err := provider.CloseOrder(r.OrderNo); err != nil {
+			log.Printf("[order] 渠道关单失败 order_no=%s method=%s err=%v", r.OrderNo, r.Method, err)
+		}
+	}
+}
 
 var (
 	ErrEpisodeNotFound       = errors.New("剧集不存在")
@@ -46,19 +70,19 @@ func New(db *gorm.DB, cfg config.Config, payments *payment.Registry) *Service {
 	return &Service{db: db, cfg: cfg, payments: payments}
 }
 
-// CreateOrReuseOrder 实现"业务幂等"：
+// CreateOrder 单集下单（仅当次支付，不保留 / 不复用待支付订单）：
 //  1. 用户对同一 episode 已支付 → 返回已解锁。
-//  2. 已有 pending 且未过期订单 → 复用并刷新支付参数。
-//  3. 其余创建新订单。
+//  2. 关闭该用户该集所有旧的待支付订单（不复用），再创建一个全新的当次订单。
 //
-// 调用方可同时在 Header 里携带 Idempotency-Key，目前只 log 用于排查（Redis 接入后再做强幂等）。
+// 同一次点击的重复提交由端上 Idempotency-Key + idempotencyMiddleware（Redis）兜强幂等；
+// 这里只保证"每次下单都是一次干净的当次支付"，不会恢复历史待支付。
 type CreateOrderOutcome struct {
 	AlreadyUnlocked bool
 	Order           *model.Order
 	PayParams       payment.PrepayParams
 }
 
-func (s *Service) CreateOrReuseOrder(userID uint64, dramaID, episodeID uint64, productID *uint64, method, payScene, clientIP string) (*CreateOrderOutcome, error) {
+func (s *Service) CreateOrder(userID uint64, dramaID, episodeID uint64, productID *uint64, method, payScene, clientIP string) (*CreateOrderOutcome, error) {
 	if method != model.PaymentMethodWechat && method != model.PaymentMethodAlipay {
 		return nil, payment.ErrUnsupportedMethod
 	}
@@ -96,9 +120,10 @@ func (s *Service) CreateOrReuseOrder(userID uint64, dramaID, episodeID uint64, p
 		return &CreateOrderOutcome{AlreadyUnlocked: true}, nil
 	}
 
-	// 2. 找 pending 未过期订单复用 / 3. 创建新订单（事务 + advisory lock 防并发重复下单）
+	// 仅当次支付：关闭旧待支付 + 创建全新当次订单（事务 + advisory lock 防并发重复下单）
 	now := time.Now()
 	var order model.Order
+	var closedRefs []orderRef
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Exec("SELECT pg_advisory_xact_lock(?, ?)", int64(userID), int64(episodeID)).Error; err != nil {
 			return err
@@ -111,17 +136,24 @@ func (s *Service) CreateOrReuseOrder(userID uint64, dramaID, episodeID uint64, p
 			return err
 		}
 
-		var pending model.Order
-		err := tx.Where("user_id = ? AND episode_id = ? AND status = ? AND (expired_at IS NULL OR expired_at > ?)",
-			userID, episodeID, model.OrderStatusPending, now).
-			Order("created_at desc").
-			First(&pending).Error
-		if err == nil {
-			order = pending
-			return nil
-		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
+		// 不复用历史待支付：关闭该用户该集所有旧的 pending 订单，保证最多一个 live pending（当次）。
+		// 也腾出部分唯一索引 idx_orders_user_episode_pending，使下面新建当次单不冲突。
+		// 先查出来（带渠道）供事务提交后联动渠道关单，作废其支付链接。
+		var olds []model.Order
+		if err := tx.Select("order_no", "payment_method").
+			Where("user_id = ? AND episode_id = ? AND status = ?", userID, episodeID, model.OrderStatusPending).
+			Find(&olds).Error; err != nil {
 			return err
+		}
+		if len(olds) > 0 {
+			if err := tx.Model(&model.Order{}).
+				Where("user_id = ? AND episode_id = ? AND status = ?", userID, episodeID, model.OrderStatusPending).
+				Update("status", model.OrderStatusClosed).Error; err != nil {
+				return err
+			}
+			for _, o := range olds {
+				closedRefs = append(closedRefs, orderRef{OrderNo: o.OrderNo, Method: o.PaymentMethod})
+			}
 		}
 
 		amount := drama.PriceCents
@@ -164,6 +196,8 @@ func (s *Service) CreateOrReuseOrder(userID uint64, dramaID, episodeID uint64, p
 		}
 		return nil, err
 	}
+	// 事务已提交：联动作废旧待支付订单的渠道支付链接。
+	s.closeChannelOrders(closedRefs)
 	return s.attachPayParams(&order, method, payScene, clientIP)
 }
 
@@ -179,6 +213,8 @@ func (s *Service) attachPayParams(order *model.Order, method, payScene, clientIP
 		UserID:      order.UserID,
 		Scene:       payScene,
 		ClientIP:    clientIP,
+		// 第三方支付有效期：早于本地关单时间（PaymentExpire < OrderPendingTTL），防"已关单仍可支付"资损。
+		ExpireAt: time.Now().Add(s.cfg.PaymentExpire),
 	})
 	if err != nil {
 		return nil, err
@@ -188,6 +224,81 @@ func (s *Service) attachPayParams(order *model.Order, method, payScene, clientIP
 		s.db.Model(order).Update("payment_method", method)
 	}
 	return &CreateOrderOutcome{Order: order, PayParams: params}, nil
+}
+
+// SingleQuote 单集购买试算：将要支付的金额 + 是否已解锁 + 是否免费。
+// 供 app 在拉起支付前展示「实付金额」，免费/已解锁不视为错误，用标志位告知。
+type SingleQuote struct {
+	DramaID         uint64
+	EpisodeID       uint64
+	AmountCents     int64
+	AlreadyUnlocked bool
+	IsFree          bool
+}
+
+// QuoteSingle 单集购买试算（只读，不下单）。计价规则与 CreateOrder 完全对齐：
+// 默认用 dramas.price_cents；传 product_id 且商品有效价格 > 0 时用商品价覆盖。
+// 硬错误（剧集/短剧不存在、不匹配、未就绪、未上架、无单价）；免费集 / 已解锁返回标志位，金额 0。
+func (s *Service) QuoteSingle(userID, dramaID, episodeID uint64, productID *uint64) (*SingleQuote, error) {
+	var ep model.Episode
+	if err := s.db.First(&ep, episodeID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrEpisodeNotFound
+		}
+		return nil, err
+	}
+	if ep.DramaID != dramaID {
+		return nil, ErrOrderEpisodeMatch
+	}
+	if ep.Status != model.EpisodeStatusReady {
+		return nil, ErrEpisodeNotReady
+	}
+	var drama model.Drama
+	if err := s.db.First(&drama, dramaID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrDramaNotFound
+		}
+		return nil, err
+	}
+	if drama.Status != model.DramaStatusPublished {
+		return nil, ErrDramaNotAvailable
+	}
+
+	q := &SingleQuote{DramaID: dramaID, EpisodeID: episodeID}
+	if ep.EpisodeNo <= drama.FreeEpisodes {
+		q.IsFree = true
+		return q, nil
+	}
+
+	var unlock model.EpisodeUnlock
+	if err := s.db.Where("user_id = ? AND episode_id = ?", userID, episodeID).First(&unlock).Error; err == nil {
+		q.AlreadyUnlocked = true
+		return q, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+
+	amount := drama.PriceCents
+	if productID != nil && *productID > 0 {
+		var prod model.Product
+		if err := s.db.First(&prod, *productID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, ErrAmountInvalid
+			}
+			return nil, err
+		}
+		if prod.Status != model.StatusActive || prod.Type != model.ProductTypeEpisodeUnlock {
+			return nil, ErrAmountInvalid
+		}
+		if prod.PriceCents > 0 {
+			amount = prod.PriceCents
+		}
+	}
+	if amount <= 0 {
+		return nil, ErrAmountInvalid
+	}
+	q.AmountCents = amount
+	return q, nil
 }
 
 // BatchQuote 选集购买试算：可购买集（剔除免费/已解锁）+ 已解锁集 + 金额。
@@ -289,6 +400,7 @@ func (s *Service) CreateBatchOrder(userID, dramaID uint64, episodeIDs []uint64, 
 	}
 	now := time.Now()
 	var order model.Order
+	var closedRefs []orderRef
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		// 同一 user+drama 串行，避免并发重复下批量单（叠加端上 Idempotency-Key）。
 		if err := tx.Exec("SELECT pg_advisory_xact_lock(?, ?)", int64(userID), int64(dramaID)).Error; err != nil {
@@ -300,6 +412,24 @@ func (s *Service) CreateBatchOrder(userID, dramaID uint64, episodeIDs []uint64, 
 		}
 		if len(quote.BuyableEpisodeIDs) == 0 {
 			return ErrAlreadyUnlocked
+		}
+		// 仅当次支付：关闭该用户该剧旧的待支付批量单（episode_id=0），不复用，再建当次单。
+		// 先查出来（带渠道）供事务提交后联动渠道关单。
+		var olds []model.Order
+		if err := tx.Select("order_no", "payment_method").
+			Where("user_id = ? AND drama_id = ? AND episode_id = 0 AND status = ?", userID, dramaID, model.OrderStatusPending).
+			Find(&olds).Error; err != nil {
+			return err
+		}
+		if len(olds) > 0 {
+			if err := tx.Model(&model.Order{}).
+				Where("user_id = ? AND drama_id = ? AND episode_id = 0 AND status = ?", userID, dramaID, model.OrderStatusPending).
+				Update("status", model.OrderStatusClosed).Error; err != nil {
+				return err
+			}
+			for _, o := range olds {
+				closedRefs = append(closedRefs, orderRef{OrderNo: o.OrderNo, Method: o.PaymentMethod})
+			}
 		}
 		expiredAt := now.Add(s.cfg.OrderPendingTTL)
 		order = model.Order{
@@ -321,6 +451,8 @@ func (s *Service) CreateBatchOrder(userID, dramaID uint64, episodeIDs []uint64, 
 		}
 		return nil, err
 	}
+	// 事务已提交：联动作废旧待支付批量单的渠道支付链接。
+	s.closeChannelOrders(closedRefs)
 	return s.attachPayParams(&order, method, payScene, clientIP)
 }
 
@@ -437,10 +569,11 @@ type CloseExpiredOrdersResult struct {
 // CloseExpiredOrders 把过期 pending 转 closed（定时任务 / 运维命令用）。
 func (s *Service) CloseExpiredOrders(now time.Time) (CloseExpiredOrdersResult, error) {
 	var result CloseExpiredOrdersResult
+	var closedRefs []orderRef
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var orders []model.Order
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Select("id", "order_no", "expired_at").
+			Select("id", "order_no", "payment_method", "expired_at").
 			Where("status = ? AND expired_at IS NOT NULL AND expired_at < ?", model.OrderStatusPending, now).
 			Order("expired_at asc").
 			Find(&orders).Error; err != nil {
@@ -451,8 +584,10 @@ func (s *Service) CloseExpiredOrders(now time.Time) (CloseExpiredOrdersResult, e
 		}
 
 		ids := make([]uint64, 0, len(orders))
+		closedRefs = closedRefs[:0]
 		for i, order := range orders {
 			ids = append(ids, order.ID)
+			closedRefs = append(closedRefs, orderRef{OrderNo: order.OrderNo, Method: order.PaymentMethod})
 			if i == 0 {
 				result.OldestExpiredAt = order.ExpiredAt
 			}
@@ -470,6 +605,11 @@ func (s *Service) CloseExpiredOrders(now time.Time) (CloseExpiredOrdersResult, e
 		result.ClosedCount = res.RowsAffected
 		return nil
 	})
+	if err != nil {
+		return result, err
+	}
+	// 事务已提交：联动作废过期订单的渠道支付链接（超时关单同样要让渠道侧付不了）。
+	s.closeChannelOrders(closedRefs)
 	return result, err
 }
 

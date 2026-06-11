@@ -80,6 +80,7 @@ func (p *WechatProvider) Prepay(input PrepayInput) (PrepayParams, error) {
 			Description: core.String(desc),
 			OutTradeNo:  core.String(input.OrderNo),
 			NotifyUrl:   core.String(p.cfg.WechatNotifyURL),
+			TimeExpire:  timeExpirePtr(input.ExpireAt),
 			Amount:      &h5.Amount{Total: core.Int64(input.AmountCents), Currency: core.String("CNY")},
 			SceneInfo: &h5.SceneInfo{
 				PayerClientIp: core.String(ip),
@@ -103,6 +104,7 @@ func (p *WechatProvider) Prepay(input PrepayInput) (PrepayParams, error) {
 			Description: core.String(desc),
 			OutTradeNo:  core.String(input.OrderNo),
 			NotifyUrl:   core.String(p.cfg.WechatNotifyURL),
+			TimeExpire:  timeExpirePtr(input.ExpireAt),
 			Amount:      &app.Amount{Total: core.Int64(input.AmountCents), Currency: core.String("CNY")},
 		})
 		if err != nil {
@@ -157,6 +159,35 @@ func strVal(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// timeExpirePtr 把绝对到期时间转成微信 V3 需要的 *time.Time；零值返回 nil（不显式设置，走渠道默认）。
+func timeExpirePtr(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
+
+// CloseOrder 关闭微信侧未支付订单（/v3/pay/transactions/out-trade-no/{no}/close），作废其支付链接。
+// 订单不存在 / 已关闭 / 已支付等按幂等处理：不返回错误，让本地关单流程继续。
+func (p *WechatProvider) CloseOrder(orderNo string) error {
+	svc := app.AppApiService{Client: p.client}
+	result, err := svc.CloseOrder(context.Background(), app.CloseOrderRequest{
+		OutTradeNo: core.String(orderNo),
+		Mchid:      core.String(p.cfg.WechatMchID),
+	})
+	if err == nil {
+		return nil
+	}
+	// 微信对已关闭 / 不存在 / 已支付的单返回 4xx；这些都视为无需再关，幂等返回。
+	if result != nil && result.Response != nil {
+		switch result.Response.StatusCode {
+		case http.StatusNoContent, http.StatusOK, http.StatusBadRequest, http.StatusNotFound:
+			return nil
+		}
+	}
+	return fmt.Errorf("wechat close order: %w", err)
 }
 
 // QueryOrder 调微信 /v3/pay/transactions/out-trade-no/{out_trade_no} 主动查单。

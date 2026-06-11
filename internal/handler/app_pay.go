@@ -51,7 +51,7 @@ func (s *Server) appCreateOrder(c *gin.Context) {
 		log.Printf("[order] user=%d idem=%s drama=%d episode=%d", uid, idem, req.DramaID, req.EpisodeID)
 	}
 
-	outcome, err := s.billing.CreateOrReuseOrder(uid, req.DramaID, req.EpisodeID, req.ProductID, req.PaymentMethod, req.PayScene, c.ClientIP())
+	outcome, err := s.billing.CreateOrder(uid, req.DramaID, req.EpisodeID, req.ProductID, req.PaymentMethod, req.PayScene, c.ClientIP())
 	if err != nil {
 		switch {
 		case errors.Is(err, billing.ErrEpisodeNotFound):
@@ -155,6 +155,35 @@ func (s *Server) appCreateBatchOrder(c *gin.Context) {
 		"payment_method": o.PaymentMethod,
 		"pay_params":     outcome.PayParams,
 		"expired_at":     o.ExpiredAt,
+	})
+}
+
+type orderPreviewRequest struct {
+	DramaID   uint64  `json:"drama_id" binding:"required"`
+	EpisodeID uint64  `json:"episode_id" binding:"required"`
+	ProductID *uint64 `json:"product_id"`
+}
+
+// appOrderPreview —— 单集购买试算（只读，不下单）。POST /v1/app/orders/preview
+// 供 app 在拉起支付宝/微信前展示「将要支付的金额」，解决下单前看不到价格的问题。
+func (s *Server) appOrderPreview(c *gin.Context) {
+	uid := middleware.CurrentID(c)
+	var req orderPreviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "drama_id / episode_id 必填")
+		return
+	}
+	q, err := s.billing.QuoteSingle(uid, req.DramaID, req.EpisodeID, req.ProductID)
+	if err != nil {
+		respondBillingOrderError(c, err)
+		return
+	}
+	response.OK(c, gin.H{
+		"drama_id":         q.DramaID,
+		"episode_id":       q.EpisodeID,
+		"amount_cents":     q.AmountCents,
+		"already_unlocked": q.AlreadyUnlocked,
+		"is_free":          q.IsFree,
 	})
 }
 

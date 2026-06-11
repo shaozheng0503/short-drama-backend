@@ -55,7 +55,8 @@ type Config struct {
 	// 钱相关（执行文档第七节）
 	CreatorShareRate   float64
 	MinWithdrawalCents int64
-	OrderPendingTTL    time.Duration
+	OrderPendingTTL    time.Duration // 本地关单（销毁待支付）时长，必须 > PaymentExpire，防"已关单仍可支付"资损
+	PaymentExpire      time.Duration // 传给微信/支付宝的第三方支付有效期，必须 < OrderPendingTTL
 
 	// 敏感字段加密（AES-GCM）；32 字节 base64 编码（aes-256）
 	DataEncryptionKeyB64 string
@@ -167,7 +168,9 @@ func Load() Config {
 
 		CreatorShareRate:   getEnvFloat("CREATOR_SHARE_RATE", 0.5),
 		MinWithdrawalCents: int64(getEnvInt("MIN_WITHDRAWAL_CENTS", 10000)),
-		OrderPendingTTL:    time.Duration(getEnvInt("ORDER_PENDING_TTL_SECONDS", 1800)) * time.Second,
+		// 本地关单 45min > 第三方支付有效期 30min：先到第三方有效期付不了，我们才关单，杜绝"已关单仍可支付"窗口。
+		OrderPendingTTL: time.Duration(getEnvInt("ORDER_PENDING_TTL_SECONDS", 2700)) * time.Second,
+		PaymentExpire:   time.Duration(getEnvInt("PAYMENT_EXPIRE_SECONDS", 1800)) * time.Second,
 
 		DataEncryptionKeyB64: getEnv("DATA_ENCRYPTION_KEY", ""),
 

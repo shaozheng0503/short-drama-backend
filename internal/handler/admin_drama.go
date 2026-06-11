@@ -142,6 +142,10 @@ func (s *Server) adminCreateDrama(c *gin.Context) {
 		Status:       model.DramaStatusDraft,
 		FreeEpisodes: 0,
 		PriceCents:   0,
+		// 分维度状态初始化为 pending，与 audit_status 默认值一致，避免中台分维度审核列显示成空（—）。
+		AuditStatus:        model.DramaAuditPending,
+		ContentAuditStatus: model.DramaAuditPending,
+		VideoAuditStatus:   model.DramaAuditPending,
 	}
 	if req.Description != nil {
 		drama.Description = *req.Description

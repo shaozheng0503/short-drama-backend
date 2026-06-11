@@ -324,10 +324,10 @@ type Drama struct {
 	AuditSubmittedAt *time.Time `gorm:"column:audit_submitted_at;index" json:"audit_submitted_at"`
 	// 分批审核（2026-06-10 会议）：资料内容 + 视频内容各自独立审核，audit_status 为派生总状态
 	//（资料✓且视频✓才 approved；任一 rejected 则 rejected）。合同维度暂沿用 Contract.status，未纳入派生。
-	// 维度状态取值同 audit：pending/approved/rejected；空串视为 pending（未审）。
-	ContentAuditStatus string     `gorm:"column:content_audit_status;size:20;default:'';index" json:"content_audit_status"`
+	// 维度状态取值同 audit：pending/approved/rejected；默认 pending（未审），与 audit_status 保持一致，避免新建剧分维度显示成空。
+	ContentAuditStatus string     `gorm:"column:content_audit_status;size:20;default:pending;index" json:"content_audit_status"`
 	ContentAuditReason string     `gorm:"column:content_audit_reason;size:255" json:"content_audit_reason"`
-	VideoAuditStatus   string     `gorm:"column:video_audit_status;size:20;default:'';index" json:"video_audit_status"`
+	VideoAuditStatus   string     `gorm:"column:video_audit_status;size:20;default:pending;index" json:"video_audit_status"`
 	VideoAuditReason   string     `gorm:"column:video_audit_reason;size:255" json:"video_audit_reason"`
 	VideoSubmittedAt   *time.Time `gorm:"column:video_submitted_at;index" json:"-"`
 	VideoReviewerID    *uint64    `gorm:"column:video_reviewer_id" json:"-"`

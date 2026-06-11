@@ -23,3 +23,8 @@ func (p *UnavailableProvider) QueryOrder(_ string) (*OrderState, error) {
 func (p *UnavailableProvider) Refund(_ RefundInput) (*RefundResult, error) {
 	return nil, ErrProviderUnavailable
 }
+
+// CloseOrder 配置缺失时不可能存在真实渠道订单，幂等返回 nil，避免阻断本地关单流程。
+func (p *UnavailableProvider) CloseOrder(_ string) error {
+	return nil
+}
