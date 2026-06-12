@@ -92,6 +92,38 @@ func (p *TencentProvider) VerifyBankCard3(_ context.Context, in BankCard3Input) 
 	}, nil
 }
 
+func (p *TencentProvider) VerifyBizLicense4(_ context.Context, in BizLicense4Input) (*BizLicense4Result, error) {
+	c, err := p.ocrClient()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrProviderUnavailable, err)
+	}
+	req := ocr.NewVerifyBizLicenseEnterprise4Request()
+	req.EntName = common.StringPtr(in.EntName)
+	req.CreditCode = common.StringPtr(in.CreditCode)
+	req.LrName = common.StringPtr(in.LegalName)
+	req.IdNum = common.StringPtr(in.LegalIDNum)
+	resp, err := c.VerifyBizLicenseEnterprise4(req)
+	if err != nil {
+		logTCErr("biz_license_4e", err)
+		return nil, fmt.Errorf("%w: %v", ErrProviderUnavailable, err)
+	}
+	if resp == nil || resp.Response == nil {
+		return nil, fmt.Errorf("%w: 空响应", ErrProviderUnavailable)
+	}
+	r := resp.Response
+	raw, _ := json.Marshal(r)
+	return &BizLicense4Result{
+		Available:       int64Val(r.StatusCode) == 0, // StatusCode=0 成功可用；1=系统异常
+		Passed:          int64Val(r.VerifyResult) == 1,
+		EntNameOK:       boolVal(r.IsEntNameConsistent),
+		CreditCodeOK:    boolVal(r.IsCreditCodeConsistent),
+		LegalNameOK:     boolVal(r.IsLrNameConsistent),
+		LegalIDNumOK:    boolVal(r.IsIdNumConsistent),
+		OperatingStatus: strVal(r.OperatingStatus),
+		Raw:             string(raw),
+	}, nil
+}
+
 func (p *TencentProvider) RecognizeBizLicense(_ context.Context, in BizLicenseInput) (*BizLicenseResult, error) {
 	c, err := p.ocrClient()
 	if err != nil {
@@ -134,4 +166,15 @@ func strVal(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+func int64Val(v *int64) int64 {
+	if v == nil {
+		return -1
+	}
+	return *v
+}
+
+func boolVal(v *bool) bool {
+	return v != nil && *v
 }

@@ -32,7 +32,27 @@ type BankCard3Result struct {
 	Description string // 人类可读说明（如「认证通过」「身份证与姓名不一致」）
 }
 
-// BizLicenseInput 营业执照 OCR 识别入参；ImageURL 需公网可访问。
+// BizLicense4Input 营业执照企业四要素核验入参（企业名 + 统一社会信用代码 + 法人姓名 + 法人注册登记证件号）。
+type BizLicense4Input struct {
+	EntName    string
+	CreditCode string
+	LegalName  string
+	LegalIDNum string
+}
+
+// BizLicense4Result 企业四要素核验结果。Available=false 表示渠道系统异常（应降级人工）；Passed=四要素完全匹配。
+type BizLicense4Result struct {
+	Available       bool // StatusCode==0（核验可用）
+	Passed          bool // VerifyResult==1（四要素完全匹配）
+	EntNameOK       bool
+	CreditCodeOK    bool
+	LegalNameOK     bool
+	LegalIDNumOK    bool
+	OperatingStatus string // 经营状态（1=在营 ...）
+	Raw             string // 原始返回 JSON，存档
+}
+
+// BizLicenseInput 营业执照 OCR 识别入参（仅识别、不核验，用于前端自动填充）；ImageURL 需公网可访问。
 type BizLicenseInput struct {
 	ImageURL string
 }
@@ -52,6 +72,9 @@ type BizLicenseResult struct {
 type Provider interface {
 	Name() string
 	VerifyBankCard3(ctx context.Context, in BankCard3Input) (*BankCard3Result, error)
+	// VerifyBizLicense4 企业四要素核验（企业名+信用代码+法人姓名+法人证件号一致性，腾讯云 VerifyBizLicenseEnterprise4）。
+	VerifyBizLicense4(ctx context.Context, in BizLicense4Input) (*BizLicense4Result, error)
+	// RecognizeBizLicense 营业执照 OCR 识别（仅识别、不核验真伪，供前端自动填充）。
 	RecognizeBizLicense(ctx context.Context, in BizLicenseInput) (*BizLicenseResult, error)
 }
 

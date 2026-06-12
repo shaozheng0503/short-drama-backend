@@ -239,8 +239,10 @@ type Creator struct {
 	VerifyStatus       string     `gorm:"column:verify_status;size:20;default:pending" json:"verify_status"`
 	VerifyRejectReason string     `gorm:"column:verify_reject_reason;size:255" json:"verify_reject_reason"`
 	VerifySubmittedAt  *time.Time `gorm:"column:verify_submitted_at;index" json:"verify_submitted_at"`
-	// 第三方核验存档（个人=银行卡三要素 bankcard3 / 企业=营业执照 OCR biz_ocr / 降级或未核验 manual）
-	OrgLegalPerson       string     `gorm:"column:org_legal_person;size:64" json:"org_legal_person"`           // 企业法定代表人（OCR 识别 / 用户填）
+	// 第三方核验存档（个人=银行卡三要素 bankcard3 / 企业=营业执照四要素 biz_4e / 降级或未核验 manual）
+	OrgLegalPerson       string     `gorm:"column:org_legal_person;size:64" json:"org_legal_person"`           // 企业法定代表人姓名（用户填，四要素核验项）
+	OrgLegalIDCardEnc    string     `gorm:"column:org_legal_id_card_enc;size:512" json:"-"`                    // 法人身份证号密文（AES-GCM）
+	OrgLegalIDCardMasked string     `gorm:"column:org_legal_id_card_masked;size:32" json:"org_legal_id_card_masked"` // 法人身份证号脱敏
 	VerifyMethod         string     `gorm:"column:verify_method;size:32" json:"verify_method"`                 // 核验方式：bankcard3 / biz_ocr / manual / ""
 	VerifyProviderResult string     `gorm:"column:verify_provider_result;type:text" json:"-"`                  // 腾讯云核验原始返回（存档，供 Admin 复核）
 	VerifyCheckedAt      *time.Time `gorm:"column:verify_checked_at" json:"verify_checked_at"`                 // 第三方核验时间
