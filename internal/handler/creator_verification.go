@@ -87,6 +87,9 @@ func (s *Server) creatorUpdatePersonalVerification(c *gin.Context) {
 		response.InvalidParam(c, blockMsg)
 		return
 	}
+	// 个人实名走 API 核验：真实核验通过即免人工复核直接 verified；
+	// dev / 第三方异常降级（method=manual）仍走 pending 人工兜底，避免没真正核验就放行。
+	verifyStatus := personalVerifyStatusFor(verifyMethod)
 	encID, err := s.cryptor.Encrypt(req.IDCardNo)
 	if err != nil {
 		response.ServerError(c, "身份证加密失败")
@@ -112,7 +115,7 @@ func (s *Server) creatorUpdatePersonalVerification(c *gin.Context) {
 		"org_legal_person":       "",
 		"business_license_url":   "",
 		"bank_license_url":       "",
-		"verify_status":          model.CreatorVerifyPending,
+		"verify_status":          verifyStatus,
 		"verify_reject_reason":   "",
 		"verify_submitted_at":    nowTimePtr(),
 		"verify_method":          verifyMethod,
@@ -124,6 +127,15 @@ func (s *Server) creatorUpdatePersonalVerification(c *gin.Context) {
 		return
 	}
 	s.creatorGetVerification(c)
+}
+
+// personalVerifyStatusFor 个人实名核验后状态：银行卡三要素真实核验通过 → 直接 verified（免人工复核）；
+// 其余（dev / 第三方异常降级，method=manual）→ pending 走 Admin 人工兜底。
+func personalVerifyStatusFor(verifyMethod string) string {
+	if verifyMethod == "bankcard3" {
+		return model.CreatorVerifyVerified
+	}
+	return model.CreatorVerifyPending
 }
 
 // runBankCard3Verify 调银行卡三要素核验。返回 (verify_method, 存档结果, 核验时间, 拦截消息)。
