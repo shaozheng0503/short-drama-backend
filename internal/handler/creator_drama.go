@@ -478,8 +478,10 @@ func (s *Server) creatorUpdateDrama(c *gin.Context) {
 			}
 		}
 		if req.AIGCTools != nil {
-			// serializer:json 字段单独走 struct 更新以触发序列化。
-			if err := tx.Model(d).Update("aigc_tools", normalizeTags(*req.AIGCTools)).Error; err != nil {
+			// aigc_tools 是 serializer:json（text 列存 JSON）。必须走 struct 更新 + Select 才能触发序列化；
+			// 用 Update("aigc_tools", []string{...}) 这种「列名+原始切片」不走序列化，会被渲染成 SQL 元组导致 500。
+			if err := tx.Model(d).Select("AIGCTools").
+				Updates(model.Drama{AIGCTools: normalizeTags(*req.AIGCTools)}).Error; err != nil {
 				return err
 			}
 		}
