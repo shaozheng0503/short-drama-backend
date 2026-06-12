@@ -56,6 +56,12 @@ DATA_ENCRYPTION_KEY='openssl-rand-base64-32-output'
 
 SMS_DEV_MODE=false
 PAYMENT_DEV_MODE=false
+
+# 实名/企业认证核验（个人=银行卡三要素 faceid，企业=营业执照 OCR）
+# KYC_DEV_MODE=true（默认）走 stub 直通、不做真实核验；=false 时需配 TENCENTCLOUD_SECRET_ID/KEY 并在控制台开通人脸核身+OCR
+KYC_DEV_MODE=true
+KYC_FACEID_REGION=ap-guangzhou
+KYC_OCR_REGION=ap-guangzhou
 ```
 
 `DATA_ENCRYPTION_KEY` 生成方式：

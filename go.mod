@@ -8,7 +8,9 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/redis/go-redis/v9 v9.19.0
 	github.com/smartwalle/alipay/v3 v3.2.29
-	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.101
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.113
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/faceid v1.3.103
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/ocr v1.3.113
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/sms v1.3.93
 	github.com/tencentyun/cos-go-sdk-v5 v0.7.73
 	github.com/wechatpay-apiv3/wechatpay-go v0.2.21

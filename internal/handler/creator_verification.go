@@ -2,7 +2,11 @@ package handler
 
 import (
 	"errors"
+	"log"
+	"strings"
+	"time"
 
+	"ai-drama-platform/internal/kyc"
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/response"
@@ -77,6 +81,12 @@ func (s *Server) creatorUpdatePersonalVerification(c *gin.Context) {
 		response.InvalidParam(c, err.Error())
 		return
 	}
+	// 银行卡三要素核验（姓名+身份证号+银行卡号，已隐含实名一致）。dev provider 跳过；第三方异常降级人工审核。
+	verifyMethod, providerResult, checkedAt, blockMsg := s.runBankCard3Verify(c, req.Name, req.IDCardNo, req.BankCardNo)
+	if blockMsg != "" {
+		response.InvalidParam(c, blockMsg)
+		return
+	}
 	encID, err := s.cryptor.Encrypt(req.IDCardNo)
 	if err != nil {
 		response.ServerError(c, "身份证加密失败")
@@ -88,28 +98,55 @@ func (s *Server) creatorUpdatePersonalVerification(c *gin.Context) {
 		return
 	}
 	updates := map[string]interface{}{
-		"creator_type":         model.CreatorTypePersonal,
-		"name":                 req.Name,
-		"id_card_no_enc":       encID,
-		"id_card_no_masked":    maskIDCard(req.IDCardNo),
-		"bank_name":            req.BankName,
-		"bank_branch":          req.BankBranch,
-		"bank_card_no_enc":     encBank,
-		"bank_card_last4":      secure.Last4(req.BankCardNo),
-		"bank_card_no_masked":  maskBankCard(req.BankCardNo),
-		"org_name":             "",
-		"org_credit_code":      "",
-		"business_license_url": "",
-		"bank_license_url":     "",
-		"verify_status":        model.CreatorVerifyPending,
-		"verify_reject_reason": "",
-		"verify_submitted_at":  nowTimePtr(),
+		"creator_type":           model.CreatorTypePersonal,
+		"name":                   req.Name,
+		"id_card_no_enc":         encID,
+		"id_card_no_masked":      maskIDCard(req.IDCardNo),
+		"bank_name":              req.BankName,
+		"bank_branch":            req.BankBranch,
+		"bank_card_no_enc":       encBank,
+		"bank_card_last4":        secure.Last4(req.BankCardNo),
+		"bank_card_no_masked":    maskBankCard(req.BankCardNo),
+		"org_name":               "",
+		"org_credit_code":        "",
+		"org_legal_person":       "",
+		"business_license_url":   "",
+		"bank_license_url":       "",
+		"verify_status":          model.CreatorVerifyPending,
+		"verify_reject_reason":   "",
+		"verify_submitted_at":    nowTimePtr(),
+		"verify_method":          verifyMethod,
+		"verify_provider_result": providerResult,
+		"verify_checked_at":      checkedAt,
 	}
 	if err := s.db.Model(&model.Creator{}).Where("id = ?", cid).Updates(updates).Error; err != nil {
 		response.ServerError(c, "保存个人实名失败")
 		return
 	}
 	s.creatorGetVerification(c)
+}
+
+// runBankCard3Verify 调银行卡三要素核验。返回 (verify_method, 存档结果, 核验时间, 拦截消息)。
+// dev provider 跳过（method=manual，不拦截）；第三方异常降级人工审核（method=manual，不拦截）；
+// 核验未通过返回非空 blockMsg，由调用方拒绝。
+func (s *Server) runBankCard3Verify(c *gin.Context, name, idCard, bankCard string) (method, result string, checkedAt *time.Time, blockMsg string) {
+	if s.kyc.Name() == "dev" {
+		return "manual", "", nil, ""
+	}
+	res, err := s.kyc.VerifyBankCard3(c.Request.Context(), kyc.BankCard3Input{Name: name, IDCard: idCard, BankCard: bankCard})
+	if err != nil {
+		log.Printf("[verify] 银行卡三要素核验异常，降级人工审核 err=%v", err)
+		return "manual", "", nil, ""
+	}
+	if !res.Passed {
+		msg := res.Description
+		if msg == "" {
+			msg = "姓名、身份证号、银行卡号信息不一致"
+		}
+		return "", "", nil, "实名核验未通过：" + msg
+	}
+	now := time.Now()
+	return "bankcard3", res.Description, &now, ""
 }
 
 func (s *Server) creatorUpdateEnterpriseVerification(c *gin.Context) {
@@ -135,34 +172,73 @@ func (s *Server) creatorUpdateEnterpriseVerification(c *gin.Context) {
 		response.InvalidParam(c, err.Error())
 		return
 	}
+	// 营业执照 OCR 识别 + 与填写一致性比对。dev provider 跳过；第三方异常降级人工审核。
+	verifyMethod, legalPerson, providerResult, checkedAt, blockMsg := s.runBizLicenseVerify(c, req.OrgName, req.OrgCreditCode, req.BusinessLicenseURL)
+	if blockMsg != "" {
+		response.InvalidParam(c, blockMsg)
+		return
+	}
 	encBank, err := s.cryptor.Encrypt(req.BankCardNo)
 	if err != nil {
 		response.ServerError(c, "银行卡加密失败")
 		return
 	}
 	updates := map[string]interface{}{
-		"creator_type":         model.CreatorTypeOrganization,
-		"name":                 "",
-		"id_card_no_enc":       "",
-		"id_card_no_masked":    "",
-		"org_name":             req.OrgName,
-		"org_credit_code":      req.OrgCreditCode,
-		"business_license_url": req.BusinessLicenseURL,
-		"bank_license_url":     req.BankLicenseURL,
-		"bank_name":            req.BankName,
-		"bank_branch":          req.BankBranch,
-		"bank_card_no_enc":     encBank,
-		"bank_card_last4":      secure.Last4(req.BankCardNo),
-		"bank_card_no_masked":  maskBankCard(req.BankCardNo),
-		"verify_status":        model.CreatorVerifyPending,
-		"verify_reject_reason": "",
-		"verify_submitted_at":  nowTimePtr(),
+		"creator_type":           model.CreatorTypeOrganization,
+		"name":                   "",
+		"id_card_no_enc":         "",
+		"id_card_no_masked":      "",
+		"org_name":               req.OrgName,
+		"org_credit_code":        req.OrgCreditCode,
+		"org_legal_person":       legalPerson,
+		"business_license_url":   req.BusinessLicenseURL,
+		"bank_license_url":       req.BankLicenseURL,
+		"bank_name":              req.BankName,
+		"bank_branch":            req.BankBranch,
+		"bank_card_no_enc":       encBank,
+		"bank_card_last4":        secure.Last4(req.BankCardNo),
+		"bank_card_no_masked":    maskBankCard(req.BankCardNo),
+		"verify_status":          model.CreatorVerifyPending,
+		"verify_reject_reason":   "",
+		"verify_submitted_at":    nowTimePtr(),
+		"verify_method":          verifyMethod,
+		"verify_provider_result": providerResult,
+		"verify_checked_at":      checkedAt,
 	}
 	if err := s.db.Model(&model.Creator{}).Where("id = ?", cid).Updates(updates).Error; err != nil {
 		response.ServerError(c, "保存企业认证失败")
 		return
 	}
 	s.creatorGetVerification(c)
+}
+
+// runBizLicenseVerify 营业执照 OCR 识别并与填写比对。返回 (verify_method, 法人, 存档结果, 核验时间, 拦截消息)。
+// dev provider 跳过；第三方异常或未识别出关键信息 → 降级人工审核（method=manual，不拦截）；
+// 识别出的企业名/信用代码与填写不一致 → 返回非空 blockMsg 拒绝。
+func (s *Server) runBizLicenseVerify(c *gin.Context, orgName, creditCode, licenseURL string) (method, legalPerson, result string, checkedAt *time.Time, blockMsg string) {
+	if s.kyc.Name() == "dev" {
+		return "manual", "", "", nil, ""
+	}
+	res, err := s.kyc.RecognizeBizLicense(c.Request.Context(), kyc.BizLicenseInput{ImageURL: licenseURL})
+	if err != nil {
+		log.Printf("[verify] 营业执照 OCR 异常，降级人工审核 err=%v", err)
+		return "manual", "", "", nil, ""
+	}
+	ocrName := strings.TrimSpace(res.Name)
+	ocrCode := strings.TrimSpace(res.CreditCode)
+	if ocrCode != "" && !strings.EqualFold(ocrCode, strings.TrimSpace(creditCode)) {
+		return "", "", "", nil, "营业执照识别的统一社会信用代码与填写不一致（识别：" + ocrCode + "）"
+	}
+	if ocrName != "" && ocrName != strings.TrimSpace(orgName) {
+		return "", "", "", nil, "营业执照识别的企业名称与填写不一致（识别：" + ocrName + "）"
+	}
+	if ocrCode == "" && ocrName == "" {
+		// OCR 没识别出关键信息（图片不清晰等）→ 降级人工审核，不拦截。
+		log.Printf("[verify] 营业执照 OCR 未识别出企业名/信用代码，降级人工审核")
+		return "manual", strings.TrimSpace(res.LegalPerson), "", nil, ""
+	}
+	now := time.Now()
+	return "biz_ocr", strings.TrimSpace(res.LegalPerson), res.Raw, &now, ""
 }
 
 func (s *Server) creatorSendBankCardSMS(c *gin.Context) {

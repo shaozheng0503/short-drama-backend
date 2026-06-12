@@ -45,6 +45,12 @@ type Config struct {
 	TencentcloudSecretID  string
 	TencentcloudSecretKey string
 
+	// 实名/企业认证核验（个人=银行卡三要素 faceid，企业=营业执照 OCR）
+	// KYCDevMode=true 或腾讯云密钥不全 → 走 stub 直通（不做真实核验），默认 true 保持联调期行为。
+	KYCDevMode      bool
+	KYCFaceIDRegion string // 银行卡核验地域，默认 ap-guangzhou
+	KYCOCRRegion    string // 营业执照 OCR 地域，默认 ap-guangzhou
+
 	// 腾讯云 SMS 专用配置（命名对齐控制台的 SDK_APP_ID / SIGN_NAME / TEMPLATE_ID）
 	SMSSDKAppID            string
 	SMSSignName            string
@@ -165,6 +171,10 @@ func Load() Config {
 		SMSTemplateLogin:       getEnv("SMS_TEMPLATE_LOGIN", ""),
 		SMSTemplateLoginParams: getEnv("SMS_TEMPLATE_LOGIN_PARAMS", "code"),
 		SMSRegion:              getEnv("SMS_REGION", "ap-guangzhou"),
+
+		KYCDevMode:      getEnvBool("KYC_DEV_MODE", true),
+		KYCFaceIDRegion: getEnv("KYC_FACEID_REGION", "ap-guangzhou"),
+		KYCOCRRegion:    getEnv("KYC_OCR_REGION", "ap-guangzhou"),
 
 		CreatorShareRate:   getEnvFloat("CREATOR_SHARE_RATE", 0.5),
 		MinWithdrawalCents: int64(getEnvInt("MIN_WITHDRAWAL_CENTS", 10000)),
