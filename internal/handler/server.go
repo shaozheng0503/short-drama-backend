@@ -12,6 +12,7 @@ import (
 	"ai-drama-platform/internal/config"
 	"ai-drama-platform/internal/cos"
 	"ai-drama-platform/internal/idempotency"
+	"ai-drama-platform/internal/kyc"
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/payment"
@@ -39,6 +40,7 @@ type Server struct {
 	redis    *redis.Client
 	cos      *cos.Signer
 	vod      *vod.Signer
+	kyc      kyc.Provider
 	started  time.Time
 }
 
@@ -65,6 +67,7 @@ func New(db *gorm.DB, cfg config.Config) *Server {
 		redis:    rdb,
 		cos:      cos.New(cfg),
 		vod:      vod.New(cfg),
+		kyc:      kyc.SelectProvider(cfg),
 		started:  time.Now(),
 	}
 }

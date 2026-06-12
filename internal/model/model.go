@@ -239,6 +239,11 @@ type Creator struct {
 	VerifyStatus       string     `gorm:"column:verify_status;size:20;default:pending" json:"verify_status"`
 	VerifyRejectReason string     `gorm:"column:verify_reject_reason;size:255" json:"verify_reject_reason"`
 	VerifySubmittedAt  *time.Time `gorm:"column:verify_submitted_at;index" json:"verify_submitted_at"`
+	// 第三方核验存档（个人=银行卡三要素 bankcard3 / 企业=营业执照 OCR biz_ocr / 降级或未核验 manual）
+	OrgLegalPerson       string     `gorm:"column:org_legal_person;size:64" json:"org_legal_person"`           // 企业法定代表人（OCR 识别 / 用户填）
+	VerifyMethod         string     `gorm:"column:verify_method;size:32" json:"verify_method"`                 // 核验方式：bankcard3 / biz_ocr / manual / ""
+	VerifyProviderResult string     `gorm:"column:verify_provider_result;type:text" json:"-"`                  // 腾讯云核验原始返回（存档，供 Admin 复核）
+	VerifyCheckedAt      *time.Time `gorm:"column:verify_checked_at" json:"verify_checked_at"`                 // 第三方核验时间
 	TotalIncomeCents   int64      `gorm:"column:total_income_cents;default:0" json:"total_income_cents"`
 	BalanceCents       int64     `gorm:"column:balance_cents;default:0" json:"balance_cents"`
 	FrozenCents        int64     `gorm:"column:frozen_cents;default:0" json:"frozen_cents"`
