@@ -34,6 +34,8 @@ type personalVerificationRequest struct {
 type enterpriseVerificationRequest struct {
 	OrgName            string `json:"org_name" binding:"required"`
 	OrgCreditCode      string `json:"org_credit_code" binding:"required"`
+	OrgLegalPerson     string `json:"org_legal_person" binding:"required"`  // 法定代表人姓名（四要素核验项）
+	OrgLegalIDCard     string `json:"org_legal_id_card" binding:"required"` // 法人注册登记证件号码（身份证号，四要素核验项）
 	BusinessLicenseURL string `json:"business_license_url" binding:"required"`
 	BankLicenseURL     string `json:"bank_license_url"`
 	BankName           string `json:"bank_name" binding:"required"`
@@ -172,6 +174,10 @@ func (s *Server) creatorUpdateEnterpriseVerification(c *gin.Context) {
 		response.InvalidParam(c, "org_credit_code 必须是 18 位大写字母/数字统一社会信用代码")
 		return
 	}
+	if !idCardRegex.MatchString(req.OrgLegalIDCard) {
+		response.InvalidParam(c, "org_legal_id_card 必须是 18 位法人身份证号（末位可为 X）")
+		return
+	}
 	if len(req.BusinessLicenseURL) > 512 {
 		response.InvalidParam(c, "business_license_url 过长")
 		return
@@ -184,8 +190,8 @@ func (s *Server) creatorUpdateEnterpriseVerification(c *gin.Context) {
 		response.InvalidParam(c, err.Error())
 		return
 	}
-	// 营业执照 OCR 识别 + 与填写一致性比对。dev provider 跳过；第三方异常降级人工审核。
-	verifyMethod, legalPerson, providerResult, checkedAt, blockMsg := s.runBizLicenseVerify(c, req.OrgName, req.OrgCreditCode, req.BusinessLicenseURL)
+	// 企业四要素核验（企业名+统一社会信用代码+法人姓名+法人证件号）。dev 跳过；第三方异常降级人工。
+	verifyMethod, providerResult, checkedAt, blockMsg := s.runBizLicense4Verify(c, req.OrgName, req.OrgCreditCode, req.OrgLegalPerson, req.OrgLegalIDCard)
 	if blockMsg != "" {
 		response.InvalidParam(c, blockMsg)
 		return
@@ -195,27 +201,35 @@ func (s *Server) creatorUpdateEnterpriseVerification(c *gin.Context) {
 		response.ServerError(c, "银行卡加密失败")
 		return
 	}
+	encLegalID, err := s.cryptor.Encrypt(req.OrgLegalIDCard)
+	if err != nil {
+		response.ServerError(c, "法人身份证加密失败")
+		return
+	}
+	// 企业认证保留人工复核：对公银行卡靠 Admin 人工核对，四要素核验通过仍进 pending。
 	updates := map[string]interface{}{
-		"creator_type":           model.CreatorTypeOrganization,
-		"name":                   "",
-		"id_card_no_enc":         "",
-		"id_card_no_masked":      "",
-		"org_name":               req.OrgName,
-		"org_credit_code":        req.OrgCreditCode,
-		"org_legal_person":       legalPerson,
-		"business_license_url":   req.BusinessLicenseURL,
-		"bank_license_url":       req.BankLicenseURL,
-		"bank_name":              req.BankName,
-		"bank_branch":            req.BankBranch,
-		"bank_card_no_enc":       encBank,
-		"bank_card_last4":        secure.Last4(req.BankCardNo),
-		"bank_card_no_masked":    maskBankCard(req.BankCardNo),
-		"verify_status":          model.CreatorVerifyPending,
-		"verify_reject_reason":   "",
-		"verify_submitted_at":    nowTimePtr(),
-		"verify_method":          verifyMethod,
-		"verify_provider_result": providerResult,
-		"verify_checked_at":      checkedAt,
+		"creator_type":             model.CreatorTypeOrganization,
+		"name":                     "",
+		"id_card_no_enc":           "",
+		"id_card_no_masked":        "",
+		"org_name":                 req.OrgName,
+		"org_credit_code":          req.OrgCreditCode,
+		"org_legal_person":         req.OrgLegalPerson,
+		"org_legal_id_card_enc":    encLegalID,
+		"org_legal_id_card_masked": maskIDCard(req.OrgLegalIDCard),
+		"business_license_url":     req.BusinessLicenseURL,
+		"bank_license_url":         req.BankLicenseURL,
+		"bank_name":                req.BankName,
+		"bank_branch":              req.BankBranch,
+		"bank_card_no_enc":         encBank,
+		"bank_card_last4":          secure.Last4(req.BankCardNo),
+		"bank_card_no_masked":      maskBankCard(req.BankCardNo),
+		"verify_status":            model.CreatorVerifyPending,
+		"verify_reject_reason":     "",
+		"verify_submitted_at":      nowTimePtr(),
+		"verify_method":            verifyMethod,
+		"verify_provider_result":   providerResult,
+		"verify_checked_at":        checkedAt,
 	}
 	if err := s.db.Model(&model.Creator{}).Where("id = ?", cid).Updates(updates).Error; err != nil {
 		response.ServerError(c, "保存企业认证失败")
@@ -224,33 +238,66 @@ func (s *Server) creatorUpdateEnterpriseVerification(c *gin.Context) {
 	s.creatorGetVerification(c)
 }
 
-// runBizLicenseVerify 营业执照 OCR 识别并与填写比对。返回 (verify_method, 法人, 存档结果, 核验时间, 拦截消息)。
-// dev provider 跳过；第三方异常或未识别出关键信息 → 降级人工审核（method=manual，不拦截）；
-// 识别出的企业名/信用代码与填写不一致 → 返回非空 blockMsg 拒绝。
-func (s *Server) runBizLicenseVerify(c *gin.Context, orgName, creditCode, licenseURL string) (method, legalPerson, result string, checkedAt *time.Time, blockMsg string) {
+// runBizLicense4Verify 企业四要素核验（企业名+信用代码+法人姓名+法人证件号）。返回 (verify_method, 存档结果, 核验时间, 拦截消息)。
+// dev 跳过（method=manual，不拦截）；第三方异常 / 系统不可用 → 降级人工审核（manual，不拦截）；
+// 四要素不完全匹配 → 返回非空 blockMsg 列出不一致项，拒绝。
+func (s *Server) runBizLicense4Verify(c *gin.Context, orgName, creditCode, legalName, legalIDNum string) (method, result string, checkedAt *time.Time, blockMsg string) {
 	if s.kyc.Name() == "dev" {
-		return "manual", "", "", nil, ""
+		return "manual", "", nil, ""
 	}
-	res, err := s.kyc.RecognizeBizLicense(c.Request.Context(), kyc.BizLicenseInput{ImageURL: licenseURL})
-	if err != nil {
-		log.Printf("[verify] 营业执照 OCR 异常，降级人工审核 err=%v", err)
-		return "manual", "", "", nil, ""
+	res, err := s.kyc.VerifyBizLicense4(c.Request.Context(), kyc.BizLicense4Input{
+		EntName: orgName, CreditCode: creditCode, LegalName: legalName, LegalIDNum: legalIDNum,
+	})
+	if err != nil || !res.Available {
+		log.Printf("[verify] 企业四要素核验异常/不可用，降级人工审核 err=%v", err)
+		return "manual", "", nil, ""
 	}
-	ocrName := strings.TrimSpace(res.Name)
-	ocrCode := strings.TrimSpace(res.CreditCode)
-	if ocrCode != "" && !strings.EqualFold(ocrCode, strings.TrimSpace(creditCode)) {
-		return "", "", "", nil, "营业执照识别的统一社会信用代码与填写不一致（识别：" + ocrCode + "）"
-	}
-	if ocrName != "" && ocrName != strings.TrimSpace(orgName) {
-		return "", "", "", nil, "营业执照识别的企业名称与填写不一致（识别：" + ocrName + "）"
-	}
-	if ocrCode == "" && ocrName == "" {
-		// OCR 没识别出关键信息（图片不清晰等）→ 降级人工审核，不拦截。
-		log.Printf("[verify] 营业执照 OCR 未识别出企业名/信用代码，降级人工审核")
-		return "manual", strings.TrimSpace(res.LegalPerson), "", nil, ""
+	if !res.Passed {
+		var bad []string
+		if !res.EntNameOK {
+			bad = append(bad, "企业名称")
+		}
+		if !res.CreditCodeOK {
+			bad = append(bad, "统一社会信用代码")
+		}
+		if !res.LegalNameOK {
+			bad = append(bad, "法人姓名")
+		}
+		if !res.LegalIDNumOK {
+			bad = append(bad, "法人证件号")
+		}
+		msg := "企业四要素核验未通过"
+		if len(bad) > 0 {
+			msg += "：" + strings.Join(bad, "、") + " 与工商登记不一致"
+		}
+		return "", "", nil, msg
 	}
 	now := time.Now()
-	return "biz_ocr", strings.TrimSpace(res.LegalPerson), res.Raw, &now, ""
+	return "biz_4e", res.Raw, &now, ""
+}
+
+// creatorBizLicenseOCR 营业执照 OCR 识别，供前端上传执照后自动回填企业名/信用代码/法人，减少手填。
+// 仅识别不核验真伪；真伪由提交时的四要素核验把关。POST /v1/creator/verification/biz-license/ocr
+func (s *Server) creatorBizLicenseOCR(c *gin.Context) {
+	var req struct {
+		BusinessLicenseURL string `json:"business_license_url" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.BusinessLicenseURL) == "" {
+		response.InvalidParam(c, "business_license_url 必填")
+		return
+	}
+	res, err := s.kyc.RecognizeBizLicense(c.Request.Context(), kyc.BizLicenseInput{ImageURL: req.BusinessLicenseURL})
+	if err != nil {
+		response.Fail(c, response.CodeThirdPartyError, "营业执照识别失败，请手动填写")
+		return
+	}
+	response.OK(c, gin.H{
+		"org_name":         res.Name,
+		"org_credit_code":  res.CreditCode,
+		"org_legal_person": res.LegalPerson,
+		"address":          res.Address,
+		"business":         res.Business,
+	})
 }
 
 func (s *Server) creatorSendBankCardSMS(c *gin.Context) {

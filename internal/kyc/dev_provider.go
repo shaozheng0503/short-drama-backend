@@ -16,6 +16,11 @@ func (*DevProvider) VerifyBankCard3(_ context.Context, in BankCard3Input) (*Bank
 	return &BankCard3Result{Passed: true, Code: "0", Description: "dev 模式跳过真实核验"}, nil
 }
 
+func (*DevProvider) VerifyBizLicense4(_ context.Context, in BizLicense4Input) (*BizLicense4Result, error) {
+	log.Printf("[kyc-dev] biz_license_4e ent=%s -> pass(dev)", in.EntName)
+	return &BizLicense4Result{Available: true, Passed: true, EntNameOK: true, CreditCodeOK: true, LegalNameOK: true, LegalIDNumOK: true, OperatingStatus: "1", Raw: "dev 模式跳过四要素核验"}, nil
+}
+
 func (*DevProvider) RecognizeBizLicense(_ context.Context, _ BizLicenseInput) (*BizLicenseResult, error) {
 	log.Printf("[kyc-dev] biz_license_ocr -> skip(dev)")
 	return &BizLicenseResult{Raw: "dev 模式跳过 OCR"}, nil

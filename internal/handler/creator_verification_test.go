@@ -13,21 +13,26 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// fakeKYC 可配置的 kyc.Provider 桩，用于覆盖核验分支（通过/不通过/异常/OCR 比对）。
+// fakeKYC 可配置的 kyc.Provider 桩，覆盖核验分支（通过/不通过/异常/四要素比对）。
 type fakeKYC struct {
 	name    string
 	bankRes *kyc.BankCard3Result
 	bankErr error
-	bizRes  *kyc.BizLicenseResult
-	bizErr  error
+	biz4Res *kyc.BizLicense4Result
+	biz4Err error
+	ocrRes  *kyc.BizLicenseResult
+	ocrErr  error
 }
 
 func (f *fakeKYC) Name() string { return f.name }
 func (f *fakeKYC) VerifyBankCard3(_ context.Context, _ kyc.BankCard3Input) (*kyc.BankCard3Result, error) {
 	return f.bankRes, f.bankErr
 }
+func (f *fakeKYC) VerifyBizLicense4(_ context.Context, _ kyc.BizLicense4Input) (*kyc.BizLicense4Result, error) {
+	return f.biz4Res, f.biz4Err
+}
 func (f *fakeKYC) RecognizeBizLicense(_ context.Context, _ kyc.BizLicenseInput) (*kyc.BizLicenseResult, error) {
-	return f.bizRes, f.bizErr
+	return f.ocrRes, f.ocrErr
 }
 
 func testCtx() *gin.Context {
@@ -38,6 +43,17 @@ func testCtx() *gin.Context {
 	return c
 }
 
+func TestPersonalVerifyStatusFor(t *testing.T) {
+	if got := personalVerifyStatusFor("bankcard3"); got != model.CreatorVerifyVerified {
+		t.Errorf("bankcard3 应免人工复核直接 verified，得到 %q", got)
+	}
+	for _, m := range []string{"manual", ""} {
+		if got := personalVerifyStatusFor(m); got != model.CreatorVerifyPending {
+			t.Errorf("method=%q 应 pending（人工兜底），得到 %q", m, got)
+		}
+	}
+}
+
 func TestRunBankCard3Verify(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -46,34 +62,10 @@ func TestRunBankCard3Verify(t *testing.T) {
 		wantBlocked bool
 		wantChecked bool
 	}{
-		{
-			name:        "dev 跳过 → manual 不拦截",
-			provider:    &fakeKYC{name: "dev"},
-			wantMethod:  "manual",
-			wantBlocked: false,
-			wantChecked: false,
-		},
-		{
-			name:        "核验通过 → bankcard3 + 存档时间",
-			provider:    &fakeKYC{name: "tencent", bankRes: &kyc.BankCard3Result{Passed: true, Code: "0", Description: "认证通过"}},
-			wantMethod:  "bankcard3",
-			wantBlocked: false,
-			wantChecked: true,
-		},
-		{
-			name:        "核验不通过 → 拦截",
-			provider:    &fakeKYC{name: "tencent", bankRes: &kyc.BankCard3Result{Passed: false, Code: "1", Description: "姓名与身份证不一致"}},
-			wantMethod:  "",
-			wantBlocked: true,
-			wantChecked: false,
-		},
-		{
-			name:        "第三方异常 → 降级 manual 不拦截",
-			provider:    &fakeKYC{name: "tencent", bankErr: errors.New("timeout")},
-			wantMethod:  "manual",
-			wantBlocked: false,
-			wantChecked: false,
-		},
+		{"dev 跳过 → manual 不拦截", &fakeKYC{name: "dev"}, "manual", false, false},
+		{"核验通过 → bankcard3 + 存档时间", &fakeKYC{name: "tencent", bankRes: &kyc.BankCard3Result{Passed: true, Code: "0", Description: "认证通过"}}, "bankcard3", false, true},
+		{"核验不通过 → 拦截", &fakeKYC{name: "tencent", bankRes: &kyc.BankCard3Result{Passed: false, Code: "1", Description: "姓名与身份证不一致"}}, "", true, false},
+		{"第三方异常 → 降级 manual 不拦截", &fakeKYC{name: "tencent", bankErr: errors.New("timeout")}, "manual", false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,73 +87,25 @@ func TestRunBankCard3Verify(t *testing.T) {
 	}
 }
 
-func TestPersonalVerifyStatusFor(t *testing.T) {
-	if got := personalVerifyStatusFor("bankcard3"); got != model.CreatorVerifyVerified {
-		t.Errorf("bankcard3 应免人工复核直接 verified，得到 %q", got)
-	}
-	for _, m := range []string{"manual", ""} {
-		if got := personalVerifyStatusFor(m); got != model.CreatorVerifyPending {
-			t.Errorf("method=%q 应 pending（人工兜底），得到 %q", m, got)
-		}
-	}
-}
-
-func TestRunBizLicenseVerify(t *testing.T) {
-	const orgName = "腾云计算机（北京）有限责任公司"
-	const creditCode = "911101085636548888"
-
+func TestRunBizLicense4Verify(t *testing.T) {
 	cases := []struct {
 		name         string
 		provider     *fakeKYC
 		wantMethod   string
 		wantBlocked  bool
-		wantLegal    string
 		blockKeyword string
 	}{
-		{
-			name:       "dev 跳过 → manual",
-			provider:   &fakeKYC{name: "dev"},
-			wantMethod: "manual",
-		},
-		{
-			name: "识别一致 → biz_ocr + 法人",
-			provider: &fakeKYC{name: "tencent", bizRes: &kyc.BizLicenseResult{
-				Name: orgName, CreditCode: creditCode, LegalPerson: "张三", Raw: "{}",
-			}},
-			wantMethod: "biz_ocr",
-			wantLegal:  "张三",
-		},
-		{
-			name: "信用代码不一致 → 拦截",
-			provider: &fakeKYC{name: "tencent", bizRes: &kyc.BizLicenseResult{
-				Name: orgName, CreditCode: "910000000000000000",
-			}},
-			wantBlocked:  true,
-			blockKeyword: "统一社会信用代码",
-		},
-		{
-			name: "企业名不一致 → 拦截",
-			provider: &fakeKYC{name: "tencent", bizRes: &kyc.BizLicenseResult{
-				Name: "另一家公司", CreditCode: creditCode,
-			}},
-			wantBlocked:  true,
-			blockKeyword: "企业名称",
-		},
-		{
-			name:       "识别不出关键信息 → 降级 manual",
-			provider:   &fakeKYC{name: "tencent", bizRes: &kyc.BizLicenseResult{}},
-			wantMethod: "manual",
-		},
-		{
-			name:       "第三方异常 → 降级 manual",
-			provider:   &fakeKYC{name: "tencent", bizErr: errors.New("ocr down")},
-			wantMethod: "manual",
-		},
+		{"dev 跳过 → manual", &fakeKYC{name: "dev"}, "manual", false, ""},
+		{"四要素完全匹配 → biz_4e", &fakeKYC{name: "tencent", biz4Res: &kyc.BizLicense4Result{Available: true, Passed: true, EntNameOK: true, CreditCodeOK: true, LegalNameOK: true, LegalIDNumOK: true, Raw: "{}"}}, "biz_4e", false, ""},
+		{"法人不一致 → 拦截", &fakeKYC{name: "tencent", biz4Res: &kyc.BizLicense4Result{Available: true, Passed: false, EntNameOK: true, CreditCodeOK: true, LegalNameOK: false, LegalIDNumOK: true}}, "", true, "法人姓名"},
+		{"信用代码不一致 → 拦截", &fakeKYC{name: "tencent", biz4Res: &kyc.BizLicense4Result{Available: true, Passed: false, EntNameOK: true, CreditCodeOK: false, LegalNameOK: true, LegalIDNumOK: true}}, "", true, "统一社会信用代码"},
+		{"系统不可用 → 降级 manual", &fakeKYC{name: "tencent", biz4Res: &kyc.BizLicense4Result{Available: false}}, "manual", false, ""},
+		{"第三方异常 → 降级 manual", &fakeKYC{name: "tencent", biz4Err: errors.New("ocr down")}, "manual", false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &Server{kyc: tc.provider}
-			method, legal, _, _, blockMsg := s.runBizLicenseVerify(testCtx(), orgName, creditCode, "https://example.com/license.jpg")
+			method, _, _, blockMsg := s.runBizLicense4Verify(testCtx(), "腾云计算机", "911101085636548888", "张三", "110101199003074518")
 			if tc.wantBlocked {
 				if blockMsg == "" {
 					t.Fatalf("期望拦截，blockMsg 为空")
@@ -176,9 +120,6 @@ func TestRunBizLicenseVerify(t *testing.T) {
 			}
 			if method != tc.wantMethod {
 				t.Errorf("method=%q want %q", method, tc.wantMethod)
-			}
-			if tc.wantLegal != "" && legal != tc.wantLegal {
-				t.Errorf("legal=%q want %q", legal, tc.wantLegal)
 			}
 		})
 	}

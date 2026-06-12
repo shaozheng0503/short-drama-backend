@@ -210,6 +210,7 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.PUT("/verification/enterprise", s.creatorUpdateEnterpriseVerification)
 	creatorAuth.POST("/bank-card/send-sms", s.creatorSendBankCardSMS)
 	creatorAuth.POST("/bank-card/change", s.creatorChangeBankCard)
+	creatorAuth.POST("/verification/biz-license/ocr", s.creatorBizLicenseOCR) // 营业执照 OCR 自动填充
 	creatorAuth.GET("/channel-accounts", s.creatorListChannelAccounts)
 	creatorAuth.POST("/channel-accounts", s.creatorCreateChannelAccount)
 	creatorAuth.PUT("/channel-accounts/:id", s.creatorUpdateChannelAccount)
