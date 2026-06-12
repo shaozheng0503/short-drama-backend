@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"ai-drama-platform/internal/kyc"
+	"ai-drama-platform/internal/model"
 
 	"github.com/gin-gonic/gin"
 )
@@ -91,6 +92,17 @@ func TestRunBankCard3Verify(t *testing.T) {
 				t.Errorf("blockMsg 缺少提示前缀: %q", blockMsg)
 			}
 		})
+	}
+}
+
+func TestPersonalVerifyStatusFor(t *testing.T) {
+	if got := personalVerifyStatusFor("bankcard3"); got != model.CreatorVerifyVerified {
+		t.Errorf("bankcard3 应免人工复核直接 verified，得到 %q", got)
+	}
+	for _, m := range []string{"manual", ""} {
+		if got := personalVerifyStatusFor(m); got != model.CreatorVerifyPending {
+			t.Errorf("method=%q 应 pending（人工兜底），得到 %q", m, got)
+		}
 	}
 }
 
