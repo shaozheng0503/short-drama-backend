@@ -414,9 +414,10 @@ type creatorProfileRequest struct {
 //   - 脏数据落库后接入实人认证时全部失败
 //   - 太长字符串直接吃 DB column 长度上限报 500
 var (
-	idCardRegex     = regexp.MustCompile(`^[1-9]\d{16}[\dXx]$`) // 18 位，末位允许 X/x
-	bankCardRegex   = regexp.MustCompile(`^\d{16,19}$`)
-	creditCodeRegex = regexp.MustCompile(`^[0-9A-Z]{18}$`)
+	idCardRegex                = regexp.MustCompile(`^[1-9]\d{16}[\dXx]$`) // 18 位，末位允许 X/x
+	bankCardRegex              = regexp.MustCompile(`^\d{16,19}$`)
+	enterpriseBankAccountRegex = regexp.MustCompile(`^\d{9,30}$`)
+	creditCodeRegex            = regexp.MustCompile(`^[0-9A-Z]{18}$`)
 )
 
 const (
