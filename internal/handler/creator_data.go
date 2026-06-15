@@ -121,12 +121,12 @@ func (s *Server) creatorDataOverview(c *gin.Context) {
 	}
 
 	response.OK(c, gin.H{
-		"range":      gin.H{"start": fmtD(start), "end": fmtD(end), "days": dayCount},
-		"new_dramas": withDelta(curNewDramas, prevNewDramas),
-		"play_count": withDelta(curPlay, prevPlay),
+		"range":        gin.H{"start": fmtD(start), "end": fmtD(end), "days": dayCount},
+		"new_dramas":   withDelta(curNewDramas, prevNewDramas),
+		"play_count":   withDelta(curPlay, prevPlay),
 		"income_cents": withDelta(curIncome, prevIncome),
-		"refund_cents":  withDelta(curRefund, prevRefund),
-		"income_trend":  trend,
+		"refund_cents": withDelta(curRefund, prevRefund),
+		"income_trend": trend,
 	})
 }
 
@@ -273,7 +273,7 @@ func (s *Server) creatorListDramas(c *gin.Context) {
 			"video_audit_reason":   d.VideoAuditReason,
 			"total_episodes":       d.TotalEpisodes,
 			"audience":             d.Audience,
-			"categories":           cats,            // [{id,name,type}...]，含 theme/setting/background/audience 四维全部命中标签
+			"categories":           cats,                 // [{id,name,type}...]，含 theme/setting/background/audience 四维全部命中标签
 			"contract_status":      contractStatus[d.ID], // pending/signing/signed/cancelled；空串=未绑定
 			"publish_type":         d.PublishType,
 			"scheduled_publish_at": d.ScheduledPublishAt,
@@ -686,12 +686,14 @@ func creatorFullView(cr model.Creator) gin.H {
 			"bank_branch":         cr.BankBranch,
 		},
 		"enterprise_info": gin.H{
-			"org_name":             cr.OrgName,
-			"org_credit_code":      cr.OrgCreditCode,
-			"business_license_url": cr.BusinessLicenseURL,
-			"bank_license_url":     cr.BankLicenseURL,
-			"bank_name":            cr.BankName,
-			"bank_branch":          cr.BankBranch,
+			"org_name":                 cr.OrgName,
+			"org_credit_code":          cr.OrgCreditCode,
+			"org_legal_person":         cr.OrgLegalPerson,
+			"org_legal_id_card_masked": cr.OrgLegalIDCardMasked,
+			"business_license_url":     cr.BusinessLicenseURL,
+			"bank_license_url":         cr.BankLicenseURL,
+			"bank_name":                cr.BankName,
+			"bank_branch":              cr.BankBranch,
 		},
 		"identity_info": gin.H{
 			"identity_mid":  cr.IdentityMID,
