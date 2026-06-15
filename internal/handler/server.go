@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"ai-drama-platform/internal/alert"
@@ -29,19 +30,21 @@ import (
 )
 
 type Server struct {
-	db       *gorm.DB
-	cfg      config.Config
-	sms      *sms.Service
-	payments *payment.Registry
-	billing  *billing.Service
-	cryptor  *secure.Cryptor
-	idem     *idempotency.Service
-	alerts   *alert.Client
-	redis    *redis.Client
-	cos      *cos.Signer
-	vod      *vod.Signer
-	kyc      kyc.Provider
-	started  time.Time
+	db        *gorm.DB
+	cfg       config.Config
+	sms       *sms.Service
+	payments  *payment.Registry
+	billing   *billing.Service
+	cryptor   *secure.Cryptor
+	idem      *idempotency.Service
+	alerts    *alert.Client
+	redis     *redis.Client
+	cos       *cos.Signer
+	vod       *vod.Signer
+	kyc       kyc.Provider
+	shareMu   sync.Mutex
+	shareSeen map[string]time.Time // Redis 不可用时的 IP+drama 分享计数限频兜底
+	started   time.Time
 }
 
 func New(db *gorm.DB, cfg config.Config) *Server {
@@ -56,19 +59,20 @@ func New(db *gorm.DB, cfg config.Config) *Server {
 	payments := payment.NewRegistry(cfg)
 	rdb := redisclient.New(cfg)
 	return &Server{
-		db:       db,
-		cfg:      cfg,
-		sms:      sms.New(db, cfg),
-		payments: payments,
-		billing:  billing.New(db, cfg, payments),
-		cryptor:  cryptor,
-		idem:     idempotency.New(rdb, cfg.IdempotencyTTL),
-		alerts:   alert.New(cfg),
-		redis:    rdb,
-		cos:      cos.New(cfg),
-		vod:      vod.New(cfg),
-		kyc:      kyc.SelectProvider(cfg),
-		started:  time.Now(),
+		db:        db,
+		cfg:       cfg,
+		sms:       sms.New(db, cfg),
+		payments:  payments,
+		billing:   billing.New(db, cfg, payments),
+		cryptor:   cryptor,
+		idem:      idempotency.New(rdb, cfg.IdempotencyTTL),
+		alerts:    alert.New(cfg),
+		redis:     rdb,
+		cos:       cos.New(cfg),
+		vod:       vod.New(cfg),
+		kyc:       kyc.SelectProvider(cfg),
+		shareSeen: map[string]time.Time{},
+		started:   time.Now(),
 	}
 }
 
@@ -155,6 +159,7 @@ func (s *Server) Router() *gin.Engine {
 	app.GET("/home", s.appHome)
 	app.GET("/theater", s.appTheater)
 	app.GET("/dramas", s.appListDramas)
+	app.GET("/share/dramas/:id", s.appShareDramaPage)
 	app.GET("/dramas/:id", s.appDramaDetail)
 	app.GET("/dramas/:id/episodes", s.appListEpisodes)
 	app.GET("/dramas/:id/comments", s.appListComments)
@@ -186,7 +191,7 @@ func (s *Server) Router() *gin.Engine {
 	appAuth.POST("/dramas/:id/comments", s.appCreateComment) // 顶层评论 / 楼中楼回复（body 带 parent_id 即回复）
 	appAuth.POST("/comments/:id/like", s.appLikeComment)     // 评论点赞
 	appAuth.DELETE("/comments/:id/like", s.appUnlikeComment) // 取消评论点赞
-	appAuth.POST("/orders/preview", s.appOrderPreview) // 单集下单前试算：展示实付金额
+	appAuth.POST("/orders/preview", s.appOrderPreview)       // 单集下单前试算：展示实付金额
 	appAuth.POST("/orders", s.idempotencyMiddleware("app"), s.appCreateOrder)
 	appAuth.POST("/orders/batch/preview", s.appBatchOrderPreview)
 	appAuth.POST("/orders/batch", s.idempotencyMiddleware("app"), s.appCreateBatchOrder)

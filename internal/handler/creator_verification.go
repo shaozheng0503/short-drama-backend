@@ -18,6 +18,7 @@ import (
 
 var (
 	errInvalidBankCard        = errors.New("bank_card_no 必须是 16-19 位数字")
+	errInvalidPublicAccount   = errors.New("bank_card_no 企业对公账号必须是 9-30 位数字")
 	errSMSRequiredForBankCard = errors.New("修改银行卡号需先调用 POST /creator/bank-card/send-sms 获取验证码")
 	errSMSInvalidForBankCard  = errors.New("短信验证码错误或已过期")
 )
@@ -186,7 +187,7 @@ func (s *Server) creatorUpdateEnterpriseVerification(c *gin.Context) {
 		response.InvalidParam(c, "bank_license_url 过长")
 		return
 	}
-	if err := s.validateBankCardChange(cid, req.BankCardNo, req.SMSCode); err != nil {
+	if err := s.validateEnterpriseBankAccountChange(cid, req.BankCardNo, req.SMSCode); err != nil {
 		response.InvalidParam(c, err.Error())
 		return
 	}
@@ -371,6 +372,27 @@ func (s *Server) validateBankCardChange(creatorID uint64, bankCardNo, smsCode st
 		return errInvalidBankCard
 	}
 	if creator.BankCardNoEnc != "" && creator.BankCardNoMasked != "" && maskBankCard(bankCardNo) != creator.BankCardNoMasked {
+		if smsCode == "" {
+			return errSMSRequiredForBankCard
+		}
+		if err := s.sms.Verify(creator.Phone, model.SMSSceneBankCardChange, smsCode); err != nil {
+			return errSMSInvalidForBankCard
+		}
+	}
+	return nil
+}
+
+func (s *Server) validateEnterpriseBankAccountChange(creatorID uint64, accountNo, smsCode string) error {
+	// 对公账户不是个人银行卡号，各银行长度差异较大，通常 9~30 位数字。
+	if !enterpriseBankAccountRegex.MatchString(accountNo) {
+		return errInvalidPublicAccount
+	}
+	var creator model.Creator
+	if err := s.db.First(&creator, creatorID).Error; err != nil {
+		return errInvalidPublicAccount
+	}
+	// 企业对公账号仍是敏感打款信息：已绑定后变更不同账号，沿用短信验证保护。
+	if creator.BankCardNoEnc != "" && creator.BankCardNoMasked != "" && maskBankCard(accountNo) != creator.BankCardNoMasked {
 		if smsCode == "" {
 			return errSMSRequiredForBankCard
 		}
