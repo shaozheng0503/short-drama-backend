@@ -13,9 +13,9 @@ const (
 )
 
 const (
-	SMSScenAppLogin         = "login"
-	SMSSceneCreatorLogin    = "creator_login"
-	SMSSceneBankCardChange  = "bank_card_change"
+	SMSScenAppLogin        = "login"
+	SMSSceneCreatorLogin   = "creator_login"
+	SMSSceneBankCardChange = "bank_card_change"
 )
 
 const (
@@ -59,14 +59,16 @@ const (
 //   - rejected ：审核驳回
 //
 // 典型组合：
-//   draft × pending/default        纯草稿，未提交（未提交时不应展示"审核通过"，用 pending 表达"尚未过审"）
-//   reviewing × pending            已提交，待审核
-//   draft × rejected               驳回后回到草稿
-//   awaiting_publish × approved    审核通过，待上架
-//   published × approved           已上架
+//
+//	draft × pending/default        纯草稿，未提交（未提交时不应展示"审核通过"，用 pending 表达"尚未过审"）
+//	reviewing × pending            已提交，待审核
+//	draft × rejected               驳回后回到草稿
+//	awaiting_publish × approved    审核通过，待上架
+//	published × approved           已上架
 //
 // 注意：草稿与"已提交待审"都是 audit_status=pending，靠 status 区分——
-//   admin「待审核」队列须按 status=reviewing 取，不能只按 audit_status=pending（否则未提交草稿会混进来）。
+//
+//	admin「待审核」队列须按 status=reviewing 取，不能只按 audit_status=pending（否则未提交草稿会混进来）。
 //
 // 转换规则：
 //   - submit        ：status → reviewing；audit_status → pending
@@ -115,12 +117,12 @@ const (
 )
 
 const (
-	OrderStatusPending          = "pending"
-	OrderStatusPaid             = "paid"
-	OrderStatusFailed           = "failed"
-	OrderStatusClosed           = "closed"
-	OrderStatusRefunded         = "refunded"          // 全额退款
-	OrderStatusPartialRefunded  = "partial_refunded"  // 部分退款,后续可继续退
+	OrderStatusPending         = "pending"
+	OrderStatusPaid            = "paid"
+	OrderStatusFailed          = "failed"
+	OrderStatusClosed          = "closed"
+	OrderStatusRefunded        = "refunded"         // 全额退款
+	OrderStatusPartialRefunded = "partial_refunded" // 部分退款,后续可继续退
 )
 
 const (
@@ -216,42 +218,42 @@ func (Admin) TableName() string { return "admins" }
 // Creator —— 创作者表（MVP 数据库设计 3.4）
 // IDCardNoEnc / BankCardNoEnc 存 AES-GCM 密文（base64），不入接口返回。
 type Creator struct {
-	ID                 uint64    `gorm:"primaryKey;column:id" json:"id"`
-	Phone              string    `gorm:"column:phone;size:32;uniqueIndex" json:"phone"`
-	Name               string    `gorm:"column:name;size:64" json:"name"`
-	Nickname           string    `gorm:"column:nickname;size:64" json:"nickname"`
-	AvatarURL          string    `gorm:"column:avatar_url;size:512" json:"avatar_url"`
-	AccountUID         string    `gorm:"column:account_uid;size:64;index" json:"account_uid"`
-	CreatorType        string    `gorm:"column:creator_type;size:20;default:personal" json:"creator_type"` // personal / organization
-	OrgName            string    `gorm:"column:org_name;size:128" json:"org_name"`                         // 机构名称（机构类型时填）
-	OrgCreditCode      string    `gorm:"column:org_credit_code;size:32" json:"org_credit_code"`            // 统一社会信用代码
-	BusinessLicenseURL string    `gorm:"column:business_license_url;size:512" json:"business_license_url"` // 营业执照图片
-	IDCardNoEnc        string    `gorm:"column:id_card_no_enc;size:512" json:"-"`
-	IDCardNoMasked     string    `gorm:"column:id_card_no_masked;size:32" json:"id_card_no_masked"`
-	BankName           string    `gorm:"column:bank_name;size:64" json:"bank_name"`
-	BankBranch         string    `gorm:"column:bank_branch;size:128" json:"bank_branch"`          // 开户支行（避免跨行转账受限）
-	BankLicenseURL     string    `gorm:"column:bank_license_url;size:512" json:"bank_license_url"` // 银行开户许可证（机构认证）
-	BankCardNoEnc      string    `gorm:"column:bank_card_no_enc;size:512" json:"-"`
-	BankCardLast4      string    `gorm:"column:bank_card_last4;size:8" json:"-"`
-	BankCardNoMasked   string    `gorm:"column:bank_card_no_masked;size:32" json:"bank_card_no_masked"`
-	IdentityMID        string    `gorm:"column:identity_mid;size:64" json:"identity_mid"`   // 创作者身份信息 MID
-	IdentityRole       string    `gorm:"column:identity_role;size:32" json:"identity_role"` // 版权人 / 制作方等
+	ID                 uint64     `gorm:"primaryKey;column:id" json:"id"`
+	Phone              string     `gorm:"column:phone;size:32;uniqueIndex" json:"phone"`
+	Name               string     `gorm:"column:name;size:64" json:"name"`
+	Nickname           string     `gorm:"column:nickname;size:64" json:"nickname"`
+	AvatarURL          string     `gorm:"column:avatar_url;size:512" json:"avatar_url"`
+	AccountUID         string     `gorm:"column:account_uid;size:64;index" json:"account_uid"`
+	CreatorType        string     `gorm:"column:creator_type;size:20;default:personal" json:"creator_type"` // personal / organization
+	OrgName            string     `gorm:"column:org_name;size:128" json:"org_name"`                         // 机构名称（机构类型时填）
+	OrgCreditCode      string     `gorm:"column:org_credit_code;size:32" json:"org_credit_code"`            // 统一社会信用代码
+	BusinessLicenseURL string     `gorm:"column:business_license_url;size:512" json:"business_license_url"` // 营业执照图片
+	IDCardNoEnc        string     `gorm:"column:id_card_no_enc;size:512" json:"-"`
+	IDCardNoMasked     string     `gorm:"column:id_card_no_masked;size:32" json:"id_card_no_masked"`
+	BankName           string     `gorm:"column:bank_name;size:64" json:"bank_name"`
+	BankBranch         string     `gorm:"column:bank_branch;size:128" json:"bank_branch"`           // 开户支行（避免跨行转账受限）
+	BankLicenseURL     string     `gorm:"column:bank_license_url;size:512" json:"bank_license_url"` // 银行开户许可证（机构认证）
+	BankCardNoEnc      string     `gorm:"column:bank_card_no_enc;size:512" json:"-"`
+	BankCardLast4      string     `gorm:"column:bank_card_last4;size:8" json:"-"`
+	BankCardNoMasked   string     `gorm:"column:bank_card_no_masked;size:32" json:"bank_card_no_masked"`
+	IdentityMID        string     `gorm:"column:identity_mid;size:64" json:"identity_mid"`   // 创作者身份信息 MID
+	IdentityRole       string     `gorm:"column:identity_role;size:32" json:"identity_role"` // 版权人 / 制作方等
 	VerifyStatus       string     `gorm:"column:verify_status;size:20;default:pending" json:"verify_status"`
 	VerifyRejectReason string     `gorm:"column:verify_reject_reason;size:255" json:"verify_reject_reason"`
 	VerifySubmittedAt  *time.Time `gorm:"column:verify_submitted_at;index" json:"verify_submitted_at"`
 	// 第三方核验存档（个人=银行卡三要素 bankcard3 / 企业=营业执照四要素 biz_4e / 降级或未核验 manual）
-	OrgLegalPerson       string     `gorm:"column:org_legal_person;size:64" json:"org_legal_person"`           // 企业法定代表人姓名（用户填，四要素核验项）
-	OrgLegalIDCardEnc    string     `gorm:"column:org_legal_id_card_enc;size:512" json:"-"`                    // 法人身份证号密文（AES-GCM）
+	OrgLegalPerson       string     `gorm:"column:org_legal_person;size:64" json:"org_legal_person"`                 // 企业法定代表人姓名（用户填，四要素核验项）
+	OrgLegalIDCardEnc    string     `gorm:"column:org_legal_id_card_enc;size:512" json:"-"`                          // 法人身份证号密文（AES-GCM）
 	OrgLegalIDCardMasked string     `gorm:"column:org_legal_id_card_masked;size:32" json:"org_legal_id_card_masked"` // 法人身份证号脱敏
-	VerifyMethod         string     `gorm:"column:verify_method;size:32" json:"verify_method"`                 // 核验方式：bankcard3 / biz_ocr / manual / ""
-	VerifyProviderResult string     `gorm:"column:verify_provider_result;type:text" json:"-"`                  // 腾讯云核验原始返回（存档，供 Admin 复核）
-	VerifyCheckedAt      *time.Time `gorm:"column:verify_checked_at" json:"verify_checked_at"`                 // 第三方核验时间
-	TotalIncomeCents   int64      `gorm:"column:total_income_cents;default:0" json:"total_income_cents"`
-	BalanceCents       int64     `gorm:"column:balance_cents;default:0" json:"balance_cents"`
-	FrozenCents        int64     `gorm:"column:frozen_cents;default:0" json:"frozen_cents"`
-	Status             string    `gorm:"column:status;size:20;default:active" json:"status"`
-	CreatedAt          time.Time `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt          time.Time `gorm:"column:updated_at" json:"updated_at"`
+	VerifyMethod         string     `gorm:"column:verify_method;size:32" json:"verify_method"`                       // 核验方式：bankcard3 / biz_ocr / manual / ""
+	VerifyProviderResult string     `gorm:"column:verify_provider_result;type:text" json:"-"`                        // 腾讯云核验原始返回（存档，供 Admin 复核）
+	VerifyCheckedAt      *time.Time `gorm:"column:verify_checked_at" json:"verify_checked_at"`                       // 第三方核验时间
+	TotalIncomeCents     int64      `gorm:"column:total_income_cents;default:0" json:"total_income_cents"`
+	BalanceCents         int64      `gorm:"column:balance_cents;default:0" json:"balance_cents"`
+	FrozenCents          int64      `gorm:"column:frozen_cents;default:0" json:"frozen_cents"`
+	Status               string     `gorm:"column:status;size:20;default:active" json:"status"`
+	CreatedAt            time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt            time.Time  `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (Creator) TableName() string { return "creators" }
@@ -316,18 +318,18 @@ func (DramaTag) TableName() string { return "drama_tags" }
 
 // Drama —— 短剧（MVP 数据库设计 3.6）
 type Drama struct {
-	ID            uint64  `gorm:"primaryKey;column:id" json:"id"`
-	Title         string  `gorm:"column:title;size:128;index" json:"title"`
-	Description   string  `gorm:"column:description;type:text" json:"description"`
-	CoverURL      string  `gorm:"column:cover_url;size:512" json:"cover_url"`
-	CategoryID    *uint64 `gorm:"column:category_id;index" json:"category_id"`
-	CreatorID     *uint64 `gorm:"column:creator_id;index" json:"creator_id"`
-	TotalEpisodes int     `gorm:"column:total_episodes;default:0" json:"total_episodes"`
-	FreeEpisodes  int     `gorm:"column:free_episodes;default:0" json:"free_episodes"`
-	PriceCents    int64   `gorm:"column:price_cents;default:0" json:"price_cents"`
-	Status        string  `gorm:"column:status;size:20;default:draft;index" json:"status"`
-	AuditStatus   string  `gorm:"column:audit_status;size:20;default:pending;index" json:"audit_status"`
-	AuditReason   string  `gorm:"column:audit_reason;size:255" json:"audit_reason"`
+	ID               uint64     `gorm:"primaryKey;column:id" json:"id"`
+	Title            string     `gorm:"column:title;size:128;index" json:"title"`
+	Description      string     `gorm:"column:description;type:text" json:"description"`
+	CoverURL         string     `gorm:"column:cover_url;size:512" json:"cover_url"`
+	CategoryID       *uint64    `gorm:"column:category_id;index" json:"category_id"`
+	CreatorID        *uint64    `gorm:"column:creator_id;index" json:"creator_id"`
+	TotalEpisodes    int        `gorm:"column:total_episodes;default:0" json:"total_episodes"`
+	FreeEpisodes     int        `gorm:"column:free_episodes;default:0" json:"free_episodes"`
+	PriceCents       int64      `gorm:"column:price_cents;default:0" json:"price_cents"`
+	Status           string     `gorm:"column:status;size:20;default:draft;index" json:"status"`
+	AuditStatus      string     `gorm:"column:audit_status;size:20;default:pending;index" json:"audit_status"`
+	AuditReason      string     `gorm:"column:audit_reason;size:255" json:"audit_reason"`
 	AuditSubmittedAt *time.Time `gorm:"column:audit_submitted_at;index" json:"audit_submitted_at"`
 	// 分批审核（2026-06-10 会议）：资料内容 + 视频内容各自独立审核，audit_status 为派生总状态
 	//（资料✓且视频✓才 approved；任一 rejected 则 rejected）。合同维度暂沿用 Contract.status，未纳入派生。
@@ -343,7 +345,7 @@ type Drama struct {
 	// === 申报级扩展字段（2026-05-27 漫剧上传规格）===
 	IsAI                bool       `gorm:"column:is_ai;default:false" json:"is_ai"`                             // 是否 AI 作品
 	AIGCTools           []string   `gorm:"column:aigc_tools;serializer:json" json:"aigc_tools"`                 // 关联 AIGC 创作工具（多选固定 tag，即梦/小云雀等，is_ai 时填）
-	LanguageID          *uint64    `gorm:"column:language_id;index" json:"language_id"` // 语言/方言（languages.id，含粤语等子项）
+	LanguageID          *uint64    `gorm:"column:language_id;index" json:"language_id"`                         // 语言/方言（languages.id，含粤语等子项）
 	Audience            string     `gorm:"column:audience;size:20" json:"audience"`                             // 男频/女频/通用
 	AliasPaid           string     `gorm:"column:alias_paid;size:64" json:"alias_paid"`                         // 站外付费别名（选填）
 	AliasFree           string     `gorm:"column:alias_free;size:64" json:"alias_free"`                         // 站外免费别名（选填）
@@ -418,10 +420,10 @@ func (Episode) TableName() string { return "episodes" }
 // 软删用 DeletedAt（GORM 自动支持）：删除后 List 不返，但保留落库供审计 / 复活。
 // 长度限制 1000，超长在 handler 截断+拒绝；user_id 索引按用户拉自己评论。
 type Comment struct {
-	ID      uint64  `gorm:"primaryKey;column:id" json:"id"`
-	DramaID uint64  `gorm:"column:drama_id;index;not null" json:"drama_id"`
+	ID        uint64  `gorm:"primaryKey;column:id" json:"id"`
+	DramaID   uint64  `gorm:"column:drama_id;index;not null" json:"drama_id"`
 	EpisodeID *uint64 `gorm:"column:episode_id;index" json:"episode_id"` // 空=剧评，有值=该集的集评
-	UserID  uint64  `gorm:"column:user_id;index;not null" json:"user_id"`
+	UserID    uint64  `gorm:"column:user_id;index;not null" json:"user_id"`
 	// 楼中楼：两级模型。ParentID 空=顶层评论；非空=回复，指向「顶层评论」（回复的回复也拍平挂到同一顶层）。
 	// ReplyToUserID=被回复者，用于「回复 @某人」展示（直接回复顶层评论时可为空）。
 	ParentID      *uint64        `gorm:"column:parent_id;index" json:"parent_id"`
@@ -514,12 +516,12 @@ func (Product) TableName() string { return "products" }
 
 // Order —— 订单（MVP 数据库设计 3.12）
 type Order struct {
-	ID              uint64     `gorm:"primaryKey;column:id" json:"id"`
-	OrderNo         string     `gorm:"column:order_no;size:64;uniqueIndex" json:"order_no"`
-	UserID          uint64     `gorm:"column:user_id;index" json:"user_id"`
-	ProductID       *uint64    `gorm:"column:product_id" json:"product_id"`
-	DramaID         uint64     `gorm:"column:drama_id;index" json:"drama_id"`
-	EpisodeID       uint64     `gorm:"column:episode_id;index" json:"episode_id"`
+	ID        uint64  `gorm:"primaryKey;column:id" json:"id"`
+	OrderNo   string  `gorm:"column:order_no;size:64;uniqueIndex" json:"order_no"`
+	UserID    uint64  `gorm:"column:user_id;index" json:"user_id"`
+	ProductID *uint64 `gorm:"column:product_id" json:"product_id"`
+	DramaID   uint64  `gorm:"column:drama_id;index" json:"drama_id"`
+	EpisodeID uint64  `gorm:"column:episode_id;index" json:"episode_id"`
 	// 选集购买：批量单在此存集 id 清单（一单多集）；单集单留空、仍用 episode_id。
 	// serializer:json 落库为 json 文本；episode_unlocks 仍是解锁唯一真相源。
 	EpisodeIDs      []uint64   `gorm:"column:episode_ids;serializer:json" json:"episode_ids,omitempty"`
@@ -571,26 +573,26 @@ func (Contract) TableName() string { return "contracts" }
 
 // Withdrawal —— 提现申请（MVP 数据库设计 3.15）
 type Withdrawal struct {
-	ID                 uint64     `gorm:"primaryKey;column:id" json:"id"`
-	WithdrawalNo       string     `gorm:"column:withdrawal_no;size:64;uniqueIndex" json:"withdrawal_no"`
-	CreatorID          uint64     `gorm:"column:creator_id;index" json:"creator_id"`
-	DramaID            *uint64    `gorm:"column:drama_id;index" json:"drama_id"`
-	AmountCents        int64      `gorm:"column:amount_cents" json:"amount_cents"`
-	BankNameSnapshot   string     `gorm:"column:bank_name_snapshot;size:64" json:"bank_name_snapshot"`
-	BankCardNoSnapshot string     `gorm:"column:bank_card_no_snapshot;size:64" json:"bank_card_no_snapshot"`
-	Status             string     `gorm:"column:status;size:20;default:pending;index" json:"status"`
+	ID                 uint64  `gorm:"primaryKey;column:id" json:"id"`
+	WithdrawalNo       string  `gorm:"column:withdrawal_no;size:64;uniqueIndex" json:"withdrawal_no"`
+	CreatorID          uint64  `gorm:"column:creator_id;index" json:"creator_id"`
+	DramaID            *uint64 `gorm:"column:drama_id;index" json:"drama_id"`
+	AmountCents        int64   `gorm:"column:amount_cents" json:"amount_cents"`
+	BankNameSnapshot   string  `gorm:"column:bank_name_snapshot;size:64" json:"bank_name_snapshot"`
+	BankCardNoSnapshot string  `gorm:"column:bank_card_no_snapshot;size:64" json:"bank_card_no_snapshot"`
+	Status             string  `gorm:"column:status;size:20;default:pending;index" json:"status"`
 	// 个税：个人创作者按阶梯代扣，机构开票不扣。下列三项在申请时按当时配置快照。
-	CreatorTypeSnapshot string    `gorm:"column:creator_type_snapshot;size:20" json:"creator_type_snapshot"`
-	TransferType        string    `gorm:"column:transfer_type;size:20" json:"transfer_type"` // public=对公(机构) / private=对私(个人)，财务打款区分
-	TaxCents            int64     `gorm:"column:tax_cents;default:0" json:"tax_cents"` // 代扣个税
-	NetCents            int64     `gorm:"column:net_cents;default:0" json:"net_cents"` // 实际到账 = amount_cents - tax_cents
-	Remark             string     `gorm:"column:remark;size:255" json:"remark"`
-	TransactionNo      string     `gorm:"column:transaction_no;size:128" json:"transaction_no"`
-	ReviewedBy         *uint64    `gorm:"column:reviewed_by" json:"reviewed_by"`
-	ReviewedAt         *time.Time `gorm:"column:reviewed_at" json:"reviewed_at"`
-	PaidAt             *time.Time `gorm:"column:paid_at" json:"paid_at"`
-	CreatedAt          time.Time  `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt          time.Time  `gorm:"column:updated_at" json:"updated_at"`
+	CreatorTypeSnapshot string     `gorm:"column:creator_type_snapshot;size:20" json:"creator_type_snapshot"`
+	TransferType        string     `gorm:"column:transfer_type;size:20" json:"transfer_type"` // public=对公(机构) / private=对私(个人)，财务打款区分
+	TaxCents            int64      `gorm:"column:tax_cents;default:0" json:"tax_cents"`       // 代扣个税
+	NetCents            int64      `gorm:"column:net_cents;default:0" json:"net_cents"`       // 实际到账 = amount_cents - tax_cents
+	Remark              string     `gorm:"column:remark;size:255" json:"remark"`
+	TransactionNo       string     `gorm:"column:transaction_no;size:128" json:"transaction_no"`
+	ReviewedBy          *uint64    `gorm:"column:reviewed_by" json:"reviewed_by"`
+	ReviewedAt          *time.Time `gorm:"column:reviewed_at" json:"reviewed_at"`
+	PaidAt              *time.Time `gorm:"column:paid_at" json:"paid_at"`
+	CreatedAt           time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt           time.Time  `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (Withdrawal) TableName() string { return "withdrawals" }
@@ -599,15 +601,15 @@ func (Withdrawal) TableName() string { return "withdrawals" }
 // 落地数字由财务提供，先建表与计算框架；空配置=不扣税。机构开票创作者不走此表。
 // 计算：找到 min<=金额<max（max=0 表示无上限）的档，tax = round(金额×rate_bp/10000) - quick_deduct_cents，最低 0。
 type TaxBracket struct {
-	ID              uint64    `gorm:"primaryKey;column:id" json:"id"`
-	MinCents        int64     `gorm:"column:min_cents;default:0" json:"min_cents"`         // 区间下限（含）
-	MaxCents        int64     `gorm:"column:max_cents;default:0" json:"max_cents"`         // 区间上限（不含），0=无上限
-	RateBP          int       `gorm:"column:rate_bp;default:0" json:"rate_bp"`             // 税率基点（10000=100%）
-	QuickDeductCents int64    `gorm:"column:quick_deduct_cents;default:0" json:"quick_deduct_cents"` // 速算扣除数
-	SortOrder       int       `gorm:"column:sort_order;default:0" json:"sort_order"`
-	Status          string    `gorm:"column:status;size:20;default:active;index" json:"status"`
-	CreatedAt       time.Time `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt       time.Time `gorm:"column:updated_at" json:"updated_at"`
+	ID               uint64    `gorm:"primaryKey;column:id" json:"id"`
+	MinCents         int64     `gorm:"column:min_cents;default:0" json:"min_cents"`                   // 区间下限（含）
+	MaxCents         int64     `gorm:"column:max_cents;default:0" json:"max_cents"`                   // 区间上限（不含），0=无上限
+	RateBP           int       `gorm:"column:rate_bp;default:0" json:"rate_bp"`                       // 税率基点（10000=100%）
+	QuickDeductCents int64     `gorm:"column:quick_deduct_cents;default:0" json:"quick_deduct_cents"` // 速算扣除数
+	SortOrder        int       `gorm:"column:sort_order;default:0" json:"sort_order"`
+	Status           string    `gorm:"column:status;size:20;default:active;index" json:"status"`
+	CreatedAt        time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt        time.Time `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (TaxBracket) TableName() string { return "tax_brackets" }
@@ -629,18 +631,18 @@ func (CreatorStatsDaily) TableName() string { return "creator_stats_daily" }
 // 本平台自有付费收入走支付分账写 creator_stats_daily，不进此表。
 // 唯一键 (drama_id, channel, stat_date)：同剧同渠道同日重复导入按覆盖处理。
 type ChannelIncomeDaily struct {
-	ID          uint64    `gorm:"primaryKey;column:id" json:"id"`
-	DramaID     uint64    `gorm:"column:drama_id;uniqueIndex:uniq_channel_income,priority:1" json:"drama_id"`
-	Channel     string    `gorm:"column:channel;size:32;uniqueIndex:uniq_channel_income,priority:2" json:"channel"`
-	StatDate    string    `gorm:"column:stat_date;size:10;uniqueIndex:uniq_channel_income,priority:3" json:"stat_date"`
-	CreatorID   uint64    `gorm:"column:creator_id;index" json:"creator_id"`
-	GrossCents   int64    `gorm:"column:gross_cents;default:0" json:"gross_cents"`         // 渠道总收益（财务填）
-	ShareRatioBP int      `gorm:"column:share_ratio_bp;default:0" json:"share_ratio_bp"`   // 创作者分成比例，基点(10000=100%)
-	IncomeCents int64     `gorm:"column:income_cents;default:0" json:"income_cents"`       // 创作者实得 = 总收益×比例，入账金额
-	BatchNo     string    `gorm:"column:batch_no;size:32;index" json:"batch_no"`
-	ImportRowNo int       `gorm:"column:import_row_no;default:0" json:"import_row_no"`
-	CreatedAt   time.Time `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt   time.Time `gorm:"column:updated_at" json:"updated_at"`
+	ID           uint64    `gorm:"primaryKey;column:id" json:"id"`
+	DramaID      uint64    `gorm:"column:drama_id;uniqueIndex:uniq_channel_income,priority:1" json:"drama_id"`
+	Channel      string    `gorm:"column:channel;size:32;uniqueIndex:uniq_channel_income,priority:2" json:"channel"`
+	StatDate     string    `gorm:"column:stat_date;size:10;uniqueIndex:uniq_channel_income,priority:3" json:"stat_date"`
+	CreatorID    uint64    `gorm:"column:creator_id;index" json:"creator_id"`
+	GrossCents   int64     `gorm:"column:gross_cents;default:0" json:"gross_cents"`       // 渠道总收益（财务填）
+	ShareRatioBP int       `gorm:"column:share_ratio_bp;default:0" json:"share_ratio_bp"` // 创作者分成比例，基点(10000=100%)
+	IncomeCents  int64     `gorm:"column:income_cents;default:0" json:"income_cents"`     // 创作者实得 = 总收益×比例，入账金额
+	BatchNo      string    `gorm:"column:batch_no;size:32;index" json:"batch_no"`
+	ImportRowNo  int       `gorm:"column:import_row_no;default:0" json:"import_row_no"`
+	CreatedAt    time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt    time.Time `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (ChannelIncomeDaily) TableName() string { return "channel_income_daily" }

@@ -167,7 +167,7 @@ func (s *Server) creatorUpdateEnterpriseVerification(c *gin.Context) {
 	cid := middleware.CurrentID(c)
 	var req enterpriseVerificationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.InvalidParam(c, "企业名称、统一社会信用代码、营业执照、开户银行、银行卡号必填")
+		response.InvalidParam(c, "企业名称、统一社会信用代码、法人姓名、法人身份证号、营业执照、开户银行、银行卡号必填")
 		return
 	}
 	if !creditCodeRegex.MatchString(req.OrgCreditCode) {
