@@ -563,7 +563,8 @@ type Contract struct {
 	DramaID     *uint64   `gorm:"column:drama_id" json:"drama_id"`
 	ContractNo  string    `gorm:"column:contract_no;size:64;index" json:"contract_no"`
 	EsignFlowID string    `gorm:"column:esign_flow_id;size:128" json:"esign_flow_id"`
-	FileURL     string    `gorm:"column:file_url;size:512" json:"file_url"`
+	FileURL     string    `gorm:"column:file_url;size:512" json:"file_url"` // 系统生成的合同模板文件
+	ScanFileKey string    `gorm:"column:scan_file_key;size:512" json:"-"`   // 管理员上传的签署后合同扫描件（PDF）私有 COS key；下载走鉴权后 presigned GET
 	Status      string    `gorm:"column:status;size:20;default:pending" json:"status"`
 	CreatedAt   time.Time `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt   time.Time `gorm:"column:updated_at" json:"updated_at"`

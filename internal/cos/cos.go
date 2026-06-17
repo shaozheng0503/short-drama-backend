@@ -56,10 +56,20 @@ func (s *Signer) PublicURL(key string) string {
 // key 用业务自己定的路径（如 images/2026/05/avatars/abc.jpg）。
 // 调用方拿着返回的 URL 直接 PUT 文件即可，Body 是文件原文。
 // 关键：URL 签名里强制带 x-cos-acl=public-read 头，让对象一上传就是公有读，
-//      绕开"桶私有但要单文件公开"的常见踩坑场景。前端 PUT 时必须同时发这个 header。
+//
+//	绕开"桶私有但要单文件公开"的常见踩坑场景。前端 PUT 时必须同时发这个 header。
 func (s *Signer) PresignedPUT(key string) (signedURL string, expiresAt time.Time, requiredHeaders map[string]string, err error) {
+	return s.PresignedPUTWithACL(key, "public-read")
+}
+
+// PresignedPUTWithACL 同 PresignedPUT，但允许指定对象 ACL。
+// 图片等公开资源用 public-read；合同扫描件等含 PII 的用 private（仅能凭 PresignedGET 下载）。
+func (s *Signer) PresignedPUTWithACL(key, acl string) (signedURL string, expiresAt time.Time, requiredHeaders map[string]string, err error) {
 	if !s.Configured() {
 		return "", time.Time{}, nil, ErrNotConfigured
+	}
+	if acl == "" {
+		acl = "public-read"
 	}
 	now := time.Now()
 	expire := s.cfg.COSSignExpire
@@ -72,15 +82,15 @@ func (s *Signer) PresignedPUT(key string) (signedURL string, expiresAt time.Time
 
 	// 把 x-cos-acl 签进签名 — 客户端 PUT 时必须带这个 header，COS 才认。
 	headers := map[string]string{
-		"x-cos-acl": "public-read",
+		"x-cos-acl": acl,
 	}
 	headerListStr, headerStr := buildHeaderParts(headers)
 
 	httpString := strings.Join([]string{
 		"put",
 		"/" + strings.TrimLeft(key, "/"),
-		"",         // url params
-		headerStr,  // 已签的 header k=v；按 COS 规范 lower-case + urlencode value
+		"",        // url params
+		headerStr, // 已签的 header k=v；按 COS 规范 lower-case + urlencode value
 		"",
 	}, "\n")
 
@@ -101,9 +111,50 @@ func (s *Signer) PresignedPUT(key string) (signedURL string, expiresAt time.Time
 	return signedURL, expiresAt, headers, nil
 }
 
+// PresignedGET 生成 GET 下载预签名 URL，用于读取私有对象（如合同扫描件 PDF）。
+// 短时有效，由后端鉴权通过后下发，避免把私有合同放成公共可访问。
+// 始终走 COS 默认域名（不走 CDN，CDN 通常不校验 COS 签名）。
+func (s *Signer) PresignedGET(key string) (signedURL string, expiresAt time.Time, err error) {
+	if !s.Configured() {
+		return "", time.Time{}, ErrNotConfigured
+	}
+	now := time.Now()
+	expire := s.cfg.COSSignExpire
+	if expire <= 0 {
+		expire = 15 * time.Minute
+	}
+	expiresAt = now.Add(expire)
+
+	keyTime := fmt.Sprintf("%d;%d", now.Unix(), expiresAt.Unix())
+
+	httpString := strings.Join([]string{
+		"get",
+		"/" + strings.TrimLeft(key, "/"),
+		"", // url params
+		"", // headers
+		"",
+	}, "\n")
+
+	signKey := hmacSHA1Hex(s.cfg.COSSecretKey, keyTime)
+	stringToSign := strings.Join([]string{"sha1", keyTime, sha1Hex(httpString), ""}, "\n")
+	signature := hmacSHA1Hex(signKey, stringToSign)
+
+	q := url.Values{}
+	q.Set("q-sign-algorithm", "sha1")
+	q.Set("q-ak", s.cfg.COSSecretID)
+	q.Set("q-sign-time", keyTime)
+	q.Set("q-key-time", keyTime)
+	q.Set("q-header-list", "")
+	q.Set("q-url-param-list", "")
+	q.Set("q-signature", signature)
+
+	signedURL = "https://" + s.Host() + "/" + strings.TrimLeft(key, "/") + "?" + sortedEncode(q)
+	return signedURL, expiresAt, nil
+}
+
 // buildHeaderParts 输出两个值：
-//  1) q-header-list = "x-cos-acl;..." 用分号连接的小写 header 名（字典序）
-//  2) headerStr     = "x-cos-acl=public-read&..." 用 & 连的 key=urlencode(value)
+//  1. q-header-list = "x-cos-acl;..." 用分号连接的小写 header 名（字典序）
+//  2. headerStr     = "x-cos-acl=public-read&..." 用 & 连的 key=urlencode(value)
 func buildHeaderParts(headers map[string]string) (string, string) {
 	keys := make([]string, 0, len(headers))
 	for k := range headers {

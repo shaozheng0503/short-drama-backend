@@ -117,6 +117,73 @@ func (s *Server) creatorImageUploadSign(c *gin.Context) {
 	s.commonImageUploadSign(c)
 }
 
+// allowedContractDocExt：合同扫描件仅允许 PDF（电子签平台下载的签署版是 PDF）。
+var allowedContractDocExt = map[string]bool{"pdf": true}
+
+// contractDocSignRequest：合同扫描件上传签名入参。ext 默认 pdf。
+type contractDocSignRequest struct {
+	Ext      string `json:"ext"`      // 文件后缀，不带点，仅支持 pdf
+	Filename string `json:"filename"` // 仅作日志参考，不参与签名
+}
+
+// adminContractUploadSign 返回签署后合同扫描件（PDF）的 COS PUT 预签名；仅 admin。
+// 路径：POST /v1/admin/uploads/contract-sign
+//
+// 前端流程：拿到 upload_url → 按 headers 里的 Content-Type PUT 上 PDF 原文 → 拿 public_url
+// 回填到 PUT /v1/admin/contracts/:id 的 scan_file_url。与图片签名同源，仅放行 pdf 后缀、独立目录便于审计。
+func (s *Server) adminContractUploadSign(c *gin.Context) {
+	if !s.cos.Configured() {
+		response.Fail(c, response.CodeThirdPartyError, "COS 未配置，无法生成上传签名")
+		return
+	}
+	var req contractDocSignRequest
+	_ = c.ShouldBindJSON(&req) // 全部可选
+
+	ext := strings.ToLower(strings.TrimPrefix(req.Ext, "."))
+	if ext == "" {
+		ext = "pdf"
+	}
+	if !allowedContractDocExt[ext] {
+		response.InvalidParam(c, "ext 不允许，合同扫描件仅支持 pdf")
+		return
+	}
+
+	uid := middleware.CurrentID(c)
+	prefix := "contracts/" + time.Now().Format("2006/01/02")
+	if uid > 0 {
+		prefix += "/admin_" + itoa(uid)
+	}
+	key := prefix + "/" + randomToken(12) + "." + ext
+
+	// 合同扫描件含 PII，以 private ACL 上传，不可公开访问；下载走鉴权后的 presigned GET。
+	url, expiresAt, requiredHeaders, err := s.cos.PresignedPUTWithACL(key, "private")
+	if err != nil {
+		if errors.Is(err, cos.ErrNotConfigured) {
+			response.Fail(c, response.CodeThirdPartyError, "COS 未配置")
+			return
+		}
+		response.ServerError(c, "签名失败")
+		return
+	}
+
+	hdrs := gin.H{}
+	for k, v := range requiredHeaders {
+		hdrs[k] = v
+	}
+	// PDF 必须带 application/pdf，否则 COS 落成 form-urlencoded，浏览器点开会变下载乱码而非预览。
+	hdrs["Content-Type"] = "application/pdf"
+
+	// 不回 public_url：private 对象公网不可访问。前端 PUT 完把 key 回填到 PUT /admin/contracts/:id 的 scan_file_key，
+	// 下载统一走 GET /admin/contracts/:id/scan（短时 presigned）。
+	response.OK(c, gin.H{
+		"method":     "PUT",
+		"upload_url": url,
+		"key":        key,
+		"expires_at": expiresAt,
+		"headers":    hdrs, // 前端 PUT 时务必把这些 header（含 x-cos-acl=private）原样带上，否则 COS 验签失败
+	})
+}
+
 // adminVODUploadSign 返回 VOD 客户端上传签名；admin 鉴权过的才能拿。
 // 路径：POST /v1/admin/uploads/vod-sign
 //
