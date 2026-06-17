@@ -255,7 +255,6 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.GET("/withdrawals/tax-preview", s.creatorWithdrawTaxPreview)
 	creatorAuth.GET("/data-overview", s.creatorDataOverview)
 	creatorAuth.GET("/contracts", s.creatorListContracts)
-	creatorAuth.GET("/contracts/:id/docx", s.creatorDownloadContractDocx)
 	creatorAuth.GET("/contracts/:id/scan", s.creatorDownloadContractScan)
 	creatorAuth.GET("/contracts/:id", s.creatorGetContract)
 
@@ -362,10 +361,8 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.PUT("/config/tax-brackets/:id", s.requireAdminRole(), s.adminUpdateTaxBracket)
 	adminAuth.DELETE("/config/tax-brackets/:id", s.requireAdminRole(), s.adminDeleteTaxBracket)
 
-	adminAuth.GET("/contract-template.docx", s.adminDownloadContractTemplate)
 	adminAuth.GET("/contracts", s.adminListContracts)
 	adminAuth.POST("/contracts", s.adminCreateContract)
-	adminAuth.GET("/contracts/:id/docx", s.adminDownloadContractDocx)
 	adminAuth.GET("/contracts/:id", s.adminGetContract)
 	adminAuth.GET("/contracts/:id/scan", s.adminDownloadContractScan)
 	adminAuth.PUT("/contracts/:id", s.adminUpdateContract)
