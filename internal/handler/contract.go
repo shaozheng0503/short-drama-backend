@@ -27,6 +27,7 @@ func contractView(ct model.Contract, dramaTitle string) gin.H {
 		"contract_no":   ct.ContractNo,
 		"esign_flow_id": ct.EsignFlowID,
 		"file_url":      ct.FileURL,
+		"has_scan_file": ct.ScanFileKey != "", // 是否已上传签署后扫描件；下载走 GET .../contracts/:id/scan
 		"status":        ct.Status,
 		"created_at":    ct.CreatedAt,
 		"updated_at":    ct.UpdatedAt,
@@ -218,6 +219,7 @@ func (s *Server) adminGetContract(c *gin.Context) {
 
 type adminUpdateContractRequest struct {
 	FileURL     *string `json:"file_url"`
+	ScanFileKey *string `json:"scan_file_key"` // 签署后合同扫描件 PDF 的私有 COS key（先走 POST /admin/uploads/contract-sign 拿 key）
 	Status      *string `json:"status"`
 	EsignFlowID *string `json:"esign_flow_id"`
 }
@@ -246,6 +248,13 @@ func (s *Server) adminUpdateContract(c *gin.Context) {
 	if req.FileURL != nil {
 		updates["file_url"] = *req.FileURL
 	}
+	if req.ScanFileKey != nil {
+		if len(*req.ScanFileKey) > 512 {
+			response.InvalidParam(c, "scan_file_key 过长")
+			return
+		}
+		updates["scan_file_key"] = *req.ScanFileKey
+	}
 	if req.EsignFlowID != nil {
 		updates["esign_flow_id"] = *req.EsignFlowID
 	}
@@ -258,6 +267,9 @@ func (s *Server) adminUpdateContract(c *gin.Context) {
 			response.InvalidParam(c, "status 非法")
 			return
 		}
+	} else if req.ScanFileKey != nil && *req.ScanFileKey != "" && ct.Status != model.ContractStatusCancelled {
+		// 未显式传 status 且这次上传了扫描件：签署版合同到手，视为已签（已作废的不动）。
+		updates["status"] = model.ContractStatusSigned
 	}
 	if len(updates) == 0 {
 		title := ""
@@ -317,6 +329,72 @@ func (s *Server) adminCancelContract(c *gin.Context) {
 		}
 	}
 	response.OK(c, contractView(ct, title))
+}
+
+// contractScanDownload 校验通过后，对私有合同扫描件下发短时 presigned GET 下载链接。
+func (s *Server) contractScanDownload(c *gin.Context, ct model.Contract) {
+	if ct.ScanFileKey == "" {
+		response.NotFound(c, "合同扫描件未上传")
+		return
+	}
+	if !s.cos.Configured() {
+		response.Fail(c, response.CodeThirdPartyError, "COS 未配置，无法生成下载链接")
+		return
+	}
+	url, expiresAt, err := s.cos.PresignedGET(ct.ScanFileKey)
+	if err != nil {
+		response.ServerError(c, "生成下载链接失败")
+		return
+	}
+	response.OK(c, gin.H{
+		"download_url": url, // 短时有效，前端拿到直接打开即下载/预览 PDF
+		"expires_at":   expiresAt,
+	})
+}
+
+// adminDownloadContractScan 管理员下载签署后合同扫描件（PDF）。
+// 路径：GET /v1/admin/contracts/:id/scan
+func (s *Server) adminDownloadContractScan(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var ct model.Contract
+	if err := s.db.First(&ct, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "合同不存在")
+			return
+		}
+		response.ServerError(c, "查询失败")
+		return
+	}
+	s.contractScanDownload(c, ct)
+}
+
+// creatorDownloadContractScan 创作者下载自己合同的签署扫描件（PDF）。
+// 路径：GET /v1/creator/contracts/:id/scan
+func (s *Server) creatorDownloadContractScan(c *gin.Context) {
+	cid := middleware.CurrentID(c)
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var ct model.Contract
+	if err := s.db.First(&ct, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "合同不存在")
+			return
+		}
+		response.ServerError(c, "查询失败")
+		return
+	}
+	if ct.CreatorID != cid {
+		response.Forbidden(c, "合同不属于当前创作者")
+		return
+	}
+	s.contractScanDownload(c, ct)
 }
 
 // adminEsignContract 腾讯电子签接入位（stub）。
