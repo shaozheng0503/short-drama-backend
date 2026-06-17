@@ -104,9 +104,10 @@ func (s *Server) adminListCreators(c *gin.Context) {
 			nickname = defaultCreatorNickname(cr.Phone)
 		}
 		list = append(list, gin.H{
-			"id":                   cr.ID,
-			"phone":                sms.MaskPhone(cr.Phone),
-			"login_phone":          sms.MaskPhone(cr.Phone),
+			"id": cr.ID,
+			// 管理端列表同详情，返回完整登录手机号，便于运营直接拨号联系；创作者自查仍脱敏。
+			"phone":                cr.Phone,
+			"login_phone":          cr.Phone,
 			"name":                 cr.Name,
 			"nickname":             nickname,
 			"avatar_url":           creatorAvatarURL(cr),
