@@ -449,13 +449,8 @@ func (s *Server) adminApproveDrama(c *gin.Context) {
 	if drama.Status == model.DramaStatusDraft || drama.Status == model.DramaStatusReviewing || drama.Status == model.DramaStatusOffline {
 		updates["status"] = model.DramaStatusAwaitingPublish
 	}
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&drama).Updates(updates).Error; err != nil {
-			return err
-		}
-		return s.signDramaContractsOnApprove(tx, drama.ID)
-	})
-	if err != nil {
+	// 审核通过只动短剧状态；合同不再在此自动置 signed —— 合同以管理员上传的签署版 PDF 为准。
+	if err := s.db.Model(&drama).Updates(updates).Error; err != nil {
 		response.ServerError(c, "审核通过失败")
 		return
 	}
@@ -465,16 +460,6 @@ func (s *Server) adminApproveDrama(c *gin.Context) {
 			"您的作品《"+drama.Title+"》已审核通过，可以发布上架。", "")
 	}
 	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
-}
-
-// signDramaContractsOnApprove 短剧审核通过时，同步将该 drama 下 pending/signing 合同置为 signed。
-func (s *Server) signDramaContractsOnApprove(tx *gorm.DB, dramaID uint64) error {
-	return tx.Model(&model.Contract{}).
-		Where("drama_id = ? AND status IN ?", dramaID, []string{
-			model.ContractStatusPending,
-			model.ContractStatusSigning,
-		}).
-		Update("status", model.ContractStatusSigned).Error
 }
 
 // adminAuditDrama —— 分批审核：按维度(content=资料内容 / video=视频内容)分别通过/驳回。
@@ -620,9 +605,7 @@ func (s *Server) recomputeDramaAuditTx(tx *gorm.DB, drama *model.Drama, reviewer
 	out := dramaAuditOutcome{Overall: overall}
 	switch overall {
 	case model.DramaAuditApproved:
-		if err := s.signDramaContractsOnApprove(tx, drama.ID); err != nil {
-			return dramaAuditOutcome{}, err
-		}
+		// 审核通过不再自动置合同 signed —— 合同以管理员上传的签署版 PDF 为准。
 		out.NotifyTitle = "作品审核通过"
 		out.NotifyContent = "您的作品《" + drama.Title + "》已审核通过，可以发布上架。"
 	case model.DramaAuditRejected:
