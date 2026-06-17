@@ -189,7 +189,15 @@ func (s *Server) adminGetCreator(c *gin.Context) {
 		response.ServerError(c, "查询失败")
 		return
 	}
-	response.OK(c, creatorFullView(cr))
+	// 管理端创作者详情展示**完整**登录手机号，便于运营在创作者迟迟不加微信时主动电话联系；
+	// 创作者自查（creatorFullView 默认）仍脱敏。本接口已走 admin 鉴权 + 操作审计。
+	view := creatorFullView(cr)
+	view["phone"] = cr.Phone
+	view["login_phone"] = cr.Phone
+	if ai, ok := view["account_info"].(gin.H); ok {
+		ai["login_phone"] = cr.Phone
+	}
+	response.OK(c, view)
 }
 
 type adminUpdateCreatorRequest struct {
