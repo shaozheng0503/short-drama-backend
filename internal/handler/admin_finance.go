@@ -619,13 +619,55 @@ type withdrawalPaidRequest struct {
 	Remark        string `json:"remark"`
 }
 
+// withdrawalApproveRequest 审核通过可选随手带上银行付款流水号：
+// 传了流水号 = 审核通过并同步打款（一步到位）；不传 = 仅通过、转 approved 等后续 mark-paid（两步）。
+type withdrawalApproveRequest struct {
+	TransactionNo string `json:"transaction_no"`
+	Remark        string `json:"remark"`
+}
+
+// markWithdrawalPaidTx 在事务内把提现置为已打款：校验冻结充足 → 扣减冻结 → 写流水号/备注/打款时间。
+// 若该单还没经过 approve（pending 直接打款、或 approve 同步打款），顺带补记审核人与审核时间。
+// 调用方需在事务内、对该 withdrawal 已加行锁后传入 w。
+func markWithdrawalPaidTx(tx *gorm.DB, w *model.Withdrawal, aid uint64, transactionNo, remark string) error {
+	var creator model.Creator
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&creator, w.CreatorID).Error; err != nil {
+		return err
+	}
+	if creator.FrozenCents < w.AmountCents {
+		return errFrozenInsufficient
+	}
+	if err := tx.Model(&model.Creator{}).Where("id = ?", w.CreatorID).
+		Update("frozen_cents", gorm.Expr("frozen_cents - ?", w.AmountCents)).Error; err != nil {
+		return err
+	}
+	now := time.Now()
+	updates := map[string]interface{}{
+		"status":         model.WithdrawalStatusPaid,
+		"transaction_no": transactionNo,
+		"paid_at":        now,
+	}
+	if remark != "" {
+		updates["remark"] = remark
+	}
+	if w.ReviewedAt == nil { // pending 直接打款时补审核轨迹
+		updates["reviewed_by"] = aid
+		updates["reviewed_at"] = now
+	}
+	return tx.Model(w).Updates(updates).Error
+}
+
 func (s *Server) adminApproveWithdrawal(c *gin.Context) {
 	id := parseUint(c.Param("id"))
 	if id == 0 {
 		response.InvalidParam(c, "id 不合法")
 		return
 	}
+	var req withdrawalApproveRequest
+	_ = c.ShouldBindJSON(&req) // body 可选：带 transaction_no = 通过并打款；不带 = 仅通过
+	transactionNo := strings.TrimSpace(req.TransactionNo)
 	aid := middleware.CurrentID(c)
+	paid := false
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var w model.Withdrawal
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&w, id).Error; err != nil {
@@ -634,15 +676,27 @@ func (s *Server) adminApproveWithdrawal(c *gin.Context) {
 		if w.Status != model.WithdrawalStatusPending {
 			return errWithdrawalStatus
 		}
+		if transactionNo != "" {
+			paid = true
+			return markWithdrawalPaidTx(tx, &w, aid, transactionNo, req.Remark)
+		}
 		now := time.Now()
-		return tx.Model(&w).Updates(map[string]interface{}{
+		updates := map[string]interface{}{
 			"status":      model.WithdrawalStatusApproved,
 			"reviewed_by": aid,
 			"reviewed_at": now,
-		}).Error
+		}
+		if strings.TrimSpace(req.Remark) != "" {
+			updates["remark"] = req.Remark
+		}
+		return tx.Model(&w).Updates(updates).Error
 	})
 	if err == nil {
-		s.notifyWithdrawal(id, "提现申请已通过", "您的提现申请（%s）已通过审核，等待打款。")
+		if paid {
+			s.notifyWithdrawal(id, "提现已打款", "您的提现（%s）已完成打款，请注意查收。")
+		} else {
+			s.notifyWithdrawal(id, "提现申请已通过", "您的提现申请（%s）已通过审核，等待打款。")
+		}
 	}
 	s.respondWithdrawalResult(c, id, err)
 }
@@ -723,34 +777,23 @@ func (s *Server) adminMarkWithdrawalPaid(c *gin.Context) {
 		response.InvalidParam(c, "transaction_no 必填")
 		return
 	}
+	transactionNo := strings.TrimSpace(req.TransactionNo)
+	if transactionNo == "" {
+		response.InvalidParam(c, "transaction_no 必填")
+		return
+	}
 
+	aid := middleware.CurrentID(c)
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var w model.Withdrawal
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&w, id).Error; err != nil {
 			return err
 		}
-		if w.Status != model.WithdrawalStatusApproved {
+		// 允许从 approved（先审后打）或 pending（审核+打款一步）直接打款，避免"通过后无处填流水号"。
+		if w.Status != model.WithdrawalStatusApproved && w.Status != model.WithdrawalStatusPending {
 			return errWithdrawalStatus
 		}
-		var creator model.Creator
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			First(&creator, w.CreatorID).Error; err != nil {
-			return err
-		}
-		if creator.FrozenCents < w.AmountCents {
-			return errFrozenInsufficient
-		}
-		if err := tx.Model(&model.Creator{}).Where("id = ?", w.CreatorID).
-			Update("frozen_cents", gorm.Expr("frozen_cents - ?", w.AmountCents)).Error; err != nil {
-			return err
-		}
-		now := time.Now()
-		return tx.Model(&w).Updates(map[string]interface{}{
-			"status":         model.WithdrawalStatusPaid,
-			"transaction_no": req.TransactionNo,
-			"remark":         req.Remark,
-			"paid_at":        now,
-		}).Error
+		return markWithdrawalPaidTx(tx, &w, aid, transactionNo, req.Remark)
 	})
 	if err == nil {
 		s.notifyWithdrawal(id, "提现已打款", "您的提现（%s）已完成打款，请注意查收。")
