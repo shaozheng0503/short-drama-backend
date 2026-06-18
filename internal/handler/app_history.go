@@ -59,7 +59,7 @@ func (s *Server) appUpsertPlayHistory(c *gin.Context) {
 		response.NotFound(c, "短剧未上架")
 		return
 	}
-	if ep.EpisodeNo > drama.FreeEpisodes {
+	if ep.EpisodeNo > s.effectiveFreeEpisodes(drama) {
 		var unlock model.EpisodeUnlock
 		if err := s.db.Where("user_id = ? AND episode_id = ?", uid, ep.ID).First(&unlock).Error; err != nil {
 			if isNotFound(err) {

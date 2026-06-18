@@ -86,7 +86,7 @@ func (s *Server) appListFavorites(c *gin.Context) {
 		return
 	}
 
-	response.OK(c, pageResp(dramaCardList(dramas), page, pageSize, total))
+	response.OK(c, pageResp(dramaCardList(dramas, s.effectiveFreeEpisodes(model.Drama{})), page, pageSize, total))
 }
 
 // appListLikes —— 「我的点赞」：当前用户点赞过的剧集（集级，每集一条，按点赞时间倒序）。

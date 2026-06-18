@@ -69,7 +69,7 @@ func newRecommendSeed() string {
 }
 
 func (s *Server) dramaCardListWithTags(list []model.Drama) []gin.H {
-	views := dramaCardList(list)
+	views := dramaCardList(list, s.effectiveFreeEpisodes(model.Drama{}))
 	ids := make([]uint64, len(list))
 	for i, d := range list {
 		ids[i] = d.ID
@@ -116,8 +116,10 @@ func (s *Server) homeFeedDramaList(dramas []model.Drama) []gin.H {
 	}
 	commentCountByEpisode := s.commentCountByEpisodeIDs(firstEpisodeIDs)
 
+	// 免费集数统一走全局配置（与播放/计费同口径），列表里每张卡用同一个值。
+	freeEp := s.effectiveFreeEpisodes(model.Drama{})
 	for _, drama := range dramas {
-		view := dramaCardView(drama)
+		view := dramaCardView(drama, freeEp)
 		if episode, ok := firstEpisodeByDrama[drama.ID]; ok {
 			view["first_episode"] = gin.H{
 				"id":               episode.ID,
@@ -280,7 +282,7 @@ func (s *Server) appDramaDetail(c *gin.Context) {
 		"cover_url":      drama.CoverURL,
 		"category":       categoryView,
 		"total_episodes": drama.TotalEpisodes,
-		"free_episodes":  drama.FreeEpisodes,
+		"free_episodes":  s.effectiveFreeEpisodes(drama),
 		"price_cents":    drama.PriceCents,
 		"language_id":    drama.LanguageID,
 		"play_count":     drama.PlayCount,
@@ -370,9 +372,10 @@ func (s *Server) appListEpisodes(c *gin.Context) {
 	}
 	commentCountByEpisode := s.commentCountByEpisodeIDs(episodeIDs)
 
+	freeEp := s.effectiveFreeEpisodes(drama)
 	views := make([]gin.H, 0, len(episodes))
 	for _, ep := range episodes {
-		views = append(views, episodeAppView(ep, drama.FreeEpisodes, unlocked[ep.ID], liked[ep.ID], commentCountByEpisode[ep.ID]))
+		views = append(views, episodeAppView(ep, freeEp, unlocked[ep.ID], liked[ep.ID], commentCountByEpisode[ep.ID]))
 	}
 	response.OK(c, gin.H{"list": views})
 }
@@ -392,13 +395,13 @@ func (s *Server) appSearch(c *gin.Context) {
 	q.Count(&total)
 	var list []model.Drama
 	q.Order("play_count desc, id desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&list)
-	response.OK(c, pageResp(dramaCardList(list), page, pageSize, total))
+	response.OK(c, pageResp(dramaCardList(list, s.effectiveFreeEpisodes(model.Drama{})), page, pageSize, total))
 }
 
-func dramaCardList(items []model.Drama) []gin.H {
+func dramaCardList(items []model.Drama, freeEpisodes int) []gin.H {
 	out := make([]gin.H, 0, len(items))
 	for _, d := range items {
-		out = append(out, dramaCardView(d))
+		out = append(out, dramaCardView(d, freeEpisodes))
 	}
 	return out
 }

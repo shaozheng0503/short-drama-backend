@@ -46,7 +46,7 @@ func (s *Server) appPlayEpisode(c *gin.Context) {
 		return
 	}
 
-	if ep.EpisodeNo > drama.FreeEpisodes {
+	if ep.EpisodeNo > s.effectiveFreeEpisodes(drama) {
 		var unlock model.EpisodeUnlock
 		err := s.db.Where("user_id = ? AND episode_id = ?", uid, ep.ID).First(&unlock).Error
 		if err != nil {
