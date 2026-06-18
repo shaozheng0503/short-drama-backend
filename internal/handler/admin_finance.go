@@ -374,7 +374,8 @@ func (s *Server) adminApproveCreatorVerification(c *gin.Context) {
 }
 
 type adminRejectCreatorVerificationRequest struct {
-	Reason string `json:"reason" binding:"required"`
+	Reason string   `json:"reason" binding:"required"`
+	Fields []string `json:"fields"` // 可选：字段级驳回标记（如 ["bank_card_no","org_legal_id_card"]），供前端高亮具体哪项被驳
 }
 
 func (s *Server) adminRejectCreatorVerification(c *gin.Context) {
@@ -397,9 +398,16 @@ func (s *Server) adminRejectCreatorVerification(c *gin.Context) {
 		response.ServerError(c, "查询失败")
 		return
 	}
+	rejectFields := make([]string, 0, len(req.Fields))
+	for _, f := range req.Fields {
+		if f = strings.TrimSpace(f); f != "" {
+			rejectFields = append(rejectFields, f)
+		}
+	}
 	if err := s.db.Model(&cr).Updates(map[string]interface{}{
 		"verify_status":        model.CreatorVerifyRejected,
 		"verify_reject_reason": strings.TrimSpace(req.Reason),
+		"verify_reject_fields": strings.Join(rejectFields, ","),
 	}).Error; err != nil {
 		response.ServerError(c, "审核驳回失败")
 		return

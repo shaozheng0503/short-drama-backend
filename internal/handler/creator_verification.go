@@ -25,24 +25,24 @@ var (
 
 type personalVerificationRequest struct {
 	Name       string `json:"name" binding:"required"`
-	IDCardNo   string `json:"id_card_no" binding:"required"`
+	IDCardNo   string `json:"id_card_no"` // 重新提交可不传：留空沿用库里已存值（首次提交必填）
 	BankName   string `json:"bank_name" binding:"required"`
 	BankBranch string `json:"bank_branch"`
-	BankCardNo string `json:"bank_card_no" binding:"required"`
-	SMSCode    string `json:"sms_code"`
+	BankCardNo string `json:"bank_card_no"` // 重新提交可不传：留空沿用库里已存值（首次提交必填）
+	SMSCode    string `json:"sms_code"`     // 已废弃于认证提交流程：短信门只在 verified 后改卡时生效，这里保留兼容旧前端
 }
 
 type enterpriseVerificationRequest struct {
 	OrgName            string `json:"org_name" binding:"required"`
 	OrgCreditCode      string `json:"org_credit_code" binding:"required"`
-	OrgLegalPerson     string `json:"org_legal_person" binding:"required"`  // 法定代表人姓名（四要素核验项）
-	OrgLegalIDCard     string `json:"org_legal_id_card" binding:"required"` // 法人注册登记证件号码（身份证号，四要素核验项）
+	OrgLegalPerson     string `json:"org_legal_person" binding:"required"` // 法定代表人姓名（四要素核验项）
+	OrgLegalIDCard     string `json:"org_legal_id_card"`                   // 法人证件号；重新提交可不传：留空沿用库里已存值（首次提交必填）
 	BusinessLicenseURL string `json:"business_license_url" binding:"required"`
 	BankLicenseURL     string `json:"bank_license_url"`
 	BankName           string `json:"bank_name" binding:"required"`
 	BankBranch         string `json:"bank_branch"`
-	BankCardNo         string `json:"bank_card_no" binding:"required"`
-	SMSCode            string `json:"sms_code"`
+	BankCardNo         string `json:"bank_card_no"` // 对公账号；重新提交可不传：留空沿用库里已存值（首次提交必填）
+	SMSCode            string `json:"sms_code"`     // 已废弃于认证提交流程，保留兼容
 }
 
 type bankCardChangeRequest struct {
@@ -63,6 +63,9 @@ func (s *Server) creatorGetVerification(c *gin.Context) {
 		"creator_type":         creator.CreatorType,
 		"verify_status":        creator.VerifyStatus,
 		"verify_reject_reason": creator.VerifyRejectReason,
+		"verify_reject_fields": splitRejectFields(creator.VerifyRejectFields),
+		"verify_method":        creator.VerifyMethod,
+		"verify_checked_at":    creator.VerifyCheckedAt,
 		"verify_submitted_at":  creator.VerifySubmittedAt,
 		"real_name_info":       creatorFullView(creator)["real_name_info"],
 		"enterprise_info":      creatorFullView(creator)["enterprise_info"],
@@ -73,57 +76,115 @@ func (s *Server) creatorUpdatePersonalVerification(c *gin.Context) {
 	cid := middleware.CurrentID(c)
 	var req personalVerificationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.InvalidParam(c, "真实姓名、身份证号、开户银行、银行卡号必填")
+		response.InvalidParam(c, "真实姓名、开户银行必填")
 		return
 	}
-	if !idCardRegex.MatchString(req.IDCardNo) {
-		response.InvalidParam(c, "id_card_no 必须是 18 位身份证号（末位可为 X）")
+	var creator model.Creator
+	if err := s.db.First(&creator, cid).Error; err != nil {
+		response.ServerError(c, "查询创作者失败")
 		return
 	}
-	if err := s.validateBankCardChange(cid, req.BankCardNo, req.SMSCode); err != nil {
-		response.InvalidParam(c, err.Error())
+	// ⑦ 状态护栏：已认证不允许整份重交（改打款卡走 /bank-card/change）。
+	if creator.VerifyStatus == model.CreatorVerifyVerified {
+		response.Conflict(c, "已通过实名认证，如需变更打款银行卡请走「修改银行卡」入口")
 		return
 	}
-	// 银行卡三要素核验（姓名+身份证号+银行卡号，已隐含实名一致）。dev provider 跳过；第三方异常降级人工审核。
-	verifyMethod, providerResult, checkedAt, blockMsg := s.runBankCard3Verify(c, req.Name, req.IDCardNo, req.BankCardNo)
-	if blockMsg != "" {
-		response.InvalidParam(c, blockMsg)
-		return
+
+	// ② 身份证号：传了才校验+更新；不传沿用库里（重新提交常见）。核验需明文，缺失时解密库里值。
+	idCard := strings.TrimSpace(req.IDCardNo)
+	encID := creator.IDCardNoEnc
+	if idCard != "" {
+		if !idCardRegex.MatchString(idCard) {
+			response.InvalidParam(c, "id_card_no 必须是 18 位身份证号（末位可为 X）")
+			return
+		}
+		enc, err := s.cryptor.Encrypt(idCard)
+		if err != nil {
+			response.ServerError(c, "身份证加密失败")
+			return
+		}
+		encID = enc
+	} else {
+		if creator.IDCardNoEnc == "" {
+			response.InvalidParam(c, "首次提交必须填写身份证号")
+			return
+		}
+		dec, err := s.cryptor.Decrypt(creator.IDCardNoEnc)
+		if err != nil {
+			response.ServerError(c, "读取身份证号失败")
+			return
+		}
+		idCard = dec
+	}
+
+	// ② 银行卡号：传了才校验+更新；不传沿用库里。① 认证提交只校验格式，不走短信门。
+	bankCard := strings.TrimSpace(req.BankCardNo)
+	encBank, bankLast4, bankMasked := creator.BankCardNoEnc, creator.BankCardLast4, creator.BankCardNoMasked
+	if bankCard != "" {
+		if err := validateBankCardFormat(bankCard, false); err != nil {
+			response.InvalidParam(c, err.Error())
+			return
+		}
+		enc, err := s.cryptor.Encrypt(bankCard)
+		if err != nil {
+			response.ServerError(c, "银行卡加密失败")
+			return
+		}
+		encBank, bankLast4, bankMasked = enc, secure.Last4(bankCard), maskBankCard(bankCard)
+	} else {
+		if creator.BankCardNoEnc == "" {
+			response.InvalidParam(c, "首次提交必须填写银行卡号")
+			return
+		}
+		dec, err := s.cryptor.Decrypt(creator.BankCardNoEnc)
+		if err != nil {
+			response.ServerError(c, "读取银行卡号失败")
+			return
+		}
+		bankCard = dec
+	}
+
+	// ⑧ 姓名/身份证/银行卡都没变且上次已三要素通过 → 复用结果，跳过重核验省调用费。
+	var verifyMethod, providerResult string
+	var checkedAt *time.Time
+	if req.Name == creator.Name && req.IDCardNo == "" && req.BankCardNo == "" && creator.VerifyMethod == "bankcard3" {
+		verifyMethod, providerResult, checkedAt = creator.VerifyMethod, creator.VerifyProviderResult, creator.VerifyCheckedAt
+	} else {
+		// 银行卡三要素核验（姓名+身份证号+银行卡号，已隐含实名一致）。dev provider 跳过；第三方异常降级人工审核。
+		var blockMsg string
+		verifyMethod, providerResult, checkedAt, blockMsg = s.runBankCard3Verify(c, req.Name, idCard, bankCard)
+		if blockMsg != "" {
+			response.InvalidParam(c, blockMsg)
+			return
+		}
 	}
 	// 个人实名走 API 核验：真实核验通过即免人工复核直接 verified；
 	// dev / 第三方异常降级（method=manual）仍走 pending 人工兜底，避免没真正核验就放行。
 	verifyStatus := personalVerifyStatusFor(verifyMethod)
-	encID, err := s.cryptor.Encrypt(req.IDCardNo)
-	if err != nil {
-		response.ServerError(c, "身份证加密失败")
-		return
-	}
-	encBank, err := s.cryptor.Encrypt(req.BankCardNo)
-	if err != nil {
-		response.ServerError(c, "银行卡加密失败")
-		return
-	}
 	updates := map[string]interface{}{
-		"creator_type":           model.CreatorTypePersonal,
-		"name":                   req.Name,
-		"id_card_no_enc":         encID,
-		"id_card_no_masked":      maskIDCard(req.IDCardNo),
-		"bank_name":              req.BankName,
-		"bank_branch":            req.BankBranch,
-		"bank_card_no_enc":       encBank,
-		"bank_card_last4":        secure.Last4(req.BankCardNo),
-		"bank_card_no_masked":    maskBankCard(req.BankCardNo),
-		"org_name":               "",
-		"org_credit_code":        "",
-		"org_legal_person":       "",
-		"business_license_url":   "",
-		"bank_license_url":       "",
-		"verify_status":          verifyStatus,
-		"verify_reject_reason":   "",
-		"verify_submitted_at":    nowTimePtr(),
-		"verify_method":          verifyMethod,
-		"verify_provider_result": providerResult,
-		"verify_checked_at":      checkedAt,
+		"creator_type":             model.CreatorTypePersonal,
+		"name":                     req.Name,
+		"id_card_no_enc":           encID,
+		"id_card_no_masked":        maskIDCard(idCard),
+		"bank_name":                req.BankName,
+		"bank_branch":              req.BankBranch,
+		"bank_card_no_enc":         encBank,
+		"bank_card_last4":          bankLast4,
+		"bank_card_no_masked":      bankMasked,
+		"org_name":                 "",
+		"org_credit_code":          "",
+		"org_legal_person":         "",
+		"org_legal_id_card_enc":    "", // ⑨ 切换为个人时一并清空企业法人证件号残留
+		"org_legal_id_card_masked": "",
+		"business_license_url":     "",
+		"bank_license_url":         "",
+		"verify_status":            verifyStatus,
+		"verify_reject_reason":     "",
+		"verify_reject_fields":     "",
+		"verify_submitted_at":      nowTimePtr(),
+		"verify_method":            verifyMethod,
+		"verify_provider_result":   providerResult,
+		"verify_checked_at":        checkedAt,
 	}
 	if err := s.db.Model(&model.Creator{}).Where("id = ?", cid).Updates(updates).Error; err != nil {
 		response.ServerError(c, "保存个人实名失败")
@@ -168,15 +229,21 @@ func (s *Server) creatorUpdateEnterpriseVerification(c *gin.Context) {
 	cid := middleware.CurrentID(c)
 	var req enterpriseVerificationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.InvalidParam(c, "企业名称、统一社会信用代码、法人姓名、法人身份证号、营业执照、开户银行、银行卡号必填")
+		response.InvalidParam(c, "企业名称、统一社会信用代码、法人姓名、营业执照、开户银行必填")
+		return
+	}
+	var creator model.Creator
+	if err := s.db.First(&creator, cid).Error; err != nil {
+		response.ServerError(c, "查询创作者失败")
+		return
+	}
+	// ⑦ 状态护栏：已认证不允许整份重交（改打款账户走 /bank-card/change）。
+	if creator.VerifyStatus == model.CreatorVerifyVerified {
+		response.Conflict(c, "已通过企业认证，如需变更对公打款账户请走「修改银行卡」入口")
 		return
 	}
 	if !creditCodeRegex.MatchString(req.OrgCreditCode) {
 		response.InvalidParam(c, "org_credit_code 必须是 18 位大写字母/数字统一社会信用代码")
-		return
-	}
-	if !idCardRegex.MatchString(req.OrgLegalIDCard) {
-		response.InvalidParam(c, "org_legal_id_card 必须是 18 位法人身份证号（末位可为 X）")
 		return
 	}
 	if len(req.BusinessLicenseURL) > 512 {
@@ -187,27 +254,76 @@ func (s *Server) creatorUpdateEnterpriseVerification(c *gin.Context) {
 		response.InvalidParam(c, "bank_license_url 过长")
 		return
 	}
-	if err := s.validateEnterpriseBankAccountChange(cid, req.BankCardNo, req.SMSCode); err != nil {
-		response.InvalidParam(c, err.Error())
-		return
+
+	// ② 法人证件号：传了才校验+更新；不传沿用库里。四要素核验需明文，缺失时解密库里值。
+	legalIDNum := strings.TrimSpace(req.OrgLegalIDCard)
+	encLegalID := creator.OrgLegalIDCardEnc
+	if legalIDNum != "" {
+		if !idCardRegex.MatchString(legalIDNum) {
+			response.InvalidParam(c, "org_legal_id_card 必须是 18 位法人身份证号（末位可为 X）")
+			return
+		}
+		enc, err := s.cryptor.Encrypt(legalIDNum)
+		if err != nil {
+			response.ServerError(c, "法人身份证加密失败")
+			return
+		}
+		encLegalID = enc
+	} else {
+		if creator.OrgLegalIDCardEnc == "" {
+			response.InvalidParam(c, "首次提交必须填写法人身份证号")
+			return
+		}
+		dec, err := s.cryptor.Decrypt(creator.OrgLegalIDCardEnc)
+		if err != nil {
+			response.ServerError(c, "读取法人身份证号失败")
+			return
+		}
+		legalIDNum = dec
 	}
-	// 企业四要素核验（企业名+统一社会信用代码+法人姓名+法人证件号）。dev 跳过；第三方异常降级人工。
-	verifyMethod, providerResult, checkedAt, blockMsg := s.runBizLicense4Verify(c, req.OrgName, req.OrgCreditCode, req.OrgLegalPerson, req.OrgLegalIDCard)
-	if blockMsg != "" {
-		response.InvalidParam(c, blockMsg)
-		return
+
+	// ② 对公账号：传了才校验+更新；不传沿用库里。① 认证提交只校验格式，不走短信门。
+	bankAccount := strings.TrimSpace(req.BankCardNo)
+	encBank, bankLast4, bankMasked := creator.BankCardNoEnc, creator.BankCardLast4, creator.BankCardNoMasked
+	if bankAccount != "" {
+		if err := validateBankCardFormat(bankAccount, true); err != nil {
+			response.InvalidParam(c, err.Error())
+			return
+		}
+		enc, err := s.cryptor.Encrypt(bankAccount)
+		if err != nil {
+			response.ServerError(c, "银行卡加密失败")
+			return
+		}
+		encBank, bankLast4, bankMasked = enc, secure.Last4(bankAccount), maskBankCard(bankAccount)
+	} else {
+		if creator.BankCardNoEnc == "" {
+			response.InvalidParam(c, "首次提交必须填写对公账号")
+			return
+		}
 	}
-	encBank, err := s.cryptor.Encrypt(req.BankCardNo)
-	if err != nil {
-		response.ServerError(c, "银行卡加密失败")
-		return
+
+	// ⑧ 工商四项（企业名/信用代码/法人姓名/法人证件号）都没变且上次已 biz_4e 通过
+	// → 复用核验结果，跳过重核验，省第三方调用费（也少一次失败/降级机会）。
+	var verifyMethod, providerResult string
+	var checkedAt *time.Time
+	orgUnchanged := req.OrgLegalIDCard == "" &&
+		req.OrgName == creator.OrgName &&
+		req.OrgCreditCode == creator.OrgCreditCode &&
+		req.OrgLegalPerson == creator.OrgLegalPerson
+	if orgUnchanged && creator.VerifyMethod == "biz_4e" {
+		verifyMethod, providerResult, checkedAt = creator.VerifyMethod, creator.VerifyProviderResult, creator.VerifyCheckedAt
+	} else {
+		// 企业四要素核验（企业名+统一社会信用代码+法人姓名+法人证件号）。dev 跳过；第三方异常降级人工。
+		var blockMsg string
+		verifyMethod, providerResult, checkedAt, blockMsg = s.runBizLicense4Verify(c, req.OrgName, req.OrgCreditCode, req.OrgLegalPerson, legalIDNum)
+		if blockMsg != "" {
+			response.InvalidParam(c, blockMsg)
+			return
+		}
 	}
-	encLegalID, err := s.cryptor.Encrypt(req.OrgLegalIDCard)
-	if err != nil {
-		response.ServerError(c, "法人身份证加密失败")
-		return
-	}
-	// 企业认证保留人工复核：对公银行卡靠 Admin 人工核对，四要素核验通过仍进 pending。
+
+	// 企业认证保留人工复核：对公账户靠 Admin 人工核对，四要素核验通过仍进 pending。
 	updates := map[string]interface{}{
 		"creator_type":             model.CreatorTypeOrganization,
 		"name":                     "",
@@ -217,16 +333,17 @@ func (s *Server) creatorUpdateEnterpriseVerification(c *gin.Context) {
 		"org_credit_code":          req.OrgCreditCode,
 		"org_legal_person":         req.OrgLegalPerson,
 		"org_legal_id_card_enc":    encLegalID,
-		"org_legal_id_card_masked": maskIDCard(req.OrgLegalIDCard),
+		"org_legal_id_card_masked": maskIDCard(legalIDNum),
 		"business_license_url":     req.BusinessLicenseURL,
 		"bank_license_url":         req.BankLicenseURL,
 		"bank_name":                req.BankName,
 		"bank_branch":              req.BankBranch,
 		"bank_card_no_enc":         encBank,
-		"bank_card_last4":          secure.Last4(req.BankCardNo),
-		"bank_card_no_masked":      maskBankCard(req.BankCardNo),
+		"bank_card_last4":          bankLast4,
+		"bank_card_no_masked":      bankMasked,
 		"verify_status":            model.CreatorVerifyPending,
 		"verify_reject_reason":     "",
+		"verify_reject_fields":     "",
 		"verify_submitted_at":      nowTimePtr(),
 		"verify_method":            verifyMethod,
 		"verify_provider_result":   providerResult,
@@ -382,23 +499,29 @@ func (s *Server) validateBankCardChange(creatorID uint64, bankCardNo, smsCode st
 	return nil
 }
 
-func (s *Server) validateEnterpriseBankAccountChange(creatorID uint64, accountNo, smsCode string) error {
-	// 对公账户不是个人银行卡号，各银行长度差异较大，通常 9~30 位数字。
-	if !enterpriseBankAccountRegex.MatchString(accountNo) {
-		return errInvalidPublicAccount
-	}
-	var creator model.Creator
-	if err := s.db.First(&creator, creatorID).Error; err != nil {
-		return errInvalidPublicAccount
-	}
-	// 企业对公账号仍是敏感打款信息：已绑定后变更不同账号，沿用短信验证保护。
-	if creator.BankCardNoEnc != "" && creator.BankCardNoMasked != "" && maskBankCard(accountNo) != creator.BankCardNoMasked {
-		if smsCode == "" {
-			return errSMSRequiredForBankCard
+// validateBankCardFormat 仅校验银行卡号 / 对公账号格式（认证提交期专用，不走短信门）。
+// ① 短信门只在「已认证后变更打款账户」(creatorChangeBankCard) 生效，避免驳回重提被误拦。
+// enterprise=true 走对公账号规则（9~30 位数字，各行长度差异大），否则走个人银行卡规则。
+func validateBankCardFormat(accountNo string, enterprise bool) error {
+	if enterprise {
+		if !enterpriseBankAccountRegex.MatchString(accountNo) {
+			return errInvalidPublicAccount
 		}
-		if err := s.sms.Verify(creator.Phone, model.SMSSceneBankCardChange, smsCode); err != nil {
-			return errSMSInvalidForBankCard
-		}
+		return nil
+	}
+	if !bankCardRegex.MatchString(accountNo) {
+		return errInvalidBankCard
 	}
 	return nil
+}
+
+// splitRejectFields 把逗号分隔的字段级驳回标记拆成切片；空值返回空切片（非 nil，前端拿到 []）。
+func splitRejectFields(s string) []string {
+	out := []string{}
+	for _, f := range strings.Split(s, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }

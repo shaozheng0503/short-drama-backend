@@ -218,28 +218,31 @@ func (Admin) TableName() string { return "admins" }
 // Creator —— 创作者表（MVP 数据库设计 3.4）
 // IDCardNoEnc / BankCardNoEnc 存 AES-GCM 密文（base64），不入接口返回。
 type Creator struct {
-	ID                 uint64     `gorm:"primaryKey;column:id" json:"id"`
-	Phone              string     `gorm:"column:phone;size:32;uniqueIndex" json:"phone"`
-	Name               string     `gorm:"column:name;size:64" json:"name"`
-	Nickname           string     `gorm:"column:nickname;size:64" json:"nickname"`
-	AvatarURL          string     `gorm:"column:avatar_url;size:512" json:"avatar_url"`
-	AccountUID         string     `gorm:"column:account_uid;size:64;index" json:"account_uid"`
-	CreatorType        string     `gorm:"column:creator_type;size:20;default:personal" json:"creator_type"` // personal / organization
-	OrgName            string     `gorm:"column:org_name;size:128" json:"org_name"`                         // 机构名称（机构类型时填）
-	OrgCreditCode      string     `gorm:"column:org_credit_code;size:32" json:"org_credit_code"`            // 统一社会信用代码
-	BusinessLicenseURL string     `gorm:"column:business_license_url;size:512" json:"business_license_url"` // 营业执照图片
-	IDCardNoEnc        string     `gorm:"column:id_card_no_enc;size:512" json:"-"`
-	IDCardNoMasked     string     `gorm:"column:id_card_no_masked;size:32" json:"id_card_no_masked"`
-	BankName           string     `gorm:"column:bank_name;size:64" json:"bank_name"`
-	BankBranch         string     `gorm:"column:bank_branch;size:128" json:"bank_branch"`           // 开户支行（避免跨行转账受限）
-	BankLicenseURL     string     `gorm:"column:bank_license_url;size:512" json:"bank_license_url"` // 银行开户许可证（机构认证）
-	BankCardNoEnc      string     `gorm:"column:bank_card_no_enc;size:512" json:"-"`
-	BankCardLast4      string     `gorm:"column:bank_card_last4;size:8" json:"-"`
-	BankCardNoMasked   string     `gorm:"column:bank_card_no_masked;size:32" json:"bank_card_no_masked"`
-	IdentityMID        string     `gorm:"column:identity_mid;size:64" json:"identity_mid"`   // 创作者身份信息 MID
-	IdentityRole       string     `gorm:"column:identity_role;size:32" json:"identity_role"` // 版权人 / 制作方等
-	VerifyStatus       string     `gorm:"column:verify_status;size:20;default:pending" json:"verify_status"`
-	VerifyRejectReason string     `gorm:"column:verify_reject_reason;size:255" json:"verify_reject_reason"`
+	ID                 uint64 `gorm:"primaryKey;column:id" json:"id"`
+	Phone              string `gorm:"column:phone;size:32;uniqueIndex" json:"phone"`
+	Name               string `gorm:"column:name;size:64" json:"name"`
+	Nickname           string `gorm:"column:nickname;size:64" json:"nickname"`
+	AvatarURL          string `gorm:"column:avatar_url;size:512" json:"avatar_url"`
+	AccountUID         string `gorm:"column:account_uid;size:64;index" json:"account_uid"`
+	CreatorType        string `gorm:"column:creator_type;size:20;default:personal" json:"creator_type"` // personal / organization
+	OrgName            string `gorm:"column:org_name;size:128" json:"org_name"`                         // 机构名称（机构类型时填）
+	OrgCreditCode      string `gorm:"column:org_credit_code;size:32" json:"org_credit_code"`            // 统一社会信用代码
+	BusinessLicenseURL string `gorm:"column:business_license_url;size:512" json:"business_license_url"` // 营业执照图片
+	IDCardNoEnc        string `gorm:"column:id_card_no_enc;size:512" json:"-"`
+	IDCardNoMasked     string `gorm:"column:id_card_no_masked;size:32" json:"id_card_no_masked"`
+	BankName           string `gorm:"column:bank_name;size:64" json:"bank_name"`
+	BankBranch         string `gorm:"column:bank_branch;size:128" json:"bank_branch"`           // 开户支行（避免跨行转账受限）
+	BankLicenseURL     string `gorm:"column:bank_license_url;size:512" json:"bank_license_url"` // 银行开户许可证（机构认证）
+	BankCardNoEnc      string `gorm:"column:bank_card_no_enc;size:512" json:"-"`
+	BankCardLast4      string `gorm:"column:bank_card_last4;size:8" json:"-"`
+	BankCardNoMasked   string `gorm:"column:bank_card_no_masked;size:32" json:"bank_card_no_masked"`
+	IdentityMID        string `gorm:"column:identity_mid;size:64" json:"identity_mid"`   // 创作者身份信息 MID
+	IdentityRole       string `gorm:"column:identity_role;size:32" json:"identity_role"` // 版权人 / 制作方等
+	VerifyStatus       string `gorm:"column:verify_status;size:20;default:pending" json:"verify_status"`
+	VerifyRejectReason string `gorm:"column:verify_reject_reason;size:255" json:"verify_reject_reason"`
+	// VerifyRejectFields 字段级驳回标记：逗号分隔的字段 key（如 "bank_card_no,org_legal_id_card"），
+	// 供前端高亮"具体哪项被驳"。审核驳回时由 Admin 选填；创作者重新提交时清空。
+	VerifyRejectFields string     `gorm:"column:verify_reject_fields;size:255" json:"verify_reject_fields"`
 	VerifySubmittedAt  *time.Time `gorm:"column:verify_submitted_at;index" json:"verify_submitted_at"`
 	// 第三方核验存档（个人=银行卡三要素 bankcard3 / 企业=营业执照四要素 biz_4e / 降级或未核验 manual）
 	OrgLegalPerson       string     `gorm:"column:org_legal_person;size:64" json:"org_legal_person"`                 // 企业法定代表人姓名（用户填，四要素核验项）
