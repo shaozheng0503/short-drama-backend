@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"strconv"
 	"time"
 
 	"ai-drama-platform/internal/config"
@@ -70,6 +71,22 @@ func New(db *gorm.DB, cfg config.Config, payments *payment.Registry) *Service {
 	return &Service{db: db, cfg: cfg, payments: payments}
 }
 
+// effectiveFreeEpisodes 返回当前生效的免费集数，与 handler 层同名口径完全一致
+// （2026-06 会议定）：免费集数统一读全局配置 pricing.free_episodes、改一次即时对所有剧生效；
+// dramas.free_episodes 列保留但暂不参与计费判定。将来做单剧定制时在此叠加 drama 覆盖。
+// 传入 db 以便在事务内（quoteBatch）用 tx 读，事务外用 s.db。
+func (s *Service) effectiveFreeEpisodes(db *gorm.DB, _ model.Drama) int {
+	var gc model.GlobalConfig
+	if err := db.First(&gc, "key = ?", model.ConfigKeyFreeEpisodes).Error; err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(gc.Value)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // CreateOrder 单集下单（仅当次支付，不保留 / 不复用待支付订单）：
 //  1. 用户对同一 episode 已支付 → 返回已解锁。
 //  2. 关闭该用户该集所有旧的待支付订单（不复用），再创建一个全新的当次订单。
@@ -110,7 +127,7 @@ func (s *Service) CreateOrder(userID uint64, dramaID, episodeID uint64, productI
 	if drama.Status != model.DramaStatusPublished {
 		return nil, ErrDramaNotAvailable
 	}
-	if ep.EpisodeNo <= drama.FreeEpisodes {
+	if ep.EpisodeNo <= s.effectiveFreeEpisodes(s.db, drama) {
 		return nil, ErrEpisodeFree
 	}
 
@@ -265,7 +282,7 @@ func (s *Service) QuoteSingle(userID, dramaID, episodeID uint64, productID *uint
 	}
 
 	q := &SingleQuote{DramaID: dramaID, EpisodeID: episodeID}
-	if ep.EpisodeNo <= drama.FreeEpisodes {
+	if ep.EpisodeNo <= s.effectiveFreeEpisodes(s.db, drama) {
 		q.IsFree = true
 		return q, nil
 	}
@@ -366,9 +383,10 @@ func (s *Service) quoteBatch(tx *gorm.DB, userID, dramaID uint64, episodeIDs []u
 	for _, id := range unlockedIDs {
 		unlockedSet[id] = true
 	}
+	freeEp := s.effectiveFreeEpisodes(tx, drama)
 	freeSet := map[uint64]bool{}
 	for _, ep := range eps {
-		if ep.EpisodeNo <= drama.FreeEpisodes {
+		if ep.EpisodeNo <= freeEp {
 			freeSet[ep.ID] = true
 		}
 	}

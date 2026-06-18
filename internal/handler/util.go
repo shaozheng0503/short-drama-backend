@@ -78,14 +78,16 @@ func pageResp(list interface{}, page, pageSize int, total int64) gin.H {
 	}
 }
 
-func dramaCardView(d model.Drama) gin.H {
+// freeEpisodes 由调用方传入"当前生效"的免费集数（统一走全局配置，见 effectiveFreeEpisodes），
+// 不再直接读 d.FreeEpisodes，避免卡片展示与播放/计费判定口径不一致。
+func dramaCardView(d model.Drama, freeEpisodes int) gin.H {
 	return gin.H{
 		"id":             d.ID,
 		"title":          d.Title,
 		"description":    d.Description,
 		"cover_url":      d.CoverURL,
 		"total_episodes": d.TotalEpisodes,
-		"free_episodes":  d.FreeEpisodes,
+		"free_episodes":  freeEpisodes,
 		"play_count":     d.PlayCount,
 		"like_count":     d.LikeCount,
 		"share_count":    d.ShareCount,
@@ -115,8 +117,8 @@ func dramaAdminView(d model.Drama, categoryName, creatorName string) gin.H {
 		"video_audit_status":   d.VideoAuditStatus,
 		"video_audit_reason":   d.VideoAuditReason,
 		"audit_submitted_at":   d.AuditSubmittedAt,
-		"reviewer_id":        d.ReviewerID,
-		"reviewed_at":        d.ReviewedAt,
+		"reviewer_id":          d.ReviewerID,
+		"reviewed_at":          d.ReviewedAt,
 		// 申报级扩展字段
 		"is_ai":                 d.IsAI,
 		"aigc_tools":            d.AIGCTools,

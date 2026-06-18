@@ -35,6 +35,15 @@ func (s *Server) pricingDefaults() (int, int64) {
 	return int(free), price
 }
 
+// effectiveFreeEpisodes 返回某部剧"当前生效"的免费集数（播放/计费判定的唯一口径）。
+// 现行口径（2026-06 会议定）：统一读全局配置、改一次即时对所有剧（含已上架）生效；
+// dramas.free_episodes 列保留但暂不参与判定（建剧时仍会写入，作为留存/未来用）。
+// 将来要做单剧定制：drama 列有值则覆盖、为空跟随全局，只改这一处即可。
+func (s *Server) effectiveFreeEpisodes(_ model.Drama) int {
+	free, _ := s.pricingDefaults()
+	return free
+}
+
 // adminGetPricingConfig —— GET /v1/admin/config/pricing
 func (s *Server) adminGetPricingConfig(c *gin.Context) {
 	free, price := s.pricingDefaults()
@@ -174,8 +183,8 @@ func (s *Server) adminGetIncomeShareConfig(c *gin.Context) {
 }
 
 type incomeShareConfigRequest struct {
-	DefaultBP *int            `json:"default_bp"`
-	Channels  map[string]int  `json:"channels"` // 渠道名 -> 基点
+	DefaultBP *int           `json:"default_bp"`
+	Channels  map[string]int `json:"channels"` // 渠道名 -> 基点
 }
 
 // adminUpdateIncomeShareConfig —— PUT /v1/admin/config/income-share（仅超管）
