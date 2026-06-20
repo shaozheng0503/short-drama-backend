@@ -111,8 +111,13 @@ type aigcToolItem struct {
 	Builtin bool   `json:"builtin"`
 }
 
-// 默认 AIGC 工具列表（无配置时回落）。LaguClaw 为公司自研智能体，置顶 + 标记 builtin；
-// logo 留空由超管在「中台 → AIGC 工具配置」里上传后填入，保证与上线版本一致（2026-06-18 会议待办）。
+// builtinAIGCTools 平台自研智能体，始终保证出现在工具列表里（公司要求 LaguClaw 必须展示，
+// 即便历史配置里没有它）。logo 留空，由超管在「中台 → AIGC 工具配置」PUT 一次填入上线版 logo 后即以配置为准。
+var builtinAIGCTools = []aigcToolItem{
+	{Name: "LaguClaw", Builtin: true},
+}
+
+// 默认 AIGC 工具列表（无配置时回落）。
 var defaultAIGCToolItems = []aigcToolItem{
 	{Name: "LaguClaw", Builtin: true},
 	{Name: "即梦"},
@@ -124,10 +129,14 @@ var defaultAIGCToolItems = []aigcToolItem{
 	{Name: "其他"},
 }
 
-// aigcToolItems 读取已配置的 AIGC 工具列表（含 logo）。
+// aigcToolItems 读取已配置的 AIGC 工具列表（含 logo），并保证自研工具(LaguClaw)始终在列、置顶。
 // 兼容两种存储格式：新版对象数组 [{name,logo_url,builtin}]；旧版纯字符串数组 ["即梦",...]。
-// 未配置 / 解析失败时回落默认值（含自研 LaguClaw）。
+// 未配置 / 解析失败时回落默认值。
 func (s *Server) aigcToolItems() []aigcToolItem {
+	return ensureBuiltinTools(s.aigcToolItemsRaw())
+}
+
+func (s *Server) aigcToolItemsRaw() []aigcToolItem {
 	var gc model.GlobalConfig
 	if err := s.db.First(&gc, "key = ?", model.ConfigKeyAIGCTools).Error; err != nil {
 		return defaultAIGCToolItems
@@ -148,6 +157,25 @@ func (s *Server) aigcToolItems() []aigcToolItem {
 		return out
 	}
 	return defaultAIGCToolItems
+}
+
+// ensureBuiltinTools 把缺失的自研工具置顶补进列表（按名称大小写不敏感判重）。
+// 若配置里已有同名项（比如超管已为 LaguClaw 配了 logo），保留配置项、不重复注入。
+func ensureBuiltinTools(items []aigcToolItem) []aigcToolItem {
+	for i := len(builtinAIGCTools) - 1; i >= 0; i-- {
+		b := builtinAIGCTools[i]
+		found := false
+		for _, it := range items {
+			if strings.EqualFold(strings.TrimSpace(it.Name), b.Name) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			items = append([]aigcToolItem{b}, items...)
+		}
+	}
+	return items
 }
 
 // getAIGCTools —— GET /v1/common/aigc-tools（App / 创作者中台拉取可选工具）。
@@ -335,7 +363,9 @@ func (s *Server) adminUpdateAIGCTools(c *gin.Context) {
 		response.ServerError(c, "保存配置失败")
 		return
 	}
-	response.OK(c, gin.H{"tools": toolNames(cleaned), "items": cleaned})
+	// 响应与 GET 口径一致：补上始终展示的自研工具。
+	effective := ensureBuiltinTools(cleaned)
+	response.OK(c, gin.H{"tools": toolNames(effective), "items": effective})
 }
 
 // === 搜索框推荐 / 热搜词 ===
