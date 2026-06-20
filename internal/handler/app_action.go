@@ -54,14 +54,18 @@ func (s *Server) appShareDrama(c *gin.Context) {
 	_ = c.ShouldBindJSON(&struct {
 		Channel string `json:"channel"`
 	}{})
-	if err := s.db.Model(&model.Drama{}).Where("id = ?", id).
-		UpdateColumn("share_count", gorm.Expr("share_count + ?", 1)).Error; err != nil {
-		response.ServerError(c, "记录分享失败")
-		return
+	// 去重：同一用户对同一剧在窗口内只计一次，防刷高 share_count + 写放大。
+	counted := s.allowShareCountByUser(middleware.CurrentID(c), id)
+	if counted {
+		if err := s.db.Model(&model.Drama{}).Where("id = ?", id).
+			UpdateColumn("share_count", gorm.Expr("share_count + ?", 1)).Error; err != nil {
+			response.ServerError(c, "记录分享失败")
+			return
+		}
 	}
 	var refreshed model.Drama
 	s.db.Select("share_count").First(&refreshed, id)
-	response.OK(c, gin.H{"shared": true, "share_count": refreshed.ShareCount})
+	response.OK(c, gin.H{"shared": true, "share_counted": counted, "share_count": refreshed.ShareCount})
 }
 
 func (s *Server) appListFavorites(c *gin.Context) {
