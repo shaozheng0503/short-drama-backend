@@ -103,25 +103,66 @@ func (s *Server) setConfigTx(tx *gorm.DB, key, value string) error {
 
 // === AIGC 创作工具列表配置 ===
 
-// 默认 AIGC 工具列表（无配置时回落）。
-var defaultAIGCTools = []string{"即梦", "小云雀", "可灵", "海螺", "Sora", "Runway", "其他"}
+// aigcToolItem —— 单个可选 AIGC 创作工具：名称 + logo + 是否平台内置（自研）。
+// Builtin 用于标记公司自研工具（如 LaguClaw），前端可加「自研」角标、置顶展示。
+type aigcToolItem struct {
+	Name    string `json:"name"`
+	LogoURL string `json:"logo_url"`
+	Builtin bool   `json:"builtin"`
+}
 
-// aigcTools 读取已配置的 AIGC 工具列表；未配置 / 解析失败时回落默认值。
-func (s *Server) aigcTools() []string {
+// 默认 AIGC 工具列表（无配置时回落）。LaguClaw 为公司自研智能体，置顶 + 标记 builtin；
+// logo 留空由超管在「中台 → AIGC 工具配置」里上传后填入，保证与上线版本一致（2026-06-18 会议待办）。
+var defaultAIGCToolItems = []aigcToolItem{
+	{Name: "LaguClaw", Builtin: true},
+	{Name: "即梦"},
+	{Name: "小云雀"},
+	{Name: "可灵"},
+	{Name: "海螺"},
+	{Name: "Sora"},
+	{Name: "Runway"},
+	{Name: "其他"},
+}
+
+// aigcToolItems 读取已配置的 AIGC 工具列表（含 logo）。
+// 兼容两种存储格式：新版对象数组 [{name,logo_url,builtin}]；旧版纯字符串数组 ["即梦",...]。
+// 未配置 / 解析失败时回落默认值（含自研 LaguClaw）。
+func (s *Server) aigcToolItems() []aigcToolItem {
 	var gc model.GlobalConfig
 	if err := s.db.First(&gc, "key = ?", model.ConfigKeyAIGCTools).Error; err != nil {
-		return defaultAIGCTools
+		return defaultAIGCToolItems
 	}
-	var tools []string
-	if err := json.Unmarshal([]byte(gc.Value), &tools); err != nil || len(tools) == 0 {
-		return defaultAIGCTools
+	raw := strings.TrimSpace(gc.Value)
+	// 新版：对象数组
+	var items []aigcToolItem
+	if err := json.Unmarshal([]byte(raw), &items); err == nil && len(items) > 0 && items[0].Name != "" {
+		return items
 	}
-	return tools
+	// 旧版：纯字符串数组，平滑兼容历史配置
+	var names []string
+	if err := json.Unmarshal([]byte(raw), &names); err == nil && len(names) > 0 {
+		out := make([]aigcToolItem, 0, len(names))
+		for _, n := range names {
+			out = append(out, aigcToolItem{Name: n})
+		}
+		return out
+	}
+	return defaultAIGCToolItems
 }
 
 // getAIGCTools —— GET /v1/common/aigc-tools（App / 创作者中台拉取可选工具）。
+// 同时返回 tools（名称数组，老客户端）与 items（含 logo / builtin，新客户端渲染图标）。
 func (s *Server) getAIGCTools(c *gin.Context) {
-	response.OK(c, gin.H{"tools": s.aigcTools()})
+	items := s.aigcToolItems()
+	response.OK(c, gin.H{"tools": toolNames(items), "items": items})
+}
+
+func toolNames(items []aigcToolItem) []string {
+	names := make([]string, 0, len(items))
+	for _, it := range items {
+		names = append(names, it.Name)
+	}
+	return names
 }
 
 // === 渠道收益分成比例配置 ===
@@ -231,46 +272,70 @@ func (s *Server) adminUpdateIncomeShareConfig(c *gin.Context) {
 
 // adminGetAIGCTools —— GET /v1/admin/config/aigc-tools
 func (s *Server) adminGetAIGCTools(c *gin.Context) {
-	response.OK(c, gin.H{"tools": s.aigcTools()})
+	items := s.aigcToolItems()
+	response.OK(c, gin.H{"tools": toolNames(items), "items": items})
 }
 
+// aigcToolsConfigRequest 兼容两种入参：
+//   - items：对象数组 [{name, logo_url, builtin}]，可配 logo / 自研标记（新版，推荐）。
+//   - tools：纯名称数组 ["即梦",...]（老版，无 logo）。
+//
+// 两者都传时以 items 为准；都不传 / 清洗后为空则报错。
 type aigcToolsConfigRequest struct {
-	Tools []string `json:"tools" binding:"required"`
+	Items []aigcToolItem `json:"items"`
+	Tools []string       `json:"tools"`
 }
 
 // adminUpdateAIGCTools —— PUT /v1/admin/config/aigc-tools（仅超管）
 func (s *Server) adminUpdateAIGCTools(c *gin.Context) {
 	var req aigcToolsConfigRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.InvalidParam(c, "tools 必填且为字符串数组")
+		response.InvalidParam(c, "请求体不合法：需 items 对象数组或 tools 字符串数组")
 		return
 	}
-	cleaned := make([]string, 0, len(req.Tools))
-	for _, t := range req.Tools {
-		t = strings.TrimSpace(t)
-		if t == "" {
+	// 统一归一到对象数组：优先 items，其次把 tools 名称数组升格成对象。
+	raw := req.Items
+	if len(raw) == 0 {
+		for _, n := range req.Tools {
+			raw = append(raw, aigcToolItem{Name: n})
+		}
+	}
+	cleaned := make([]aigcToolItem, 0, len(raw))
+	seen := map[string]bool{}
+	for _, it := range raw {
+		name := strings.TrimSpace(it.Name)
+		if name == "" {
 			continue
 		}
-		if len([]rune(t)) > 64 {
+		if len([]rune(name)) > 64 {
 			response.InvalidParam(c, "单个工具名不能超过 64 个字")
 			return
 		}
-		cleaned = append(cleaned, t)
+		logo := strings.TrimSpace(it.LogoURL)
+		if len(logo) > 512 {
+			response.InvalidParam(c, "logo_url 过长（最多 512 字符）")
+			return
+		}
+		if seen[name] { // 同名去重，保留首次出现
+			continue
+		}
+		seen[name] = true
+		cleaned = append(cleaned, aigcToolItem{Name: name, LogoURL: logo, Builtin: it.Builtin})
 	}
 	if len(cleaned) == 0 {
 		response.InvalidParam(c, "至少配置一个工具")
 		return
 	}
-	raw, err := json.Marshal(cleaned)
+	encoded, err := json.Marshal(cleaned)
 	if err != nil {
 		response.ServerError(c, "序列化失败")
 		return
 	}
-	if err := s.setConfigTx(s.db, model.ConfigKeyAIGCTools, string(raw)); err != nil {
+	if err := s.setConfigTx(s.db, model.ConfigKeyAIGCTools, string(encoded)); err != nil {
 		response.ServerError(c, "保存配置失败")
 		return
 	}
-	response.OK(c, gin.H{"tools": cleaned})
+	response.OK(c, gin.H{"tools": toolNames(cleaned), "items": cleaned})
 }
 
 // === 搜索框推荐 / 热搜词 ===

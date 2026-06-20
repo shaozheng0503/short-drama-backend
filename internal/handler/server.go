@@ -167,6 +167,8 @@ func (s *Server) Router() *gin.Engine {
 	app.GET("/search", s.appSearch)
 	app.GET("/search/hot", s.getHotSearch)
 	app.GET("/products", s.appListProducts)
+	// 不登录刷短剧：播放地址匿名可取（免费集直接给链；付费集返回 need_login）。
+	app.GET("/episodes/:id/play", s.appPlayEpisode)
 
 	appAuth := app.Group("")
 	appAuth.Use(middleware.RequireApp(s.cfg))
@@ -179,7 +181,6 @@ func (s *Server) Router() *gin.Engine {
 	appAuth.GET("/messages", s.appListMessages)
 	appAuth.POST("/messages/read-all", s.appMarkAllMessagesRead)
 	appAuth.POST("/messages/:id/read", s.appMarkMessageRead)
-	appAuth.GET("/episodes/:id/play", s.appPlayEpisode)
 	appAuth.POST("/play-history", s.appUpsertPlayHistory)
 	appAuth.GET("/play-history", s.appListPlayHistory)
 	// 点赞=单集级（对齐红果），收藏=整剧级
@@ -223,30 +224,33 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.GET("/dashboard", s.creatorDashboard)
 	creatorAuth.GET("/categories", s.creatorListCategories)
 	creatorAuth.GET("/config/pricing", s.creatorGetPricingConfig)
-	creatorAuth.GET("/config/cover-specs", s.creatorGetCoverSpecs) // 漫剧封面上传规格（比例/分辨率/大小/格式）
+	creatorAuth.GET("/config/cover-specs", s.creatorGetCoverSpecs)                       // 漫剧封面上传规格（比例/分辨率/大小/格式）
+	creatorAuth.GET("/cost-config/template.xlsx", s.creatorDownloadCostConfigTemplate) // 成本配置清单模板下载
 	creatorAuth.GET("/dramas", s.creatorListDramas)
-	creatorAuth.POST("/dramas", s.creatorCreateDrama)
+	// verifiedCreator: 未实名认证通过的创作者不能上传 / 建剧 / 提交审核（「没认证通过不能上传还有相关操作」）。
+	verified := s.requireVerifiedCreator()
+	creatorAuth.POST("/dramas", verified, s.creatorCreateDrama)
 	creatorAuth.GET("/dramas/:id", s.creatorGetDrama)
-	creatorAuth.PUT("/dramas/:id", s.creatorUpdateDrama)
+	creatorAuth.PUT("/dramas/:id", verified, s.creatorUpdateDrama)
 	creatorAuth.DELETE("/dramas/:id", s.creatorDeleteDrama)
-	creatorAuth.POST("/dramas/:id/submit", s.creatorSubmitDrama)
-	creatorAuth.PUT("/dramas/:id/publish-config", s.creatorUpdateDramaPublishConfig)
-	creatorAuth.POST("/dramas/:id/publish", s.creatorPublishDrama)
+	creatorAuth.POST("/dramas/:id/submit", verified, s.creatorSubmitDrama)
+	creatorAuth.PUT("/dramas/:id/publish-config", verified, s.creatorUpdateDramaPublishConfig)
+	creatorAuth.POST("/dramas/:id/publish", verified, s.creatorPublishDrama)
 	creatorAuth.POST("/dramas/:id/offline", s.creatorOfflineDrama)
 	creatorAuth.GET("/dramas/:id/stats", s.creatorDramaStats)
 
 	creatorAuth.GET("/dramas/:id/episodes", s.creatorListEpisodes)
-	creatorAuth.POST("/dramas/:id/episodes", s.creatorCreateEpisode)
-	creatorAuth.POST("/dramas/:id/episodes/batch", s.creatorBatchCreateEpisodes)
-	creatorAuth.PUT("/dramas/:id/episodes/reorder", s.creatorReorderEpisodes)
-	creatorAuth.PUT("/episodes/:id", s.creatorUpdateEpisode)
+	creatorAuth.POST("/dramas/:id/episodes", verified, s.creatorCreateEpisode)
+	creatorAuth.POST("/dramas/:id/episodes/batch", verified, s.creatorBatchCreateEpisodes)
+	creatorAuth.PUT("/dramas/:id/episodes/reorder", verified, s.creatorReorderEpisodes)
+	creatorAuth.PUT("/episodes/:id", verified, s.creatorUpdateEpisode)
 	creatorAuth.DELETE("/episodes/:id", s.creatorDeleteEpisode)
-	creatorAuth.POST("/episodes/:id/refresh-vod", s.creatorRefreshEpisodeVOD)
-	creatorAuth.POST("/episodes/:id/retry", s.creatorRetryEpisode)
+	creatorAuth.POST("/episodes/:id/refresh-vod", verified, s.creatorRefreshEpisodeVOD)
+	creatorAuth.POST("/episodes/:id/retry", verified, s.creatorRetryEpisode)
 	creatorAuth.GET("/episodes/:id/preview", s.creatorPreviewEpisode)
 
-	creatorAuth.POST("/uploads/vod-sign", s.creatorVODUploadSign)
-	creatorAuth.POST("/uploads/image-sign", s.creatorImageUploadSign)
+	creatorAuth.POST("/uploads/vod-sign", verified, s.creatorVODUploadSign)
+	creatorAuth.POST("/uploads/image-sign", verified, s.creatorImageUploadSign)
 
 	creatorAuth.GET("/income", s.creatorIncome)
 	creatorAuth.GET("/settlement/summary", s.creatorSettlementSummary)
@@ -337,6 +341,8 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/withdrawals/:id/reject", s.requireAdminRole(model.AdminRoleFinance), s.adminRejectWithdrawal)
 	adminAuth.POST("/withdrawals/:id/mark-paid", s.requireAdminRole(model.AdminRoleFinance), s.adminMarkWithdrawalPaid)
 
+	// App 付费收入（平台自有支付分账）：按短剧聚合的毛收入/净收入，订单中心+收益汇总（财务角色）
+	adminAuth.GET("/finance/app-income", s.requireAdminRole(model.AdminRoleFinance), s.adminListAppIncome)
 	// 财务 Excel 导入每日收入（财务角色）
 	adminAuth.GET("/finance/income/template.xlsx", s.requireAdminRole(model.AdminRoleFinance), s.adminDownloadIncomeTemplate)
 	adminAuth.GET("/finance/income/imports", s.requireAdminRole(model.AdminRoleFinance), s.adminListIncomeImports)
