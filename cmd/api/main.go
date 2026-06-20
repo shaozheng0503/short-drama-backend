@@ -72,7 +72,15 @@ func main() {
 		log.Fatalf("listen on %s: %v", cfg.Addr, err)
 	}
 
-	httpServer := &http.Server{Handler: server.Router()}
+	// HTTP 超时：默认无超时会被慢速客户端(slowloris)拖住连接耗尽资源。
+	// 大文件(视频/图片)走腾讯云直传不经本服务，经本服务最大是 10MB xlsx，故 30s 读足够。
+	httpServer := &http.Server{
+		Handler:           server.Router(),
+		ReadHeaderTimeout: 10 * time.Second,  // 防 slowloris 慢发头
+		ReadTimeout:       30 * time.Second,  // 含 body
+		WriteTimeout:      120 * time.Second, // 留足导入/导出等较慢的管理操作
+		IdleTimeout:       120 * time.Second, // keep-alive 空闲回收
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

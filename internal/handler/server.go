@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -123,6 +124,11 @@ func (s *Server) closeExpiredOrders(now time.Time) {
 }
 
 func (s *Server) Router() *gin.Engine {
+	// 默认 release 模式：debug 模式会打印每条路由 + 额外每请求开销，且 gin 官方明确不建议生产用。
+	// 本地调试可设 GIN_MODE=debug 覆盖。
+	if gin.Mode() == gin.DebugMode && os.Getenv("GIN_MODE") == "" {
+		gin.SetMode(gin.ReleaseMode)
+	}
 	r := gin.Default()
 	// 默认 gin 不区分 404 / 405，路径错或方法错都走 NoRoute。打开后才能让 NoMethod 生效，
 	// 给前端更清晰的错误码（虽然 body 走同一套 JSON 结构）。
