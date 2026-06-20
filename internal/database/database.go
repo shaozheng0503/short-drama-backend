@@ -18,6 +18,17 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 连接池：显式封顶，防止高并发把 Postgres max_connections 打满导致全站不可用。
+	if sqlDB, derr := db.DB(); derr == nil {
+		sqlDB.SetMaxOpenConns(cfg.DBMaxOpenConns)
+		sqlDB.SetMaxIdleConns(cfg.DBMaxIdleConns)
+		sqlDB.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+		sqlDB.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
+		log.Printf("[db] pool: max_open=%d max_idle=%d max_lifetime=%s max_idle_time=%s",
+			cfg.DBMaxOpenConns, cfg.DBMaxIdleConns, cfg.DBConnMaxLifetime, cfg.DBConnMaxIdleTime)
+	} else {
+		log.Printf("[db] 获取底层 sql.DB 失败，连接池用默认值: %v", derr)
+	}
 	if err := db.AutoMigrate(
 		&model.User{},
 		&model.SMSCode{},
