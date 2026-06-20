@@ -15,6 +15,13 @@ type Config struct {
 	ShutdownTimeout    time.Duration
 	CORSAllowedOrigins []string
 
+	// DB 连接池：默认 unlimited open + idle=2（database/sql 默认）在高并发下会撑爆
+	// Postgres max_connections(100) 导致 "too many clients"。显式封顶并回收空闲连接。
+	DBMaxOpenConns    int
+	DBMaxIdleConns    int
+	DBConnMaxLifetime time.Duration
+	DBConnMaxIdleTime time.Duration
+
 	RedisAddr      string
 	RedisPassword  string
 	RedisDB        int
@@ -143,7 +150,12 @@ func Load() Config {
 		RedisPassword:    getEnv("REDIS_PASSWORD", ""),
 		RedisDB:          getEnvInt("REDIS_DB", 0),
 		IdempotencyTTL:   time.Duration(getEnvInt("IDEMPOTENCY_TTL_SECONDS", 1800)) * time.Second,
-		RateLimitEnabled: getEnvBool("RATE_LIMIT_ENABLED", false),
+		DBMaxOpenConns:    getEnvInt("DB_MAX_OPEN_CONNS", 20), // 单实例上限；两实例=40 < PG max_connections(100)，留余量给 psql/迁移/工具
+		DBMaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 10),
+		DBConnMaxLifetime: time.Duration(getEnvInt("DB_CONN_MAX_LIFETIME_SECONDS", 1800)) * time.Second,
+		DBConnMaxIdleTime: time.Duration(getEnvInt("DB_CONN_MAX_IDLE_SECONDS", 300)) * time.Second,
+
+		RateLimitEnabled: getEnvBool("RATE_LIMIT_ENABLED", true), // 默认开：新部署忘配也有兜底抗滥用
 		RateLimitRPS:     getEnvFloat("RATE_LIMIT_RPS", 20),
 		RateLimitBurst:   getEnvInt("RATE_LIMIT_BURST", 40),
 		AlertEnabled:     getEnvBool("ALERT_ENABLED", false),
