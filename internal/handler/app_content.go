@@ -13,17 +13,48 @@ import (
 	"gorm.io/gorm"
 )
 
+// dramaCardColumns 卡片 / feed 渲染实际用到的最小列集（见 dramaCardView），
+// 用来给列表查询做 SELECT 收窄：dramas 表有一堆申报级宽列（description/alias/制作机构/承诺函URL…），
+// SELECT * 会把这些全读进来再丢掉。列表/推荐流是高频接口，只取卡片要的列省 I/O 与 GC。
+var dramaCardColumns = []string{
+	"id", "title", "description", "cover_url",
+	"total_episodes", "play_count", "like_count", "share_count",
+}
+
+// cardDramasByIDs 按给定 id 顺序、用窄列回查卡片数据，并保持入参顺序（feed/分页顺序不能乱）。
+// 配合「id 投影排序 + 主键回查」：排序阶段只排 id，不把 5KB 宽行拖进排序。
+func (s *Server) cardDramasByIDs(ids []uint64) []model.Drama {
+	if len(ids) == 0 {
+		return nil
+	}
+	var rows []model.Drama
+	s.db.Select(dramaCardColumns).Where("id IN ?", ids).Find(&rows)
+	byID := make(map[uint64]model.Drama, len(rows))
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	out := make([]model.Drama, 0, len(ids))
+	for _, id := range ids {
+		if d, ok := byID[id]; ok {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 func (s *Server) appHome(c *gin.Context) {
 	// 首页按短视频信息流返回：前端直接拿 recommend_dramas 渲染上下滑视频流。
-	// 前期按需求做「随机推荐」（ORDER BY RANDOM()）；后续再按用户标签调整推荐概率。
-	var recommend []model.Drama
-	s.db.Where("status = ?", model.DramaStatusPublished).
+	// 随机推荐：先对 id 投影做 ORDER BY RANDOM()（只排 id、不排 5KB 宽行），再按主键回查窄列卡片。
+	// 规模化下避免「全表宽行随机排序」（实测 20k 剧宽行随机排序 16ms）；始终实时、无缓存陈旧。
+	var ids []uint64
+	s.db.Model(&model.Drama{}).
+		Where("status = ?", model.DramaStatusPublished).
 		Order("RANDOM()").
 		Limit(10).
-		Find(&recommend)
+		Pluck("id", &ids)
 
 	response.OK(c, gin.H{
-		"recommend_dramas": s.homeFeedDramaList(recommend),
+		"recommend_dramas": s.homeFeedDramaList(s.cardDramasByIDs(ids)),
 	})
 }
 
@@ -45,16 +76,18 @@ func (s *Server) appTheater(c *gin.Context) {
 	var total int64
 	q.Count(&total)
 
-	var list []model.Drama
+	// id 投影排序：只对 id 做 md5 seed 洗牌排序（窄元组），分页取本页 id，再按主键回查窄列卡片。
+	// 避免把全表宽行拖进 md5 排序（实测 20k 剧宽行 md5 排序 30ms）。seed 固定 → 翻页顺序稳定。
+	var ids []uint64
 	if err := q.Order(gorm.Expr("md5(dramas.id::text || ?) ASC", seed)).
 		Offset((page - 1) * pageSize).
 		Limit(pageSize).
-		Find(&list).Error; err != nil {
+		Pluck("id", &ids).Error; err != nil {
 		response.ServerError(c, "查询剧场推荐失败")
 		return
 	}
 
-	views := s.dramaCardListWithTags(list)
+	views := s.dramaCardListWithTags(s.cardDramasByIDs(ids))
 	data := pageResp(views, page, pageSize, total)
 	data["recommend_seed"] = seed
 	response.OK(c, data)
@@ -201,7 +234,8 @@ func (s *Server) appListDramas(c *gin.Context) {
 	var total int64
 	q.Count(&total)
 	var list []model.Drama
-	if err := q.Offset((page - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
+	// 收窄列：只取卡片渲染要的字段，不读 description 外的一堆申报级宽列。
+	if err := q.Select(dramaCardColumns).Offset((page - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
 		response.ServerError(c, "查询短剧列表失败")
 		return
 	}
@@ -394,7 +428,7 @@ func (s *Server) appSearch(c *gin.Context) {
 	var total int64
 	q.Count(&total)
 	var list []model.Drama
-	q.Order("play_count desc, id desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&list)
+	q.Select(dramaCardColumns).Order("play_count desc, id desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&list)
 	response.OK(c, pageResp(dramaCardList(list, s.effectiveFreeEpisodes(model.Drama{})), page, pageSize, total))
 }
 
