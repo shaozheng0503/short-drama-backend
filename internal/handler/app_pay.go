@@ -121,6 +121,9 @@ func respondBillingOrderError(c *gin.Context, err error) {
 	}
 }
 
+// maxBatchEpisodeIDs 选集购买/试算一次最多带的集 id 数，挡住超大数组撑爆内存/DB IN 列表。
+const maxBatchEpisodeIDs = 500
+
 type createBatchOrderRequest struct {
 	DramaID       uint64   `json:"drama_id" binding:"required"`
 	EpisodeIDs    []uint64 `json:"episode_ids" binding:"required"`
@@ -135,6 +138,10 @@ func (s *Server) appCreateBatchOrder(c *gin.Context) {
 	var req createBatchOrderRequest
 	if err := c.ShouldBindJSON(&req); err != nil || len(req.EpisodeIDs) == 0 {
 		response.InvalidParam(c, "drama_id / episode_ids / payment_method 必填")
+		return
+	}
+	if len(req.EpisodeIDs) > maxBatchEpisodeIDs {
+		response.InvalidParam(c, "一次最多购买 500 集")
 		return
 	}
 	outcome, err := s.billing.CreateBatchOrder(uid, req.DramaID, req.EpisodeIDs, req.PaymentMethod, req.PayScene, c.ClientIP())
@@ -198,6 +205,10 @@ func (s *Server) appBatchOrderPreview(c *gin.Context) {
 	var req batchPreviewRequest
 	if err := c.ShouldBindJSON(&req); err != nil || len(req.EpisodeIDs) == 0 {
 		response.InvalidParam(c, "drama_id / episode_ids 必填")
+		return
+	}
+	if len(req.EpisodeIDs) > maxBatchEpisodeIDs {
+		response.InvalidParam(c, "一次最多 500 集")
 		return
 	}
 	q, err := s.billing.QuoteBatch(uid, req.DramaID, req.EpisodeIDs)

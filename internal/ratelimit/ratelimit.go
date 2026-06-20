@@ -51,7 +51,14 @@ func (m *Middleware) Handler() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		if !m.allow(c.ClientIP() + ":" + c.Request.URL.Path) {
+		// 用匹配到的路由模板（c.FullPath()，如 /v1/app/episodes/:id）做 key，而不是原始 URL.Path：
+		// 否则攻击者用 /v1/<随机路径> 每条都会新建一条 limiter 记录 → 内存无界膨胀，且能逐路径绕过限流。
+		// FullPath 的取值被注册路由数封顶；未匹配路由(404)统一归到一个桶。
+		route := c.FullPath()
+		if route == "" {
+			route = "_unmatched"
+		}
+		if !m.allow(c.ClientIP() + ":" + route) {
 			c.JSON(http.StatusTooManyRequests, response.Body{
 				Code:    response.CodeRateLimited,
 				Message: "请求过于频繁，请稍后重试",

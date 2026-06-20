@@ -18,6 +18,12 @@ const (
 	dramaMaxCovers    = 5
 	aigcToolMaxRune   = 64
 	aigcToolsMax      = 10
+	maxCharacters     = 50          // 角色数量上限
+	charNameMaxRune   = 64          // 角色姓名长度上限
+	charIntroMaxRune  = 500         // 角色简介长度上限
+	maxCategoryIDs    = 30          // 多选分类数量上限
+	maxURLLen         = 512         // URL 字段长度上限（与 DB 列宽对齐）
+	maxPriceCents     = 100_000_000 // 单集价格上限 ¥1,000,000，挡住离谱定价 + 批量金额 int64 溢出
 )
 
 // 计划发布时间最少提前量：当前时间 + 3 天（预留审核时间）。
@@ -121,8 +127,11 @@ func validateCreatorDrama(req *creatorDramaRequest) string {
 	if len(req.CoverURLs) > dramaMaxCovers {
 		return "封面最多 5 张"
 	}
-	if req.PriceCents != nil && *req.PriceCents < 0 {
-		return "price_cents 不能为负"
+	if req.PriceCents != nil && (*req.PriceCents < 0 || *req.PriceCents > maxPriceCents) {
+		return "price_cents 不能为负且不超过 100000000（¥100 万）"
+	}
+	if len(req.CategoryIDs) > maxCategoryIDs {
+		return "分类最多 30 个"
 	}
 	if req.FreeEpisodes != nil && *req.FreeEpisodes < 0 {
 		return "free_episodes 不能为负"
@@ -143,9 +152,21 @@ func validateCreatorDrama(req *creatorDramaRequest) string {
 		return msg
 	}
 	if req.Characters != nil {
+		if len(*req.Characters) > maxCharacters {
+			return "角色最多 50 个"
+		}
 		for _, ch := range *req.Characters {
 			if ch.Name == "" {
 				return "角色姓名必填"
+			}
+			if runeLen(ch.Name) > charNameMaxRune {
+				return "角色姓名过长（最多 64 字）"
+			}
+			if runeLen(ch.Intro) > charIntroMaxRune {
+				return "角色简介过长（最多 500 字）"
+			}
+			if len(ch.PhotoURL) > maxURLLen {
+				return "角色照片 URL 过长"
 			}
 		}
 	}
