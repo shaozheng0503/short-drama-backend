@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -46,6 +47,9 @@ func NewAlipayProvider(cfg config.Config) (*AlipayProvider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("alipay 客户端初始化: %w", err)
 	}
+	// smartwalle 默认用 http.DefaultClient（无超时）：网关查单/退款若 hang 会无限占住 goroutine。
+	// 覆盖成带超时的 client（Prepay 是本地签名不走网络，受影响的是 QueryOrder/Refund）。
+	client.Client = &http.Client{Timeout: 15 * time.Second}
 	// 公钥模式：载入支付宝公钥用于回调验签。
 	if err := client.LoadAliPayPublicKey(publicKey); err != nil {
 		return nil, fmt.Errorf("加载支付宝公钥: %w", err)

@@ -37,6 +37,7 @@ func newTencentClient(cfg config.Config) (*smssdk.Client, error) {
 	credential := common.NewCredential(cfg.TencentcloudSecretID, cfg.TencentcloudSecretKey)
 	cpf := profile.NewClientProfile()
 	cpf.HttpProfile.Endpoint = "sms.tencentcloudapi.com"
+	cpf.HttpProfile.ReqTimeout = 10 // 短信发在登录请求路径上，收紧到 10s（SDK 默认 60s 太长会拖住登录）
 	return smssdk.NewClient(credential, cfg.SMSRegion, cpf)
 }
 

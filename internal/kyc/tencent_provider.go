@@ -42,6 +42,7 @@ func (p *TencentProvider) faceidClient() (*faceid.Client, error) {
 	cred := common.NewCredential(p.cfg.TencentcloudSecretID, p.cfg.TencentcloudSecretKey)
 	cpf := profile.NewClientProfile()
 	cpf.HttpProfile.Endpoint = "faceid.tencentcloudapi.com"
+	cpf.HttpProfile.ReqTimeout = 15 // 核验在认证请求路径上，收紧到 15s（SDK 默认 60s）
 	c, err := faceid.NewClient(cred, p.cfg.KYCFaceIDRegion, cpf)
 	if err != nil {
 		return nil, err
@@ -59,6 +60,7 @@ func (p *TencentProvider) ocrClient() (*ocr.Client, error) {
 	cred := common.NewCredential(p.cfg.TencentcloudSecretID, p.cfg.TencentcloudSecretKey)
 	cpf := profile.NewClientProfile()
 	cpf.HttpProfile.Endpoint = "ocr.tencentcloudapi.com"
+	cpf.HttpProfile.ReqTimeout = 15 // OCR 识别可能略慢，给 15s（SDK 默认 60s 太长）
 	c, err := ocr.NewClient(cred, p.cfg.KYCOCRRegion, cpf)
 	if err != nil {
 		return nil, err
