@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ai-drama-platform/internal/config"
+	"ai-drama-platform/internal/configcheck"
 	"ai-drama-platform/internal/database"
 	"ai-drama-platform/internal/handler"
 
@@ -19,6 +20,16 @@ import (
 
 func main() {
 	cfg := config.Load()
+
+	// 启动配置体检：把所有问题打到日志便于排查；其中 JWT_SECRET 为空/弱默认值时
+	// 直接拒绝启动——否则任何人都能用已知 dev 密钥伪造管理员/任意用户 token。
+	for _, issue := range configcheck.Run(cfg, configcheck.Options{Prod: true}).Issues {
+		log.Printf("[configcheck] %s %s: %s", issue.Severity, issue.Code, issue.Message)
+	}
+	if cfg.JWTSecret == "" || cfg.JWTSecret == "dev-secret-change-me" || cfg.JWTSecret == "dev-secret" {
+		log.Fatalf("[configcheck] JWT_SECRET 未配置或为弱默认值，拒绝启动：请在 .env 设置足够随机的 JWT_SECRET")
+	}
+
 	db, err := database.Connect(cfg)
 	if err != nil {
 		log.Fatalf("connect database: %v", err)

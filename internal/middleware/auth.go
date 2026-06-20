@@ -48,7 +48,7 @@ func parseClaims(cfg config.Config, tokenString string) (*Claims, error) {
 	claims := &Claims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 		return []byte(cfg.JWTSecret), nil
-	})
+	}, jwt.WithValidMethods([]string{"HS256"})) // 锁定签名算法，杜绝 alg=none / 算法混淆
 	if err != nil || !token.Valid {
 		if err == nil {
 			err = jwt.ErrTokenInvalidClaims

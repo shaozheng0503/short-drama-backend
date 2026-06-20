@@ -139,6 +139,10 @@ func (s *Server) Router() *gin.Engine {
 			Data:    nil,
 		})
 	})
+	// 单请求体上限：视频/图片/合同都走腾讯云直传（不经本服务），经本服务的最大 body 是
+	// 财务 xlsx 导入的 multipart，10MB 足够；防止超大 body 撑爆内存。
+	r.MaxMultipartMemory = maxRequestBodyBytes
+	r.Use(limitRequestBody(maxRequestBodyBytes))
 	r.Use(s.corsMiddleware())
 	r.Use(ratelimit.New(s.cfg).Handler())
 	r.GET("/health", s.health)
@@ -390,6 +394,18 @@ func (s *Server) Router() *gin.Engine {
 	}
 
 	return r
+}
+
+// maxRequestBodyBytes 单请求体字节上限（10MB）。
+const maxRequestBodyBytes = 10 << 20
+
+// limitRequestBody 用 http.MaxBytesReader 限制请求体大小，超限后读取返回错误、handler 的
+// ShouldBindJSON/FormFile 会失败返回 400，避免恶意超大 body 占满内存。
+func limitRequestBody(n int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, n)
+		c.Next()
+	}
 }
 
 func (s *Server) idempotencyMiddleware(subject string) gin.HandlerFunc {
