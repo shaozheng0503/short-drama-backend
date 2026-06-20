@@ -105,14 +105,24 @@ func (s *Server) allowSharePageCount(ip string, dramaID uint64) bool {
 	if ip == "" {
 		ip = "unknown"
 	}
-	key := fmt.Sprintf("share_page:%d:%s", dramaID, ip)
+	return s.allowShareDedup(fmt.Sprintf("share_page:%d:%s", dramaID, ip))
+}
+
+// allowShareCountByUser 分享动作埋点去重：同一用户对同一剧在窗口内只计一次分享，
+// 避免 share_count 被反复点刷高 + 每次都写一行的写放大。
+func (s *Server) allowShareCountByUser(userID, dramaID uint64) bool {
+	return s.allowShareDedup(fmt.Sprintf("share_act:%d:%d", dramaID, userID))
+}
+
+// allowShareDedup 通用分享去重：优先 Redis SetNX，不可用时回落内存窗口。窗口内首次返回 true。
+func (s *Server) allowShareDedup(key string) bool {
 	if s.redis != nil {
 		ok, err := s.redis.SetNX(context.Background(), key, "1", sharePageCountTTL).Result()
 		if err == nil {
 			return ok
 		}
 		if err != redis.Nil {
-			log.Printf("[share-page] redis SetNX failed key=%s err=%v; fallback memory limiter", key, err)
+			log.Printf("[share] redis SetNX failed key=%s err=%v; fallback memory limiter", key, err)
 		}
 	}
 	return s.allowSharePageCountMemory(key, time.Now())
