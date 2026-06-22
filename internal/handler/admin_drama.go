@@ -102,6 +102,13 @@ func (s *Server) adminListDramas(c *gin.Context) {
 	contractByDrama := s.collectDramaContractStatus(dramaIDs)
 	publishAccountsByCreator := s.collectCreatorPublishAccounts(creatorIDs)
 
+	// 本页各剧标题在全表是否重名，给运营标记（剧名非唯一，财务/统计需用短剧ID区分）。
+	titles := make([]string, 0, len(list))
+	for _, d := range list {
+		titles = append(titles, d.Title)
+	}
+	dupTitleCount := s.collectDuplicateTitleCounts(titles)
+
 	for _, d := range list {
 		categoryName := ""
 		if d.CategoryID != nil {
@@ -120,11 +127,41 @@ func (s *Server) adminListDramas(c *gin.Context) {
 		if categories == nil {
 			categories = []gin.H{}
 		}
-		views = append(views, adminDramaListItemView(
+		view := adminDramaListItemView(
 			d, categoryName, creatorName, categories, publishAccounts, contractByDrama[d.ID],
-		))
+		)
+		// 同名总数>1 才标记；附同名总数，前端可提示「N 部同名」。
+		if n := dupTitleCount[d.Title]; n > 1 {
+			view["has_duplicate_title"] = true
+			view["duplicate_title_count"] = n
+		} else {
+			view["has_duplicate_title"] = false
+		}
+		views = append(views, view)
 	}
 	response.OK(c, pageResp(views, page, pageSize, total))
+}
+
+// collectDuplicateTitleCounts 批量统计给定标题在全表的出现次数，只返回出现 >1 的（重名）。
+func (s *Server) collectDuplicateTitleCounts(titles []string) map[string]int {
+	out := map[string]int{}
+	if len(titles) == 0 {
+		return out
+	}
+	var rows []struct {
+		Title string
+		Cnt   int
+	}
+	s.db.Model(&model.Drama{}).
+		Select("title, count(*) as cnt").
+		Where("title IN ?", titles).
+		Group("title").
+		Having("count(*) > 1").
+		Scan(&rows)
+	for _, r := range rows {
+		out[r.Title] = r.Cnt
+	}
+	return out
 }
 
 func (s *Server) adminCreateDrama(c *gin.Context) {
