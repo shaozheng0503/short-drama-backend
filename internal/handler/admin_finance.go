@@ -23,6 +23,7 @@ func (s *Server) adminDashboard(c *gin.Context) {
 	var (
 		userCount, creatorCount, dramaCount int64
 		episodeCount, publishedDramaCount   int64
+		episodesThisMonth                   int64
 		pendingDramaCount                   int64
 		pendingWithdrawCount                int64
 		todayIncome                         int64
@@ -37,6 +38,8 @@ func (s *Server) adminDashboard(c *gin.Context) {
 	s.db.Model(&model.Withdrawal{}).Where("status = ?", model.WithdrawalStatusPending).Count(&pendingWithdrawCount)
 	now := time.Now()
 	today := now.Format("2006-01-02")
+	monthBegin := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	s.db.Model(&model.Episode{}).Where("created_at >= ?", monthBegin).Count(&episodesThisMonth)
 	s.db.Model(&model.CreatorStatsDaily{}).Where("stat_date = ?", today).
 		Select("COALESCE(SUM(income_cents),0)").Scan(&todayIncome)
 	s.db.Model(&model.CreatorStatsDaily{}).Where("stat_date = ?", today).
@@ -45,7 +48,6 @@ func (s *Server) adminDashboard(c *gin.Context) {
 	// App 付费毛收入（平台侧实付，口径同 /finance/app-income）：净额 = 实付 - 退款。
 	// 总览给「累计 / 本月 / 今日」三档，营收一眼可见。
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 	appIncomeNet := func(since *time.Time) int64 {
 		q := s.db.Model(&model.Order{}).Where("paid_at IS NOT NULL")
 		if since != nil {
@@ -62,10 +64,11 @@ func (s *Server) adminDashboard(c *gin.Context) {
 		"drama_count":              dramaCount,
 		"published_drama_count":    publishedDramaCount,
 		"episode_count":            episodeCount,
+		"episodes_this_month":      episodesThisMonth, // 本月（按 episode.created_at）上传集数
 		"today_play_count":         todayPlay,
 		"today_income_cents":       todayIncome, // 创作者当日分成实得（含第三方渠道导入），口径见 creator_stats_daily
 		"app_income_total_cents":   appIncomeNet(nil),
-		"app_income_month_cents":   appIncomeNet(&monthStart),
+		"app_income_month_cents":   appIncomeNet(&monthBegin),
 		"app_income_today_cents":   appIncomeNet(&todayStart),
 		"pending_drama_count":      pendingDramaCount,
 		"pending_withdrawal_count": pendingWithdrawCount,
