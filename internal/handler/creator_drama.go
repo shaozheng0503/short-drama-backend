@@ -358,6 +358,7 @@ func (s *Server) creatorCreateDrama(c *gin.Context) {
 	s.db.First(&fresh, drama.ID)
 	view := dramaAdminView(fresh, s.nameOfCategory(fresh.CategoryID), s.nameOfCreator(fresh.CreatorID))
 	view["covers"], view["characters"] = s.loadDramaExtras(fresh.ID)
+	s.attachTitleDuplicateWarning(view, fresh.Title, fresh.ID)
 	response.OK(c, view)
 }
 

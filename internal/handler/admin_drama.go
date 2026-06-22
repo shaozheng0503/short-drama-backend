@@ -180,7 +180,9 @@ func (s *Server) adminCreateDrama(c *gin.Context) {
 		response.ServerError(c, "创建短剧失败")
 		return
 	}
-	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
+	view := dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID))
+	s.attachTitleDuplicateWarning(view, drama.Title, drama.ID)
+	response.OK(c, view)
 }
 
 func (s *Server) adminGetDrama(c *gin.Context) {
@@ -731,6 +733,29 @@ func (s *Server) categoryExists(id uint64) bool {
 	var cnt int64
 	s.db.Model(&model.Category{}).Where("id = ?", id).Count(&cnt)
 	return cnt > 0
+}
+
+// duplicateTitleIDs 返回与 title 同名的其它短剧 id（排除 excludeID 自己）。
+// 用于建剧后给出「重名告警」：剧名不是唯一键，财务/收益导入靠短剧ID 区分，重名需运营留意。
+func (s *Server) duplicateTitleIDs(title string, excludeID uint64) []uint64 {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return nil
+	}
+	var ids []uint64
+	s.db.Model(&model.Drama{}).Where("title = ? AND id <> ?", title, excludeID).
+		Order("id").Limit(20).Pluck("id", &ids)
+	return ids
+}
+
+// attachTitleDuplicateWarning 若有同名剧，往视图塞 title_duplicate_warning（不阻断创建）。
+func (s *Server) attachTitleDuplicateWarning(view gin.H, title string, selfID uint64) {
+	if dups := s.duplicateTitleIDs(title, selfID); len(dups) > 0 {
+		view["title_duplicate_warning"] = gin.H{
+			"message":   "已存在同名短剧，剧名非唯一标识；财务收益导入 / 统计请用「短剧ID」区分。",
+			"drama_ids": dups,
+		}
+	}
 }
 
 func (s *Server) creatorExists(id uint64) bool {

@@ -75,6 +75,32 @@ func (s *Server) adminLogin(c *gin.Context) {
 	})
 }
 
+// adminRefreshToken —— POST /v1/admin/auth/refresh（需有效 admin JWT）
+// 滑动续期：用未过期的 token 换一个新的 7 天 token，前端在 app 加载/聚焦时调一次，
+// 常用管理员就不会因 token 到期被踢。无需旧 token 失效（JWT 无状态，老 token 自然到期）。
+func (s *Server) adminRefreshToken(c *gin.Context) {
+	aid := middleware.CurrentID(c)
+	var admin model.Admin
+	if err := s.db.First(&admin, aid).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "管理员不存在")
+			return
+		}
+		response.ServerError(c, "刷新失败")
+		return
+	}
+	token, expiresAt, err := middleware.IssueToken(s.cfg, middleware.SubjectAdmin, admin.ID)
+	if err != nil {
+		response.ServerError(c, "签发 token 失败")
+		return
+	}
+	response.OK(c, gin.H{
+		"token":      token,
+		"expires_at": expiresAt,
+		"admin":      adminView(admin),
+	})
+}
+
 func (s *Server) adminMe(c *gin.Context) {
 	aid := middleware.CurrentID(c)
 	var admin model.Admin

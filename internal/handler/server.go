@@ -283,6 +283,7 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.Use(middleware.RequireAdmin(s.cfg))
 	adminAuth.Use(s.requireActiveAdmin())
 	adminAuth.Use(s.auditMiddleware())
+	adminAuth.POST("/auth/refresh", s.adminRefreshToken) // 滑动续期：换新 token，避免常用管理员被踢
 	adminAuth.GET("/me", s.adminMe)
 	adminAuth.GET("/dashboard", s.adminDashboard)
 
@@ -353,6 +354,8 @@ func (s *Server) Router() *gin.Engine {
 
 	// App 付费收入（平台自有支付分账）：按短剧聚合的毛收入/净收入，订单中心+收益汇总（财务角色）
 	adminAuth.GET("/finance/app-income", s.requireAdminRole(model.AdminRoleFinance), s.adminListAppIncome)
+	// 订单导出 Excel：财务把 App 用户购买订单导出汇总（订单中心导出，财务角色）
+	adminAuth.GET("/finance/orders-export.xlsx", s.requireAdminRole(model.AdminRoleFinance), s.adminExportOrders)
 	// 财务 Excel 导入每日收入（财务角色）
 	adminAuth.GET("/finance/income/template.xlsx", s.requireAdminRole(model.AdminRoleFinance), s.adminDownloadIncomeTemplate)
 	adminAuth.GET("/finance/income/imports", s.requireAdminRole(model.AdminRoleFinance), s.adminListIncomeImports)
