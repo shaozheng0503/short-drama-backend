@@ -87,6 +87,12 @@ func (s *Server) requireActiveAdmin() gin.HandlerFunc {
 	}
 }
 
+func adminIsSuper(c *gin.Context) bool {
+	role, _ := c.Get(ctxAdminRole)
+	r, _ := role.(string)
+	return r == model.AdminRoleAdmin
+}
+
 // requireAdminRole 限定只有指定角色（或超管 admin）可访问。挂在 requireActiveAdmin 之后。
 func (s *Server) requireAdminRole(allowed ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {

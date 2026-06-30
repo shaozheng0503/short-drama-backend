@@ -536,7 +536,7 @@ func (s *Server) adminReorderEpisodes(c *gin.Context) {
 	response.OK(c, gin.H{"list": views})
 }
 
-// adminDeleteEpisode —— 仅 draft 状态短剧可删除其剧集；已上架的剧涉及用户购买/解锁，禁止物理删。
+// adminDeleteEpisode —— 超管可删任意状态的剧集；其他管理员仅 draft 短剧可删（防误删已上架解锁数据）。
 func (s *Server) adminDeleteEpisode(c *gin.Context) {
 	id := parseUint(c.Param("id"))
 	if id == 0 {
@@ -557,8 +557,8 @@ func (s *Server) adminDeleteEpisode(c *gin.Context) {
 		response.ServerError(c, "查询所属短剧失败")
 		return
 	}
-	if drama.Status != model.DramaStatusDraft {
-		response.Conflict(c, "仅草稿短剧的剧集可删除")
+	if drama.Status != model.DramaStatusDraft && !adminIsSuper(c) {
+		response.Conflict(c, "仅草稿短剧的剧集可删除；超管可删除任意状态剧集")
 		return
 	}
 
