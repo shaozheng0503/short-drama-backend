@@ -41,6 +41,12 @@ func parseUint(s string) uint64 {
 	return n
 }
 
+// parseInt64 解析 int64（金额等可能为负/超出 uint64 的场景；解析失败返 0）。
+func parseInt64(s string) int64 {
+	n, _ := strconv.ParseInt(s, 10, 64)
+	return n
+}
+
 // parseUintList 解析逗号分隔的正整数列表（去重、忽略 0/非法项）。
 func parseUintList(s string) []uint64 {
 	out := make([]uint64, 0)

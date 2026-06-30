@@ -558,6 +558,46 @@ func (s *Server) adminListOrders(c *gin.Context) {
 	if v := parseUint(c.Query("user_id")); v > 0 {
 		q = q.Where("user_id = ?", v)
 	}
+	if v := parseUint(c.Query("drama_id")); v > 0 {
+		q = q.Where("drama_id = ?", v)
+	}
+	if v := parseUint(c.Query("episode_id")); v > 0 {
+		q = q.Where("episode_id = ?", v)
+	}
+	if v := c.Query("order_no"); v != "" {
+		// 订单号模糊搜索（LIKE %X%），后端自动加 %，前端不需要转义
+		q = q.Where("order_no LIKE ?", "%"+v+"%")
+	}
+	if v := c.Query("platform_trade_no"); v != "" {
+		// 平台流水号（微信/支付宝）模糊搜索
+		q = q.Where("platform_trade_no LIKE ?", "%"+v+"%")
+	}
+	// 日期区间筛选（YYYY-MM-DD；date_to 含当天 => 走次日 0 点闭区间）
+	if v := c.Query("date_from"); v != "" {
+		if t, err := time.Parse("2006-01-02", v); err == nil {
+			q = q.Where("created_at >= ?", t)
+		}
+	}
+	if v := c.Query("date_to"); v != "" {
+		if t, err := time.Parse("2006-01-02", v); err == nil {
+			// date_to 含当天：end = 次日 00:00:00（半开区间 [from, end)）
+			q = q.Where("created_at < ?", t.Add(24*time.Hour))
+		}
+	}
+	// 金额区间筛选（单位：分）
+	if v := parseInt64(c.Query("min_amount_cents")); v > 0 {
+		q = q.Where("amount_cents >= ?", v)
+	}
+	if v := parseInt64(c.Query("max_amount_cents")); v > 0 {
+		q = q.Where("amount_cents <= ?", v)
+	}
+	// 已退款 / 未退款筛选（按 refund_amount_cents > 0 判定）
+	switch c.Query("has_refund") {
+	case "true", "1":
+		q = q.Where("refund_amount_cents > 0")
+	case "false", "0":
+		q = q.Where("refund_amount_cents = 0")
+	}
 	var total int64
 	q.Count(&total)
 	var orders []model.Order
