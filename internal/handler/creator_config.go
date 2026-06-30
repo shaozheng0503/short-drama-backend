@@ -42,6 +42,46 @@ func (s *Server) creatorGetCoverSpecs(c *gin.Context) {
 				"max_size_mb": 5,
 				"formats":     []string{"jpg", "jpeg", "png"},
 			},
+			{
+				// 横屏 16:9（1920×1080 源稿等比缩到 350×197 作最小可用尺寸）
+				"ratio":       "16:9",
+				"ratio_w":     16,
+				"ratio_h":     9,
+				"min_width":   350,
+				"min_height":  197,
+				"max_size_mb": 5,
+				"formats":     []string{"jpg", "jpeg", "png"},
+			},
+			{
+				// 77:108（770×1080 源稿等比缩到 350×491；非标比例，确认无误）
+				"ratio":       "77:108",
+				"ratio_w":     77,
+				"ratio_h":     108,
+				"min_width":   350,
+				"min_height":  491,
+				"max_size_mb": 5,
+				"formats":     []string{"jpg", "jpeg", "png"},
+			},
+			{
+				// 49:16 超宽横幅（2450×800 源稿等比缩到 350×114）
+				"ratio":       "49:16",
+				"ratio_w":     49,
+				"ratio_h":     16,
+				"min_width":   350,
+				"min_height":  114,
+				"max_size_mb": 5,
+				"formats":     []string{"jpg", "jpeg", "png"},
+			},
+			{
+				// 5:4 接近正方形（1500×1200 源稿等比缩到 350×280）
+				"ratio":       "5:4",
+				"ratio_w":     5,
+				"ratio_h":     4,
+				"min_width":   350,
+				"min_height":  280,
+				"max_size_mb": 5,
+				"formats":     []string{"jpg", "jpeg", "png"},
+			},
 		},
 	})
 }
