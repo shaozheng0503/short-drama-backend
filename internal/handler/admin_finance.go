@@ -584,15 +584,18 @@ func (s *Server) adminListOrders(c *gin.Context) {
 			Where("e_title.title LIKE ?", "%"+v+"%")
 	}
 	// 日期区间筛选（YYYY-MM-DD；date_to 含当天 => 走次日 0 点闭区间）
+	// 注意：必须用 orders.created_at（不能写 created_at），因为本函数后续会
+	// LEFT JOIN dramas/episodes，这两张表也都有 created_at 列，不限定表名会
+	// 触发 PostgreSQL "column reference is ambiguous"（SQLSTATE 42702）。
 	if v := c.Query("date_from"); v != "" {
 		if t, err := time.Parse("2006-01-02", v); err == nil {
-			q = q.Where("created_at >= ?", t)
+			q = q.Where("orders.created_at >= ?", t)
 		}
 	}
 	if v := c.Query("date_to"); v != "" {
 		if t, err := time.Parse("2006-01-02", v); err == nil {
 			// date_to 含当天：end = 次日 00:00:00（半开区间 [from, end)）
-			q = q.Where("created_at < ?", t.Add(24*time.Hour))
+			q = q.Where("orders.created_at < ?", t.Add(24*time.Hour))
 		}
 	}
 	// 金额区间筛选（单位：分）
@@ -614,12 +617,26 @@ func (s *Server) adminListOrders(c *gin.Context) {
 	// 用 join 一次性把 drama_title / episode_title 一起取出来（LEFT JOIN，
 	// 避免订单关联的剧/集被删时整个 list 丢失）
 	type orderRow struct {
-		model.Order
-		DramaTitle   string `gorm:"column:drama_title"`
-		EpisodeTitle string `gorm:"column:episode_title"`
+		// 显式列清单（不用 orders.*）：GORM v2 在 Scan + Model().Select("orders.*") +
+		// Join 时可能因 schema 缓存里的别名表 d_view/e_view 没注册而出现空结果，
+		// 改成显式列既稳定也避免依赖 schema 缓存。
+		ID                uint64
+		OrderNo           string
+		UserID            uint64
+		DramaID           uint64
+		EpisodeID         uint64
+		AmountCents       int64
+		RefundAmountCents int64
+		PaymentMethod     string
+		PlatformTradeNo   string
+		Status            string
+		PaidAt            *time.Time
+		CreatedAt         time.Time
+		DramaTitle        string `gorm:"column:drama_title"`
+		EpisodeTitle      string `gorm:"column:episode_title"`
 	}
 	var rows []orderRow
-	q.Select("orders.*, d_view.title AS drama_title, e_view.title AS episode_title").
+	q.Select("orders.id, orders.order_no, orders.user_id, orders.drama_id, orders.episode_id, orders.amount_cents, orders.refund_amount_cents, orders.payment_method, orders.platform_trade_no, orders.status, orders.paid_at, orders.created_at, d_view.title AS drama_title, e_view.title AS episode_title").
 		Joins("LEFT JOIN dramas d_view ON d_view.id = orders.drama_id").
 		Joins("LEFT JOIN episodes e_view ON e_view.id = orders.episode_id").
 		Order("orders.created_at desc").
