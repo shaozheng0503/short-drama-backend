@@ -67,8 +67,8 @@ get_env_config() {
       REMOTE_PORT="18090"
       ENV_LABEL="沙箱 (api-dev.langzhi.top)"
       ;;
-  esac
-}
+    esac
+  }
 
 # ======== 颜色 ========
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; N='\033[0m'
@@ -76,9 +76,10 @@ ok()   { echo -e "${G}[OK]${N} $*"; }
 warn() { echo -e "${Y}[WARN]${N} $*"; }
 err()  { echo -e "${R}[ERR]${N} $*"; exit 1; }
 
-SSH_OPTS=(-o StrictHostKeyChecking=accept-new -p "$SSH_PORT" -i "$SSH_KEY_E")
-SSH=(ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SSH_HOST}")
-SCP=(scp "${SSH_OPTS[@]}")
+SSH_OPTS=(-o StrictHostKeyChecking=accept-new -i "$SSH_KEY_E")
+SSH=(ssh -p "$SSH_PORT" "${SSH_OPTS[@]}" "${SSH_USER}@${SSH_HOST}")
+SCP_OPTS=(-o StrictHostKeyChecking=accept-new -i "$SSH_KEY_E")
+SCP=(scp -P "$SSH_PORT" "${SCP_OPTS[@]}")
 
 echo "==> 部署环境: ${ENV}（目标: ${ENVS_TO_DEPLOY[*]}）"
 
@@ -146,11 +147,17 @@ systemctl show -p MainPID -p ActiveState -p NRestarts --value ${SERVICE}
 EOF
   ok "reload 完成（${ENV_NAME}）"
 
-  # /ready 探活
-  echo "==> /ready 探活（内网 127.0.0.1:${REMOTE_PORT}）..."
-  "${SSH[@]}" sudo bash -c "curl -fsS http://127.0.0.1:${REMOTE_PORT}/ready" >/dev/null \
-    || err "/ready 失败（先看 systemctl status ${SERVICE}）"
-  ok "/ready 通"
+  # /ready 探活（最多 30 秒：reload 后 tableflip 切进程，新进程需要 1-2 秒起来）
+  echo "==> /ready 探活（内网 127.0.0.1:${REMOTE_PORT}，最多 30s）..."
+  for i in $(seq 1 15); do
+    if "${SSH[@]}" sudo bash -c "curl -fsS http://127.0.0.1:${REMOTE_PORT}/ready" >/dev/null 2>&1; then
+      ok "/ready 通（第 ${i} 次，≈ $((i*2))s）"
+      READY=1
+      break
+    fi
+    sleep 2
+  done
+  [[ "${READY:-0}" == "1" ]] || err "/ready 失败（先看 systemctl status ${SERVICE} && journalctl -u ${SERVICE} -n 50 --no-pager）"
 
   # 公网 /health
   echo "==> 公网 HTTPS 探活 ${API_BASE}/health ..."
