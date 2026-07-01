@@ -679,16 +679,38 @@ func (s *Server) adminGetOrder(c *gin.Context) {
 		response.ServerError(c, "查询失败")
 		return
 	}
+	// 顺手取 drama_title / episode_title（与 list 接口对齐）
+	// 用独立查询避免 join + ambiguous column 坑（episode_id=0 时 episode 查不到，title 为空字符串）
+	var dramaTitle, episodeTitle string
+	if o.DramaID > 0 {
+		var d model.Drama
+		if err := s.db.Select("title").First(&d, o.DramaID).Error; err == nil {
+			dramaTitle = d.Title
+		}
+	}
+	if o.EpisodeID > 0 {
+		var e model.Episode
+		if err := s.db.Select("title").First(&e, o.EpisodeID).Error; err == nil {
+			episodeTitle = e.Title
+		}
+	}
 	response.OK(c, gin.H{
 		"order_no":          o.OrderNo,
 		"user_id":           o.UserID,
 		"drama_id":          o.DramaID,
+		"drama_title":       dramaTitle,
 		"episode_id":        o.EpisodeID,
+		"episode_title":     episodeTitle,
 		"product_id":        o.ProductID,
 		"amount_cents":      o.AmountCents,
+		"refund_amount_cents": o.RefundAmountCents,
 		"payment_method":    o.PaymentMethod,
 		"status":            o.Status,
 		"platform_trade_no": o.PlatformTradeNo,
+		"platform_refund_no": o.PlatformRefundNo,
+		"refund_no":         o.RefundNo,
+		"refund_reason":     o.RefundReason,
+		"refunded_at":       o.RefundedAt,
 		"paid_at":           o.PaidAt,
 		"expired_at":        o.ExpiredAt,
 		"created_at":        o.CreatedAt,
