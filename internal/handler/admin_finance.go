@@ -572,6 +572,17 @@ func (s *Server) adminListOrders(c *gin.Context) {
 		// 平台流水号（微信/支付宝）模糊搜索
 		q = q.Where("platform_trade_no LIKE ?", "%"+v+"%")
 	}
+	// 剧名模糊搜索（join dramas.title，LIKE %X%）。drama_id 精确过滤与本条件 AND 关系：
+	// drama_id 给出时按 ID 锁死；只给 drama_title 时按剧名匹配；都不给则全部。
+	if v := strings.TrimSpace(c.Query("drama_title")); v != "" {
+		q = q.Joins("LEFT JOIN dramas d_title ON d_title.id = orders.drama_id").
+			Where("d_title.title LIKE ?", "%"+v+"%")
+	}
+	// 集名模糊搜索（join episodes.title，LIKE %X%）。同理：与 episode_id AND。
+	if v := strings.TrimSpace(c.Query("episode_title")); v != "" {
+		q = q.Joins("LEFT JOIN episodes e_title ON e_title.id = orders.episode_id").
+			Where("e_title.title LIKE ?", "%"+v+"%")
+	}
 	// 日期区间筛选（YYYY-MM-DD；date_to 含当天 => 走次日 0 点闭区间）
 	if v := c.Query("date_from"); v != "" {
 		if t, err := time.Parse("2006-01-02", v); err == nil {
@@ -600,21 +611,37 @@ func (s *Server) adminListOrders(c *gin.Context) {
 	}
 	var total int64
 	q.Count(&total)
-	var orders []model.Order
-	q.Order("created_at desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&orders)
-	list := make([]gin.H, 0, len(orders))
-	for _, o := range orders {
+	// 用 join 一次性把 drama_title / episode_title 一起取出来（LEFT JOIN，
+	// 避免订单关联的剧/集被删时整个 list 丢失）
+	type orderRow struct {
+		model.Order
+		DramaTitle   string `gorm:"column:drama_title"`
+		EpisodeTitle string `gorm:"column:episode_title"`
+	}
+	var rows []orderRow
+	q.Select("orders.*, d_view.title AS drama_title, e_view.title AS episode_title").
+		Joins("LEFT JOIN dramas d_view ON d_view.id = orders.drama_id").
+		Joins("LEFT JOIN episodes e_view ON e_view.id = orders.episode_id").
+		Order("orders.created_at desc").
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Scan(&rows)
+	list := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
 		list = append(list, gin.H{
-			"order_no":          o.OrderNo,
-			"user_id":           o.UserID,
-			"drama_id":          o.DramaID,
-			"episode_id":        o.EpisodeID,
-			"amount_cents":      o.AmountCents,
-			"payment_method":    o.PaymentMethod,
-			"status":            o.Status,
-			"platform_trade_no": o.PlatformTradeNo,
-			"paid_at":           o.PaidAt,
-			"created_at":        o.CreatedAt,
+			"order_no":          r.OrderNo,
+			"user_id":           r.UserID,
+			"drama_id":          r.DramaID,
+			"drama_title":       r.DramaTitle,
+			"episode_id":        r.EpisodeID,
+			"episode_title":     r.EpisodeTitle,
+			"amount_cents":      r.AmountCents,
+			"refund_amount_cents": r.RefundAmountCents,
+			"payment_method":    r.PaymentMethod,
+			"status":            r.Status,
+			"platform_trade_no": r.PlatformTradeNo,
+			"paid_at":           r.PaidAt,
+			"created_at":        r.CreatedAt,
 		})
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
