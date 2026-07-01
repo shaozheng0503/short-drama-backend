@@ -15,7 +15,7 @@ import (
 const (
 	dramaTitleMaxRune = 20
 	dramaDescMaxRune  = 200
-	dramaMaxCovers    = 5
+	dramaMaxCovers    = 10
 	aigcToolMaxRune   = 64
 	aigcToolsMax      = 10
 	maxCharacters     = 50          // 角色数量上限
