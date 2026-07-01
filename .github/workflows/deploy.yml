@@ -1,0 +1,157 @@
+name: Deploy DramaBackend
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "短剧MVP-OpenAPI.yaml"
+      - "docs/**"
+      - "**/*.md"
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "目标环境（生产必须手动触发）"
+        required: true
+        type: choice
+        default: sandbox
+        options:
+          - sandbox
+          - prod
+          - both
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false   # 不抢跑：上一次没跑完就排队
+
+jobs:
+  deploy:
+    name: Deploy (${{ github.event_name == 'push' && 'sandbox (push main)' || inputs.env }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GO_VERSION: "1.25"
+      SSH_HOST: "43.143.212.37"
+      SSH_PORT: "22"
+      SSH_USER: "ubuntu"
+      DEPLOY_ENV: ${{ github.event_name == 'push' && 'sandbox' || inputs.env }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # 拿到完整 history，方便 rollback 时查 commit
+
+      - name: Setup Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Preflight - 未提交改动拦截
+        run: |
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "ERROR: 工作区有未提交改动，CI 拒绝构建"
+            git status --short
+            exit 1
+          fi
+
+      - name: Run tests
+        run: go test ./... 2>&1 | tail -60
+
+      - name: Check config (生产字段本地会缺密钥，仅语法校验)
+        run: go run ./cmd/check-config --prod 2>&1 | tail -30 || true
+
+      - name: Build linux/amd64
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -ldflags="-s -w" -o drama-api ./cmd/api
+          ls -lh drama-api
+          sha256sum drama-api
+
+      # ===== 沙箱 =====
+      - name: Upload binary → sandbox
+        if: env.DEPLOY_ENV == 'sandbox' || env.DEPLOY_ENV == 'both'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ env.SSH_HOST }}
+          port: ${{ env.SSH_PORT }}
+          username: ${{ env.SSH_USER }}
+          key: ${{ secrets.DRAMA_DEPLOY_SSH_KEY }}
+          fingerprint: ${{ secrets.DRAMA_DEPLOY_HOST_FP }}
+          source: "drama-api"
+          target: "/tmp/drama-api.new"
+
+      - name: Reload sandbox (api-dev.langzhi.top)
+        if: env.DEPLOY_ENV == 'sandbox' || env.DEPLOY_ENV == 'both'
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ env.SSH_HOST }}
+          port: ${{ env.SSH_PORT }}
+          username: ${{ env.SSH_USER }}
+          key: ${{ secrets.DRAMA_DEPLOY_SSH_KEY }}
+          fingerprint: ${{ secrets.DRAMA_DEPLOY_HOST_FP }}
+          command_timeout: 5m
+          script: |
+            set -euo pipefail
+            TS="$(date +%Y%m%d-%H%M%S)"
+            if [[ -f /opt/drama-backend-sandbox/drama-api ]]; then
+              cp -a /opt/drama-backend-sandbox/drama-api \
+                    /opt/drama-backend-sandbox/drama-api.bak.${TS}
+            fi
+            mv -f /tmp/drama-api.new /opt/drama-backend-sandbox/drama-api
+            chown drama:drama /opt/drama-backend-sandbox/drama-api
+            chmod +x /opt/drama-backend-sandbox/drama-api
+            systemctl reload drama-backend-sandbox
+            sleep 1
+            systemctl show -p MainPID -p ActiveState -p NRestarts --value drama-backend-sandbox
+            curl -fsS http://127.0.0.1:18090/ready && echo
+            curl -fsS https://api-dev.langzhi.top/health && echo
+
+      # ===== 生产（仅手动）=====
+      - name: Upload binary → prod
+        if: env.DEPLOY_ENV == 'prod' || env.DEPLOY_ENV == 'both'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ env.SSH_HOST }}
+          port: ${{ env.SSH_PORT }}
+          username: ${{ env.SSH_USER }}
+          key: ${{ secrets.DRAMA_DEPLOY_SSH_KEY }}
+          fingerprint: ${{ secrets.DRAMA_DEPLOY_HOST_FP }}
+          source: "drama-api"
+          target: "/tmp/drama-api.new"
+
+      - name: Reload prod (api.langzhi.top) [manual only]
+        if: env.DEPLOY_ENV == 'prod' || env.DEPLOY_ENV == 'both'
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ env.SSH_HOST }}
+          port: ${{ env.SSH_PORT }}
+          username: ${{ env.SSH_USER }}
+          key: ${{ secrets.DRAMA_DEPLOY_SSH_KEY }}
+          fingerprint: ${{ secrets.DRAMA_DEPLOY_HOST_FP }}
+          command_timeout: 5m
+          script: |
+            set -euo pipefail
+            TS="$(date +%Y%m%d-%H%M%S)"
+            if [[ -f /opt/drama-backend/drama-api ]]; then
+              cp -a /opt/drama-backend/drama-api \
+                    /opt/drama-backend/drama-api.bak.${TS}
+            fi
+            mv -f /tmp/drama-api.new /opt/drama-backend/drama-api
+            chown drama:drama /opt/drama-backend/drama-api
+            chmod +x /opt/drama-backend/drama-api
+            systemctl reload drama-backend
+            sleep 1
+            systemctl show -p MainPID -p ActiveState -p NRestarts --value drama-backend
+            curl -fsS http://127.0.0.1:18080/ready && echo
+            curl -fsS https://api.langzhi.top/health && echo
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### 部署结果" >> $GITHUB_STEP_SUMMARY
+          echo "- 触发方式: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 目标环境: ${{ env.DEPLOY_ENV }}" >> $GITHUB_STEP_SUMMARY
+          echo "- commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 触发人: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 状态: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
