@@ -11,10 +11,13 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func Connect(cfg config.Config) (*gorm.DB, error) {
-	db, err := gorm.Open(postgres.Open(cfg.DSN), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(cfg.DSN), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Error), // 只记 error，避免日志爆炸
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -54,6 +57,9 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		&model.Withdrawal{},
 		&model.TaxBracket{},
 		&model.CreatorStatsDaily{},
+		&model.Settlement{},
+		&model.SettlementItem{},
+		&model.Invoice{},
 		&model.ChannelIncomeDaily{},
 		&model.ChannelIncomeImportBatch{},
 		&model.OperationLog{},

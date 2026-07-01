@@ -1,171 +1,504 @@
 package handler
 
 import (
+	"bytes"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/response"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
+	"github.com/xuri/excelize/v2"
 )
 
-const (
-	shareTypePureShare      = "pure_share"
-	shareTypePureShareLabel = "纯分成合同"
-	withdrawActionLabel     = "立即提现"
-)
-
-type settlementDramaRow struct {
-	model.Drama
-	IncomeCents int64 `gorm:"column:income_cents"`
-}
+// === 创作者侧：结算单 ===
 
 // creatorSettlementSummary —— GET /v1/creator/settlement/summary
+// 老接口兼容（沙箱前前端可能调过）。返回累计结算金额 + 本月结算 + 待提现。
+// 详细列表走 GET /v1/creator/settlements。
 func (s *Server) creatorSettlementSummary(c *gin.Context) {
-	cid := middleware.CurrentID(c)
+	creatorID := middleware.CurrentID(c)
+	// 累计已结（paid）+ 本月（按 period 算）
+	var totalPaid, monthPaid, totalOpen, totalNet int64
+	s.db.Model(&model.Settlement{}).
+		Where("creator_id = ? AND status = ?", creatorID, model.SettlementStatusPaid).
+		Select("COALESCE(SUM(net_cents),0)").Scan(&totalPaid)
+	thisMonth := time.Now().Format("2006-01")
+	s.db.Model(&model.Settlement{}).
+		Where("creator_id = ? AND period = ? AND status = ?", creatorID, thisMonth, model.SettlementStatusPaid).
+		Select("COALESCE(SUM(net_cents),0)").Scan(&monthPaid)
+	s.db.Model(&model.Settlement{}).
+		Where("creator_id = ? AND status IN ?", creatorID, []string{model.SettlementStatusOpen, model.SettlementStatusInvoiced}).
+		Select("COALESCE(SUM(net_cents),0)").Scan(&totalOpen)
+	s.db.Model(&model.Settlement{}).
+		Where("creator_id = ?", creatorID).
+		Select("COALESCE(SUM(net_cents),0)").Scan(&totalNet)
+	response.OK(c, gin.H{
+		"total_paid_cents":  totalPaid,
+		"month_paid_cents":  monthPaid,
+		"open_cents":        totalOpen, // 待开票/待打款
+		"lifetime_cents":    totalNet,
+	})
+}
+
+// creatorListSettlements —— GET /v1/creator/settlements
+// 创作者查看自己的结算单列表（按月倒序，附该结算单已审核通过的发票金额合计）。
+func (s *Server) creatorListSettlements(c *gin.Context) {
+	creatorID := middleware.CurrentID(c)
 	page, pageSize := paginate(c)
-
-	var creator model.Creator
-	if err := s.db.First(&creator, cid).Error; err != nil {
-		response.ServerError(c, "查询创作者失败")
-		return
+	q := s.db.Model(&model.Settlement{}).Where("creator_id = ?", creatorID)
+	if v := c.Query("status"); v != "" {
+		q = q.Where("status = ?", v)
 	}
-
-	attr, attrLabel := contractAttribute(creator.CreatorType)
-	profileCheck := checkCreatorWithdrawProfile(creator)
-
-	base := s.settlementDramaBaseQuery(cid)
-	if kw := strings.TrimSpace(c.Query("title")); kw != "" {
-		base = base.Where("d.title ILIKE ?", "%"+kw+"%")
+	if v := c.Query("period"); v != "" {
+		q = q.Where("period = ?", v)
 	}
-
+	if v := c.Query("contract_no"); v != "" {
+		q = q.Where("contract_no = ?", v)
+	}
 	var total int64
-	if err := base.Count(&total).Error; err != nil {
-		response.ServerError(c, "查询短剧失败")
-		return
-	}
+	q.Count(&total)
+	var rows []model.Settlement
+	q.Order("period desc, id desc").
+		Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows)
 
-	var rows []settlementDramaRow
-	if err := base.
-		Select(`d.*, COALESCE(inc.income_cents, 0) AS income_cents`).
-		Order("income_cents desc, d.updated_at desc").
-		Offset((page - 1) * pageSize).
-		Limit(pageSize).
-		Scan(&rows).Error; err != nil {
-		response.ServerError(c, "查询短剧失败")
-		return
+	// 一次性查全部结算单的「已审核通过发票金额合计」避免 N+1
+	settleIDs := make([]uint64, 0, len(rows))
+	for _, r := range rows {
+		settleIDs = append(settleIDs, r.ID)
 	}
-
-	dramaIDs := make([]uint64, 0, len(rows))
-	for _, row := range rows {
-		dramaIDs = append(dramaIDs, row.ID)
+	approvedSum := map[uint64]int64{}
+	if len(settleIDs) > 0 {
+		type pair struct {
+			SettlementID uint64
+			Sum          int64
+		}
+		var pairs []pair
+		s.db.Model(&model.Invoice{}).
+			Select("settlement_id, COALESCE(SUM(amount_cents),0) AS sum").
+			Where("settlement_id IN ? AND status = ?", settleIDs, model.InvoiceStatusApproved).
+			Group("settlement_id").Scan(&pairs)
+		for _, p := range pairs {
+			approvedSum[p.SettlementID] = p.Sum
+		}
 	}
-	withdrawnByDrama := s.batchDramaWithdrawnCents(cid, dramaIDs)
-	pendingByDrama := s.batchDramaPending(cid, dramaIDs)
 
 	list := make([]gin.H, 0, len(rows))
-	for _, row := range rows {
-		withdrawn := withdrawnByDrama[row.ID]
-		withdrawable := row.IncomeCents - withdrawn
-		if withdrawable < 0 {
-			withdrawable = 0
-		}
-		if withdrawable > creator.BalanceCents {
-			withdrawable = creator.BalanceCents
-		}
-
-		enabled, hint, missing := evaluateDramaWithdrawAction(
-			profileCheck, pendingByDrama[row.ID], withdrawable, s.cfg.MinWithdrawalCents,
-		)
+	for _, r := range rows {
 		list = append(list, gin.H{
-			"drama_id":                 row.ID,
-			"drama_title":              row.Title,
-			"contract_attribute":       attr,
-			"contract_attribute_label": attrLabel,
-			"share_type":               shareTypePureShare,
-			"share_type_label":         shareTypePureShareLabel,
-			"income_cents":             row.IncomeCents,
-			"withdrawable_cents":       withdrawable,
-			"withdrawn_cents":          withdrawn,
-			"action":                   dramaWithdrawAction(row.ID, enabled, hint, withdrawable, missing),
+			"id":                  r.ID,
+			"settlement_no":       r.SettlementNo,
+			"creator_id":          r.CreatorID,
+			"contract_no":         r.ContractNo,
+			"period":              r.Period,
+			"gross_cents":         r.GrossCents,
+			"platform_cents":      r.PlatformCents,
+			"net_cents":           r.NetCents,
+			"status":              r.Status,
+			"approved_invoice_cents": approvedSum[r.ID], // 已审核通过发票金额合计
+			"created_at":          r.CreatedAt,
+			"closed_at":           r.ClosedAt,
 		})
 	}
+	response.OK(c, pageResp(list, page, pageSize, total))
+}
 
-	summary := gin.H{
-		"total_income_cents":   creator.TotalIncomeCents,
-		"balance_cents":        creator.BalanceCents,
-		"min_withdrawal_cents": s.cfg.MinWithdrawalCents,
+// creatorGetSettlement —— GET /v1/creator/settlements/:id
+// 创作者查看结算单详情：基础信息 + 订单明细 + 关联发票列表。
+func (s *Server) creatorGetSettlement(c *gin.Context) {
+	creatorID := middleware.CurrentID(c)
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
 	}
-	if !profileCheck.OK {
-		summary["withdraw_hint"] = profileCheck.Hint
-		if len(profileCheck.MissingFields) > 0 {
-			summary["missing_fields"] = profileCheck.MissingFields
+	var st model.Settlement
+	if err := s.db.Where("id = ? AND creator_id = ?", id, creatorID).First(&st).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "结算单不存在")
+			return
+		}
+		response.ServerError(c, "查询失败")
+		return
+	}
+	// 订单明细
+	var items []model.SettlementItem
+	s.db.Where("settlement_id = ?", st.ID).Order("paid_at asc, id asc").Find(&items)
+	itemViews := make([]gin.H, 0, len(items))
+	for _, it := range items {
+		itemViews = append(itemViews, gin.H{
+			"id":            it.ID,
+			"order_id":      it.OrderID,
+			"order_no":      it.OrderNo,
+			"drama_id":      it.DramaID,
+			"source":        it.Source,
+			"amount_cents":  it.AmountCents,
+			"paid_at":       it.PaidAt,
+		})
+	}
+	// 发票列表（只返创作者自己看得到的字段）
+	var invoices []model.Invoice
+	s.db.Where("settlement_id = ?", st.ID).Order("created_at desc").Find(&invoices)
+	invViews := make([]gin.H, 0, len(invoices))
+	approvedSum := int64(0)
+	for _, inv := range invoices {
+		invView := gin.H{
+			"id":            inv.ID,
+			"invoice_no":    inv.InvoiceNo,
+			"invoice_type":  inv.InvoiceType,
+			"external_no":   inv.ExternalNo,
+			"amount_cents":  inv.AmountCents,
+			"file_url":      inv.FileURL,
+			"file_size":     inv.FileSize,
+			"status":        inv.Status,
+			"reject_reason": inv.RejectReason,
+			"reviewed_at":   inv.ReviewedAt,
+			"created_at":    inv.CreatedAt,
+		}
+		// 私有的 file_hash / reviewed_by 不返
+		invViews = append(invViews, invView)
+		if inv.Status == model.InvoiceStatusApproved {
+			approvedSum += inv.AmountCents
 		}
 	}
-	resp := pageResp(list, page, pageSize, total)
-	resp["summary"] = summary
-	response.OK(c, resp)
+	// 公司抬头（用于前端展示"请开给：xxx"，来自 .env 平台配置）
+	platformName := strings.TrimSpace(s.cfg.PlatformCompanyName)
+	if platformName == "" {
+		platformName = "海南琅智网络科技有限公司" // 兜底默认值
+	}
+	platformTaxNo := strings.TrimSpace(s.cfg.PlatformTaxNo)
+	platformBankName := strings.TrimSpace(s.cfg.PlatformBankName)
+	platformBankAccount := strings.TrimSpace(s.cfg.PlatformBankAccount)
+	platformAddress := strings.TrimSpace(s.cfg.PlatformAddress)
+	platformPhone := strings.TrimSpace(s.cfg.PlatformPhone)
+
+	response.OK(c, gin.H{
+		"id":             st.ID,
+		"settlement_no":  st.SettlementNo,
+		"creator_id":     st.CreatorID,
+		"contract_no":    st.ContractNo,
+		"period":         st.Period,
+		"gross_cents":    st.GrossCents,
+		"platform_cents": st.PlatformCents,
+		"net_cents":      st.NetCents,
+		"status":         st.Status,
+		"approved_invoice_cents": approvedSum,
+		"items":          itemViews,
+		"invoices":       invViews,
+		"remark":         st.Remark,
+		"created_at":     st.CreatedAt,
+		"closed_at":      st.ClosedAt,
+		// 公司抬头（开票信息，源自 .env）
+		"platform_company": gin.H{
+			"name":          platformName,
+			"tax_no":        platformTaxNo,
+			"bank_name":     platformBankName,
+			"bank_account":  platformBankAccount,
+			"address":       platformAddress,
+			"phone":         platformPhone,
+		},
+	})
 }
 
-func (s *Server) settlementDramaBaseQuery(cid uint64) *gorm.DB {
-	return s.db.Table("dramas AS d").
-		Joins(`LEFT JOIN (
-			SELECT drama_id, SUM(income_cents) AS income_cents
-			FROM creator_stats_daily
-			WHERE creator_id = ?
-			GROUP BY drama_id
-		) AS inc ON inc.drama_id = d.id`, cid).
-		Where("d.creator_id = ?", cid).
-		Where(`(
-			COALESCE(inc.income_cents, 0) > 0
-			OR EXISTS (
-				SELECT 1 FROM contracts c
-				WHERE c.creator_id = ? AND c.drama_id = d.id
-			)
-		)`, cid)
+// creatorDownloadSettlementExcel —— GET /v1/creator/settlements/:id/download
+// 创作者下载结算单 Excel 对账单（含订单明细）。PDF 二期再做。
+func (s *Server) creatorDownloadSettlementExcel(c *gin.Context) {
+	creatorID := middleware.CurrentID(c)
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var st model.Settlement
+	if err := s.db.Where("id = ? AND creator_id = ?", id, creatorID).First(&st).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "结算单不存在")
+			return
+		}
+		response.ServerError(c, "查询失败")
+		return
+	}
+	var items []model.SettlementItem
+	s.db.Where("settlement_id = ?", st.ID).Order("paid_at asc, id asc").Find(&items)
+
+	// 平台抬头（.env）
+	platformName := strings.TrimSpace(s.cfg.PlatformCompanyName)
+	if platformName == "" {
+		platformName = "海南琅智网络科技有限公司"
+	}
+
+	// 生成 xlsx
+	f := excelize.NewFile()
+	defer f.Close()
+	sheet := "对账单"
+	f.SetSheetName("Sheet1", sheet)
+
+	// 头部：公司抬头 + 标题
+	f.SetCellValue(sheet, "A1", "对账单")
+	f.MergeCell(sheet, "A1", "F1")
+	f.SetCellValue(sheet, "A2", "出具方："+platformName)
+	f.MergeCell(sheet, "A2", "F2")
+	f.SetCellValue(sheet, "A3", "结算单号："+st.SettlementNo)
+	f.MergeCell(sheet, "A3", "F3")
+	f.SetCellValue(sheet, "A4", "结算月份："+st.Period)
+	f.MergeCell(sheet, "A4", "F4")
+	f.SetCellValue(sheet, "A5", "合同编号："+st.ContractNo)
+	f.MergeCell(sheet, "A5", "F5")
+	f.SetCellValue(sheet, "A6", "结算方/创作者ID："+strconv.FormatUint(st.CreatorID, 10))
+	f.MergeCell(sheet, "A6", "F6")
+
+	// 合计
+	f.SetCellValue(sheet, "A8", "结算总金额（元）")
+	f.SetCellValue(sheet, "B8", fmt.Sprintf("%.2f", float64(st.NetCents)/100))
+	f.SetCellValue(sheet, "A9", "订单总流水（元）")
+	f.SetCellValue(sheet, "B9", fmt.Sprintf("%.2f", float64(st.GrossCents)/100))
+	f.SetCellValue(sheet, "A10", "平台抽成（元）")
+	f.SetCellValue(sheet, "B10", fmt.Sprintf("%.2f", float64(st.PlatformCents)/100))
+
+	// 订单明细表
+	headers := []string{"序号", "订单号", "剧ID", "来源", "订单金额(元)", "分成实得(元)", "支付时间"}
+	for i, h := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 12)
+		f.SetCellValue(sheet, cell, h)
+	}
+	for i, it := range items {
+		row := 13 + i
+		f.SetCellValue(sheet, fmt.Sprintf("A%d", row), i+1)
+		f.SetCellValue(sheet, fmt.Sprintf("B%d", row), it.OrderNo)
+		f.SetCellValue(sheet, fmt.Sprintf("C%d", row), it.DramaID)
+		f.SetCellValue(sheet, fmt.Sprintf("D%d", row), it.Source)
+		f.SetCellValue(sheet, fmt.Sprintf("E%d", row), fmt.Sprintf("%.2f", float64(it.AmountCents)/100))
+		if it.PaidAt != nil {
+			f.SetCellValue(sheet, fmt.Sprintf("G%d", row), it.PaidAt.Format("2006-01-02 15:04:05"))
+		}
+	}
+
+	// 我方开票信息（创作者需要照此开票）
+	taxRow := 13 + len(items) + 2
+	f.SetCellValue(sheet, fmt.Sprintf("A%d", taxRow), "我方开票信息（请按此开票）")
+	f.MergeCell(sheet, fmt.Sprintf("A%d", taxRow), fmt.Sprintf("F%d", taxRow))
+	taxRow++
+	f.SetCellValue(sheet, fmt.Sprintf("A%d", taxRow), "账户名称")
+	f.SetCellValue(sheet, fmt.Sprintf("B%d", taxRow), platformName)
+	taxRow++
+	f.SetCellValue(sheet, fmt.Sprintf("A%d", taxRow), "开户行名称")
+	f.SetCellValue(sheet, fmt.Sprintf("B%d", taxRow), s.cfg.PlatformBankName)
+	taxRow++
+	f.SetCellValue(sheet, fmt.Sprintf("A%d", taxRow), "开户行账号")
+	f.SetCellValue(sheet, fmt.Sprintf("B%d", taxRow), s.cfg.PlatformBankAccount)
+	taxRow++
+	f.SetCellValue(sheet, fmt.Sprintf("A%d", taxRow), "纳税识别号")
+	f.SetCellValue(sheet, fmt.Sprintf("B%d", taxRow), s.cfg.PlatformTaxNo)
+	taxRow++
+	f.SetCellValue(sheet, fmt.Sprintf("A%d", taxRow), "注册地址")
+	f.SetCellValue(sheet, fmt.Sprintf("B%d", taxRow), s.cfg.PlatformAddress)
+	taxRow++
+	f.SetCellValue(sheet, fmt.Sprintf("A%d", taxRow), "电话")
+	f.SetCellValue(sheet, fmt.Sprintf("B%d", taxRow), s.cfg.PlatformPhone)
+
+	var buf bytes.Buffer
+	if err := f.Write(&buf); err != nil {
+		response.ServerError(c, "生成 Excel 失败")
+		return
+	}
+	filename := fmt.Sprintf("settlement_%s_%s.xlsx", st.SettlementNo, time.Now().Format("20060102"))
+	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)
+	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buf.Bytes())
 }
 
-func dramaWithdrawAction(dramaID uint64, enabled bool, hint string, amountCents int64, missing []string) gin.H {
-	amount := int64(0)
-	if enabled {
-		amount = amountCents
+// === 创作者侧：发票 ===
+
+// creatorCreateInvoice —— POST /v1/creator/invoices
+// 创作者提交一张发票（file_url 已通过 image-sign 拿到，PUT 上传完）。
+// 同一结算单支持多张发票累加；状态默认 pending。
+func (s *Server) creatorCreateInvoice(c *gin.Context) {
+	creatorID := middleware.CurrentID(c)
+	var req struct {
+		SettlementID uint64 `json:"settlement_id" binding:"required"`
+		InvoiceType  string `json:"invoice_type"   binding:"required"`
+		ExternalNo   string `json:"external_no"`
+		AmountCents  int64  `json:"amount_cents"   binding:"required,gt=0"`
+		FileURL      string `json:"file_url"       binding:"required"`
+		FileHash     string `json:"file_hash"`
+		FileSize     int64  `json:"file_size"`
 	}
-	action := gin.H{
-		"type":         "withdraw",
-		"label":        withdrawActionLabel,
-		"enabled":      enabled,
-		"drama_id":     dramaID,
-		"amount_cents": amount,
-		"hint":         hint,
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "请求体不合法："+err.Error())
+		return
 	}
-	if len(missing) > 0 {
-		action["missing_fields"] = missing
+	// 校验发票类型
+	switch req.InvoiceType {
+	case model.InvoiceTypeVATSpecial, model.InvoiceTypeVATGeneral,
+		model.InvoiceTypeEVATSpecial, model.InvoiceTypeEVATGeneral:
+	default:
+		response.InvalidParam(c, "invoice_type 不合法")
+		return
 	}
-	return action
+	// 校验结算单属于自己
+	var st model.Settlement
+	if err := s.db.Where("id = ? AND creator_id = ?", req.SettlementID, creatorID).First(&st).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "结算单不存在")
+		} else {
+			response.ServerError(c, "查询失败")
+		}
+		return
+	}
+	if st.Status == model.SettlementStatusPaid || st.Status == model.SettlementStatusVoid {
+		response.Conflict(c, "结算单已 "+st.Status+"，不能再上传发票")
+		return
+	}
+	// 业务编号（INV + yyyymm + 序号）
+	bizNo := generateInvoiceBizNo()
+	inv := model.Invoice{
+		InvoiceNo:    bizNo,
+		SettlementID: req.SettlementID,
+		CreatorID:    creatorID,
+		InvoiceType:  req.InvoiceType,
+		ExternalNo:   req.ExternalNo,
+		AmountCents:  req.AmountCents,
+		FileURL:      req.FileURL,
+		FileHash:     req.FileHash,
+		FileSize:     req.FileSize,
+		Status:       model.InvoiceStatusPending,
+	}
+	if err := s.db.Create(&inv).Error; err != nil {
+		response.ServerError(c, "提交发票失败")
+		return
+	}
+	// 顺带把结算单 status 推到 invoiced（仅当之前是 open）
+	if st.Status == model.SettlementStatusOpen {
+		s.db.Model(&st).Update("status", model.SettlementStatusInvoiced)
+	}
+	response.OK(c, gin.H{
+		"id":            inv.ID,
+		"invoice_no":    inv.InvoiceNo,
+		"settlement_id": inv.SettlementID,
+		"invoice_type":  inv.InvoiceType,
+		"external_no":   inv.ExternalNo,
+		"amount_cents":  inv.AmountCents,
+		"file_url":      inv.FileURL,
+		"file_size":     inv.FileSize,
+		"status":        inv.Status,
+		"created_at":    inv.CreatedAt,
+	})
 }
 
-func contractAttribute(creatorType string) (code, label string) {
-	if creatorType == model.CreatorTypeOrganization {
-		return "public", "对公"
+// creatorListInvoices —— GET /v1/creator/invoices
+// 创作者查看自己的发票列表（按结算单 + 状态筛选）。
+func (s *Server) creatorListInvoices(c *gin.Context) {
+	creatorID := middleware.CurrentID(c)
+	page, pageSize := paginate(c)
+	q := s.db.Model(&model.Invoice{}).Where("creator_id = ?", creatorID)
+	if v := c.Query("settlement_id"); v != "" {
+		if id := parseUint(v); id > 0 {
+			q = q.Where("settlement_id = ?", id)
+		}
 	}
-	return "private", "对私"
+	if v := c.Query("status"); v != "" {
+		q = q.Where("status = ?", v)
+	}
+	var total int64
+	q.Count(&total)
+	var rows []model.Invoice
+	q.Order("created_at desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows)
+	list := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		list = append(list, gin.H{
+			"id":            r.ID,
+			"invoice_no":    r.InvoiceNo,
+			"settlement_id": r.SettlementID,
+			"invoice_type":  r.InvoiceType,
+			"external_no":   r.ExternalNo,
+			"amount_cents":  r.AmountCents,
+			"file_url":      r.FileURL,
+			"file_size":     r.FileSize,
+			"status":        r.Status,
+			"reject_reason": r.RejectReason,
+			"reviewed_at":   r.ReviewedAt,
+			"created_at":    r.CreatedAt,
+		})
+	}
+	response.OK(c, pageResp(list, page, pageSize, total))
 }
 
-func evaluateDramaWithdrawAction(profile withdrawProfileCheck, hasPending bool, withdrawable, minCents int64) (bool, string, []string) {
-	if !profile.OK {
-		return false, profile.Hint, profile.MissingFields
+// creatorGetInvoice —— GET /v1/creator/invoices/:id
+func (s *Server) creatorGetInvoice(c *gin.Context) {
+	creatorID := middleware.CurrentID(c)
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
 	}
-	if hasPending {
-		return false, "该剧存在审核中的提现申请，请等待处理", nil
+	var inv model.Invoice
+	if err := s.db.Where("id = ? AND creator_id = ?", id, creatorID).First(&inv).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "发票不存在")
+		} else {
+			response.ServerError(c, "查询失败")
+		}
+		return
 	}
-	if withdrawable < minCents {
-		return false, fmt.Sprintf(
-			"该剧可提现 ¥%.2f，未达到最低提现门槛 ¥%.2f",
-			float64(withdrawable)/100, float64(minCents)/100,
-		), nil
+	response.OK(c, gin.H{
+		"id":            inv.ID,
+		"invoice_no":    inv.InvoiceNo,
+		"settlement_id": inv.SettlementID,
+		"invoice_type":  inv.InvoiceType,
+		"external_no":   inv.ExternalNo,
+		"amount_cents":  inv.AmountCents,
+		"file_url":      inv.FileURL,
+		"file_size":     inv.FileSize,
+		"status":        inv.Status,
+		"reject_reason": inv.RejectReason,
+		"reviewed_at":   inv.ReviewedAt,
+		"created_at":    inv.CreatedAt,
+	})
+}
+
+// creatorCancelInvoice —— DELETE /v1/creator/invoices/:id
+// 创作者撤销一张未审核的发票（仅 pending 状态可撤销；已 approved 不允许）。
+func (s *Server) creatorCancelInvoice(c *gin.Context) {
+	creatorID := middleware.CurrentID(c)
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
 	}
-	return true, "", nil
+	var inv model.Invoice
+	if err := s.db.Where("id = ? AND creator_id = ?", id, creatorID).First(&inv).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "发票不存在")
+		} else {
+			response.ServerError(c, "查询失败")
+		}
+		return
+	}
+	if inv.Status != model.InvoiceStatusPending {
+		response.Conflict(c, "仅待审核的发票可撤销，当前状态："+inv.Status)
+		return
+	}
+	if err := s.db.Delete(&inv).Error; err != nil {
+		response.ServerError(c, "撤销失败")
+		return
+	}
+	response.OK(c, gin.H{"id": id, "deleted": true})
+}
+
+// generateInvoiceBizNo 生成发票业务编号（INVyyyyMM-XXXX）。
+// 简化实现：yyyyMM + 当前秒的 hex 末 4 位；并发场景下不保证唯一，
+// 真实生产应改成 MAX(invoice_no) 自增或在 DB 加 unique index 兜底。
+func generateInvoiceBizNo() string {
+	now := time.Now()
+	prefix := "INV" + now.Format("200601") + "-"
+	suffix := strconv.FormatInt(now.UnixNano()%10000, 10)
+	for len(suffix) < 4 {
+		suffix = "0" + suffix
+	}
+	return prefix + suffix
 }

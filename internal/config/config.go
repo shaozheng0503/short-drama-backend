@@ -131,6 +131,16 @@ type Config struct {
 	AlipayPublicKeyPath    string
 	AlipaySandbox          bool   // true=沙箱网关，false=生产网关（默认沙箱，更安全）
 	AlipayNotifyURL        string // 异步通知地址，公网可达：https://<域名>/v1/webhooks/alipay/pay
+
+	// === 平台公司抬头（创作者开票时需要照此填）===
+	// 配置来源：海南琅智网络科技有限公司
+	// 创作者对账单 PDF/Excel 上展示"请开给：xxx"，所有抬头字段从 .env 读，便于后期换公司。
+	PlatformCompanyName string // 平台公司全称（默认：海南琅智网络科技有限公司）
+	PlatformTaxNo       string // 纳税识别号（统一社会信用代码）
+	PlatformBankName    string // 开户行（如"招商银行海口分行"）
+	PlatformBankAccount string // 银行账号
+	PlatformAddress     string // 注册地址
+	PlatformPhone       string // 公司电话
 }
 
 func Load() Config {
@@ -237,6 +247,17 @@ func Load() Config {
 		AlipayPublicKeyPath:  getEnv("ALIPAY_PUBLIC_KEY_PATH", ""),
 		AlipaySandbox:        getEnvBool("ALIPAY_SANDBOX", true),
 		AlipayNotifyURL:      getEnv("ALIPAY_NOTIFY_URL", ""),
+
+		// === 平台公司抬头 ===
+		// 默认"海南琅智网络科技有限公司"——业务实际开票主体（黄少政 6/30 拍板）。
+		// 沙箱 .env 可空着；生产 .env 必须填齐（PLATFORM_TAX_NO 等必填），
+		// 否则创作者对账单上开票信息不全，财务对接会很麻烦。
+		PlatformCompanyName: getEnv("PLATFORM_COMPANY_NAME", "海南琅智网络科技有限公司"),
+		PlatformTaxNo:       getEnv("PLATFORM_TAX_NO", ""),
+		PlatformBankName:    getEnv("PLATFORM_BANK_NAME", ""),
+		PlatformBankAccount: getEnv("PLATFORM_BANK_ACCOUNT", ""),
+		PlatformAddress:     getEnv("PLATFORM_ADDRESS", ""),
+		PlatformPhone:       getEnv("PLATFORM_PHONE", ""),
 	}
 }
 

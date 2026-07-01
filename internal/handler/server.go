@@ -93,6 +93,8 @@ func (s *Server) StartBackground(ctx context.Context) {
 			}
 		}
 	}()
+	// 月度结算 cron（每月 1 号 02:00 自动生成上月结算单；启动期补一遍）
+	s.startSettlementCron(ctx)
 }
 
 func (s *Server) closeExpiredOrders(now time.Time) {
@@ -263,7 +265,16 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.POST("/uploads/image-sign", verified, s.creatorImageUploadSign)
 
 	creatorAuth.GET("/income", s.creatorIncome)
-	creatorAuth.GET("/settlement/summary", s.creatorSettlementSummary)
+	// === 创作者结算 & 发票（2026-07-01）===
+	// 旧 /settlement/summary 改名为 /settlements/summary（保持单数 path 不动，避免影响老前端）
+	creatorAuth.GET("/settlement/summary", s.creatorSettlementSummary) // 老接口兼容
+	creatorAuth.GET("/settlements", s.creatorListSettlements)
+	creatorAuth.GET("/settlements/:id", s.creatorGetSettlement)
+	creatorAuth.GET("/settlements/:id/download", s.creatorDownloadSettlementExcel)
+	creatorAuth.POST("/invoices", s.creatorCreateInvoice)
+	creatorAuth.GET("/invoices", s.creatorListInvoices)
+	creatorAuth.GET("/invoices/:id", s.creatorGetInvoice)
+	creatorAuth.DELETE("/invoices/:id", s.creatorCancelInvoice)
 	creatorAuth.POST("/withdrawals", s.idempotencyMiddleware("creator"), s.creatorCreateWithdrawal)
 	creatorAuth.GET("/withdrawals", s.creatorListWithdrawals)
 	creatorAuth.GET("/withdrawals/tax-preview", s.creatorWithdrawTaxPreview)
@@ -351,6 +362,16 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/withdrawals/:id/approve", s.requireAdminRole(model.AdminRoleFinance), s.adminApproveWithdrawal)
 	adminAuth.POST("/withdrawals/:id/reject", s.requireAdminRole(model.AdminRoleFinance), s.adminRejectWithdrawal)
 	adminAuth.POST("/withdrawals/:id/mark-paid", s.requireAdminRole(model.AdminRoleFinance), s.adminMarkWithdrawalPaid)
+
+	// === Admin 结算 & 发票审核（2026-07-01）===
+	adminAuth.GET("/invoices", s.adminListInvoices)
+	adminAuth.GET("/invoices/:id", s.adminGetInvoice)
+	adminAuth.POST("/invoices/:id/approve", s.requireAdminRole(model.AdminRoleFinance), s.adminApproveInvoice)
+	adminAuth.POST("/invoices/:id/reject", s.requireAdminRole(model.AdminRoleFinance), s.adminRejectInvoice)
+	adminAuth.GET("/settlements", s.adminListSettlements)
+	adminAuth.GET("/settlements/:id", s.adminGetSettlement)
+	adminAuth.POST("/settlements/generate", s.requireAdminRole(model.AdminRoleFinance), s.adminGenerateSettlements)
+	adminAuth.POST("/settlements/:id/close", s.requireAdminRole(model.AdminRoleFinance), s.adminCloseSettlement)
 
 	// App 付费收入（平台自有支付分账）：按短剧聚合的毛收入/净收入，订单中心+收益汇总（财务角色）
 	adminAuth.GET("/finance/app-income", s.requireAdminRole(model.AdminRoleFinance), s.adminListAppIncome)

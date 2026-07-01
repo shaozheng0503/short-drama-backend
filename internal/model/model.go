@@ -595,6 +595,8 @@ type Withdrawal struct {
 	ReviewedBy          *uint64    `gorm:"column:reviewed_by" json:"reviewed_by"`
 	ReviewedAt          *time.Time `gorm:"column:reviewed_at" json:"reviewed_at"`
 	PaidAt              *time.Time `gorm:"column:paid_at" json:"paid_at"`
+	// 2026-07 加：提现必须先上传对应结算单的发票（已审核通过）。可选：一笔提现可能跨多张结算单时为空。
+	InvoiceID           *uint64    `gorm:"column:invoice_id;index" json:"invoice_id"`
 	CreatedAt           time.Time  `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt           time.Time  `gorm:"column:updated_at" json:"updated_at"`
 }
@@ -617,6 +619,104 @@ type TaxBracket struct {
 }
 
 func (TaxBracket) TableName() string { return "tax_brackets" }
+
+// === 结算单 & 发票（2026-07-01 创作者结算+发票功能）===
+
+// Settlement 状态：
+//   - draft      ：草稿，cron 自动生成中
+//   - open       ：待上传发票（创作者可下载对账单、上传发票、发起提现）
+//   - invoiced   ：发票已上传/审核中（提现可走，但等发票审核完才打款）
+//   - paid       ：已打款（结算单生命周期结束）
+//   - void       ：作废（财务手动关账）
+// 数据源：CreatorStatsDaily（按月汇总 income_cents）+ ChannelIncomeDaily（第三方渠道）
+const (
+	SettlementStatusDraft    = "draft"
+	SettlementStatusOpen     = "open"
+	SettlementStatusInvoiced = "invoiced"
+	SettlementStatusPaid     = "paid"
+	SettlementStatusVoid     = "void"
+)
+
+// Settlement —— 创作者结算单（按月 × 合同 × 创作者 一条）。
+// 一部结算单对应多个订单贡献（detail 见 settlement_items 表），
+// 创作者自行开票并上传发票，平台审核通过后随提现一并打款。
+type Settlement struct {
+	ID            uint64     `gorm:"primaryKey;column:id" json:"id"`
+	SettlementNo  string     `gorm:"column:settlement_no;size:64;uniqueIndex" json:"settlement_no"` // 业务编号 ST202607-0001
+	CreatorID     uint64     `gorm:"column:creator_id;index" json:"creator_id"`
+	ContractNo    string     `gorm:"column:contract_no;size:64;index" json:"contract_no"`        // 关联合同编号
+	Period        string     `gorm:"column:period;size:16;index" json:"period"`                  // "2026-05" / "2026-05-R3"
+	GrossCents    int64      `gorm:"column:gross_cents;default:0" json:"gross_cents"`            // 订单总流水
+	PlatformCents int64      `gorm:"column:platform_cents;default:0" json:"platform_cents"`      // 平台抽成
+	NetCents      int64      `gorm:"column:net_cents;default:0" json:"net_cents"`                // 创作者净收入
+	Status        string     `gorm:"column:status;size:20;default:open;index" json:"status"`
+	OpenedAt      *time.Time `gorm:"column:opened_at" json:"opened_at"`      // 进入 open 状态的时间
+	ClosedAt      *time.Time `gorm:"column:closed_at" json:"closed_at"`      // paid / void 时间
+	Remark        string     `gorm:"column:remark;size:255" json:"remark"`
+	CreatedAt     time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt     time.Time  `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (Settlement) TableName() string { return "settlements" }
+
+// SettlementItem —— 结算单-订单关联（一张结算单可包含多个订单）。
+// 冗余 AmountCents 字段：避免改 Order 后追溯历史结算单金额变动。
+type SettlementItem struct {
+	ID            uint64    `gorm:"primaryKey;column:id" json:"id"`
+	SettlementID  uint64    `gorm:"column:settlement_id;uniqueIndex:uniq_settle_order,priority:1;index" json:"settlement_id"`
+	OrderID       uint64    `gorm:"column:order_id;uniqueIndex:uniq_settle_order,priority:2" json:"order_id"`
+	DramaID       uint64    `gorm:"column:drama_id;index" json:"drama_id"`
+	Source        string    `gorm:"column:source;size:32" json:"source"`        // self / channel_xxx
+	AmountCents   int64     `gorm:"column:amount_cents;default:0" json:"amount_cents"` // 创作者分成实得（冗余）
+	OrderNo       string    `gorm:"column:order_no;size:64" json:"order_no"`
+	PaidAt        *time.Time `gorm:"column:paid_at" json:"paid_at"`
+	CreatedAt     time.Time  `gorm:"column:created_at" json:"created_at"`
+}
+
+func (SettlementItem) TableName() string { return "settlement_items" }
+
+// Invoice 状态：
+//   - pending    ：已上传，待 Admin 审核
+//   - approved   ：审核通过（创作者可继续走提现）
+//   - rejected   ：审核驳回（创作者可重传）
+// 驳回后可重传：旧 invoice 状态置 rejected，不删；上传新发票创建新 invoice 记录。
+const (
+	InvoiceStatusPending  = "pending"
+	InvoiceStatusApproved = "approved"
+	InvoiceStatusRejected = "rejected"
+)
+
+// InvoiceType 发票类型（增值税专用 / 增值税普通 / 电子专用 / 电子普通）
+const (
+	InvoiceTypeVATSpecial   = "vat_special"   // 增值税专用发票
+	InvoiceTypeVATGeneral   = "vat_general"   // 增值税普通发票
+	InvoiceTypeEVATSpecial  = "evat_special"  // 增值税电子专用发票
+	InvoiceTypeEVATGeneral  = "evat_general"  // 增值税电子普通发票
+)
+
+// Invoice —— 创作者上传的发票。
+// 一个结算单可对应多张发票（创作者可分次上传），approved 后的发票金额加和
+// 应 >= 结算单 NetCents 才能走提现。
+type Invoice struct {
+	ID            uint64     `gorm:"primaryKey;column:id" json:"id"`
+	InvoiceNo     string     `gorm:"column:invoice_no;size:64" json:"invoice_no"`              // 业务编号 INV202607-0001
+	SettlementID  uint64     `gorm:"column:settlement_id;index" json:"settlement_id"`
+	CreatorID     uint64     `gorm:"column:creator_id;index" json:"creator_id"`
+	InvoiceType   string     `gorm:"column:invoice_type;size:32" json:"invoice_type"`           // vat_special / vat_general / evat_special / evat_general
+	ExternalNo    string     `gorm:"column:external_no;size:128" json:"external_no"`           // 发票号（创作者手填，可事后补）
+	AmountCents   int64      `gorm:"column:amount_cents;default:0" json:"amount_cents"`
+	FileURL       string     `gorm:"column:file_url;size:512" json:"file_url"`                 // COS 路径
+	FileHash      string     `gorm:"column:file_hash;size:128" json:"file_hash"`               // sha256 防重
+	FileSize      int64      `gorm:"column:file_size;default:0" json:"file_size"`
+	Status        string     `gorm:"column:status;size:20;default:pending;index" json:"status"`
+	RejectReason  string     `gorm:"column:reject_reason;size:255" json:"reject_reason"`
+	ReviewedBy    *uint64    `gorm:"column:reviewed_by" json:"reviewed_by"`
+	ReviewedAt    *time.Time `gorm:"column:reviewed_at" json:"reviewed_at"`
+	CreatedAt     time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt     time.Time  `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (Invoice) TableName() string { return "invoices"}
 
 // CreatorStatsDaily —— 创作者每日数据（MVP 数据库设计 3.16）
 type CreatorStatsDaily struct {
