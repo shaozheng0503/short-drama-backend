@@ -20,30 +20,31 @@ import (
 // === 创作者侧：结算单 ===
 
 // creatorSettlementSummary —— GET /v1/creator/settlement/summary
-// 老接口兼容（沙箱前前端可能调过）。返回累计结算金额 + 本月结算 + 待提现。
-// 详细列表走 GET /v1/creator/settlements。
+// 创作者侧账号收益汇总（按 OpenAPI CreatorSettlementSummary schema 实现）。
+//
+// 2026-07-02 修：之前实现只查 settlements 表（4 个字段 lifetime/month_paid/open/total_paid），
+// 不符合 OpenAPI schema（要求 total_income_cents / balance_cents / min_withdrawal_cents），
+// 导致创作者有订单流水但接口返回 0（旧实现 lifetime=已结=0）。
+//
+// 新实现：直接读 creators 表维护好的 3 个字段（导入收入时已累加）。
+// - total_income_cents: 累计订单流水（导入收入时已累加到 creators.total_income_cents）
+// - balance_cents: 可提现余额（creators.balance_cents = total_income - 已提现 - frozen）
+// - min_withdrawal_cents: 最低提现门槛，从 .env 读
 func (s *Server) creatorSettlementSummary(c *gin.Context) {
 	creatorID := middleware.CurrentID(c)
-	// 累计已结（paid）+ 本月（按 period 算）
-	var totalPaid, monthPaid, totalOpen, totalNet int64
-	s.db.Model(&model.Settlement{}).
-		Where("creator_id = ? AND status = ?", creatorID, model.SettlementStatusPaid).
-		Select("COALESCE(SUM(net_cents),0)").Scan(&totalPaid)
-	thisMonth := time.Now().Format("2006-01")
-	s.db.Model(&model.Settlement{}).
-		Where("creator_id = ? AND period = ? AND status = ?", creatorID, thisMonth, model.SettlementStatusPaid).
-		Select("COALESCE(SUM(net_cents),0)").Scan(&monthPaid)
-	s.db.Model(&model.Settlement{}).
-		Where("creator_id = ? AND status IN ?", creatorID, []string{model.SettlementStatusOpen, model.SettlementStatusInvoiced}).
-		Select("COALESCE(SUM(net_cents),0)").Scan(&totalOpen)
-	s.db.Model(&model.Settlement{}).
-		Where("creator_id = ?", creatorID).
-		Select("COALESCE(SUM(net_cents),0)").Scan(&totalNet)
+	var creator model.Creator
+	if err := s.db.Select("total_income_cents, balance_cents").First(&creator, creatorID).Error; err != nil {
+		response.ServerError(c, "查询创作者收益失败")
+		return
+	}
+	minWithdrawal := int64(10000) // 默认 100 元（与 .env MIN_WITHDRAWAL_CENTS 对齐）
+	if s.cfg.MinWithdrawalCents > 0 {
+		minWithdrawal = s.cfg.MinWithdrawalCents
+	}
 	response.OK(c, gin.H{
-		"total_paid_cents":  totalPaid,
-		"month_paid_cents":  monthPaid,
-		"open_cents":        totalOpen, // 待开票/待打款
-		"lifetime_cents":    totalNet,
+		"total_income_cents":   creator.TotalIncomeCents,
+		"balance_cents":        creator.BalanceCents,
+		"min_withdrawal_cents": minWithdrawal,
 	})
 }
 
