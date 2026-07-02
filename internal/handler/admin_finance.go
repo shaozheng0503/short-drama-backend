@@ -833,6 +833,163 @@ func (s *Server) adminApproveWithdrawal(c *gin.Context) {
 	s.respondWithdrawalResult(c, id, err)
 }
 
+// === 2026-07-02 流程图步骤 3 合并审核 ===
+// adminReviewWithdrawal —— POST /v1/admin/withdrawals/:id/review
+// 财务一次审完"提现 + 关联发票"两件事。
+// 入参：
+//
+//	{
+//	  "withdrawal_action": "approve" | "reject",
+//	  "invoice_action":    "approve" | "reject" | "skip",  // skip=只审提现不动发票
+//	  "transaction_no":    "...",  // 可选；带则直接打款
+//	  "remark":            "...",
+//	}
+//
+// 行为：
+//   - withdrawal_action=reject + invoice_action=approve：提现驳回（frozen→balance 回退），发票仍 approved
+//     → 创作者下次可以拿同一张发票重新提现
+//   - withdrawal_action=approve + invoice_action=reject：提现通过，发票 rejected（不允许——返回 400）
+//   - withdrawal_action=reject + invoice_action=reject：两件都驳回
+//   - withdrawal_action=approve + invoice_action=approve：两件都过（最常见）
+//   - withdrawal_action=approve + invoice_action=skip：保持原发票状态（适用于发票已 approved 的快通道）
+func (s *Server) adminReviewWithdrawal(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var req struct {
+		WithdrawalAction string `json:"withdrawal_action" binding:"required,oneof=approve reject"`
+		InvoiceAction    string `json:"invoice_action"` // approve / reject / skip（默认 skip）
+		TransactionNo    string `json:"transaction_no"` // 带则直接打款
+		Remark           string `json:"remark"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "withdrawal_action 必填，取值 approve/reject；invoice_action 可选 approve/reject/skip")
+		return
+	}
+	if req.InvoiceAction == "" {
+		req.InvoiceAction = "skip"
+	}
+	// 合法性：不能"通过提现但拒绝发票"
+	if req.WithdrawalAction == "approve" && req.InvoiceAction == "reject" {
+		response.InvalidParam(c, "提现通过时不允许驳回发票（请选 approve 或 skip）")
+		return
+	}
+	aid := middleware.CurrentID(c)
+	now := time.Now()
+	paid := false
+	var invoiceChangedTo string
+	var withdrawalChangedTo string
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var w model.Withdrawal
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&w, id).Error; err != nil {
+			return err
+		}
+		if w.Status != model.WithdrawalStatusPending {
+			return errWithdrawalStatus
+		}
+		// 1) 发票审核（在 withdrawal 决策之前，单独事务失败好回滚）
+		if w.InvoiceID != nil && req.InvoiceAction != "skip" {
+			var inv model.Invoice
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&inv, *w.InvoiceID).Error; err != nil {
+				return err
+			}
+			// 只有 pending 状态的发票才允许审（approved / rejected 是终态）
+			if inv.Status != model.InvoiceStatusPending {
+				if req.InvoiceAction == "approve" && inv.Status == model.InvoiceStatusApproved {
+					// 已是 approved，幂等通过
+				} else {
+					return errInvoiceStatus
+				}
+			} else {
+				newStatus := model.InvoiceStatusApproved
+				rejectReason := ""
+				if req.InvoiceAction == "reject" {
+					newStatus = model.InvoiceStatusRejected
+					rejectReason = req.Remark
+				}
+				upd := map[string]interface{}{
+					"status":       newStatus,
+					"reviewed_by":  aid,
+					"reviewed_at":  now,
+					"reject_reason": rejectReason,
+				}
+				if err := tx.Model(&inv).Updates(upd).Error; err != nil {
+					return err
+				}
+				invoiceChangedTo = newStatus
+			}
+		}
+		// 2) 提现决策
+		if req.WithdrawalAction == "reject" {
+			// 驳回：frozen → balance 回退
+			var creator model.Creator
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				First(&creator, w.CreatorID).Error; err != nil {
+				return err
+			}
+			if creator.FrozenCents < w.AmountCents {
+				return errFrozenInsufficient
+			}
+			if err := tx.Model(&model.Creator{}).Where("id = ?", w.CreatorID).
+				Updates(map[string]interface{}{
+					"balance_cents": gorm.Expr("balance_cents + ?", w.AmountCents),
+					"frozen_cents":  gorm.Expr("frozen_cents - ?", w.AmountCents),
+				}).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&w).Updates(map[string]interface{}{
+				"status":      model.WithdrawalStatusRejected,
+				"remark":      req.Remark,
+				"reviewed_by": aid,
+				"reviewed_at": now,
+			}).Error; err != nil {
+				return err
+			}
+			withdrawalChangedTo = model.WithdrawalStatusRejected
+			return nil
+		}
+		// approve 分支
+		transactionNo := strings.TrimSpace(req.TransactionNo)
+		if transactionNo != "" {
+			paid = true
+			return markWithdrawalPaidTx(tx, &w, aid, transactionNo, req.Remark)
+		}
+		upd := map[string]interface{}{
+			"status":      model.WithdrawalStatusApproved,
+			"reviewed_by": aid,
+			"reviewed_at": now,
+		}
+		if strings.TrimSpace(req.Remark) != "" {
+			upd["remark"] = req.Remark
+		}
+		if err := tx.Model(&w).Updates(upd).Error; err != nil {
+			return err
+		}
+		withdrawalChangedTo = model.WithdrawalStatusApproved
+		return nil
+	})
+	if err == nil {
+		// 通知文案按最终结果选
+		switch {
+		case paid:
+			s.notifyWithdrawal(id, "提现已打款", "您的提现（%s）已完成打款，请注意查收。")
+		case withdrawalChangedTo == model.WithdrawalStatusApproved:
+			s.notifyWithdrawal(id, "提现申请已通过", "您的提现申请（%s）已通过审核，等待打款。")
+		case withdrawalChangedTo == model.WithdrawalStatusRejected:
+			s.notifyWithdrawal(id, "提现申请被驳回", "您的提现申请（%s）被驳回，金额已退回可用余额。")
+		}
+	}
+	// 扩展响应：附带 invoice_action 的最终结果
+	c.Header("X-Withdrawal-Status", withdrawalChangedTo)
+	if invoiceChangedTo != "" {
+		c.Header("X-Invoice-Status", invoiceChangedTo)
+	}
+	s.respondWithdrawalResult(c, id, err)
+}
+
 // notifyWithdrawal 按 withdrawal id 读取创作者与金额，给创作者发一条提现状态消息。
 // tmpl 中的 %s 会被替换成金额（¥x.xx）。
 func (s *Server) notifyWithdrawal(id uint64, title, tmpl string) {
@@ -940,6 +1097,8 @@ func (s *Server) respondWithdrawalResult(c *gin.Context, id uint64, err error) {
 			response.Conflict(c, "当前状态不允许该操作")
 		case errors.Is(err, errFrozenInsufficient):
 			response.Conflict(c, "创作者冻结余额不足，账目异常，请先对账")
+		case errors.Is(err, errInvoiceStatus):
+			response.Conflict(c, "该发票已审核过（approved/rejected），不能再改")
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			response.NotFound(c, "提现申请不存在")
 		default:
@@ -957,6 +1116,8 @@ func (s *Server) respondWithdrawalResult(c *gin.Context, id uint64, err error) {
 var (
 	errWithdrawalStatus   = errors.New("withdrawal status invalid")
 	errFrozenInsufficient = errors.New("frozen balance insufficient")
+	// 2026-07-02 改：合并审核时遇到发票状态非法（终态/被改过）
+	errInvoiceStatus = errors.New("invoice status invalid for review")
 )
 
 // === 订单退款 / 主动查单 (管理端) ===

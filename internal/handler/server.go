@@ -272,6 +272,8 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.GET("/settlements/:id", s.creatorGetSettlement)
 	creatorAuth.GET("/settlements/:id/download", s.creatorDownloadSettlementExcel) // Excel 对账单（电子表格，方便筛选）
 	creatorAuth.GET("/settlements/:id/download.pdf", s.creatorDownloadSettlementPDF) // PDF 对账单（存档/发邮件用，固定版式）
+	// 2026-07-02 改：流程图步骤 1 预览结算单（实时聚合，不入库）
+	creatorAuth.GET("/settlement/preview", s.creatorPreviewSettlement)
 	creatorAuth.POST("/invoices", s.creatorCreateInvoice)
 	creatorAuth.GET("/invoices", s.creatorListInvoices)
 	creatorAuth.GET("/invoices/:id", s.creatorGetInvoice)
@@ -363,6 +365,8 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/withdrawals/:id/approve", s.requireAdminRole(model.AdminRoleFinance), s.adminApproveWithdrawal)
 	adminAuth.POST("/withdrawals/:id/reject", s.requireAdminRole(model.AdminRoleFinance), s.adminRejectWithdrawal)
 	adminAuth.POST("/withdrawals/:id/mark-paid", s.requireAdminRole(model.AdminRoleFinance), s.adminMarkWithdrawalPaid)
+	// 2026-07-02 改：流程图步骤 3「合并审核」——财务一次审完 withdrawal + invoice
+	adminAuth.POST("/withdrawals/:id/review", s.requireAdminRole(model.AdminRoleFinance), s.adminReviewWithdrawal)
 
 	// === Admin 结算 & 发票审核（2026-07-01）===
 	adminAuth.GET("/invoices", s.adminListInvoices)

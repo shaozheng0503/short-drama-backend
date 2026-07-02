@@ -652,6 +652,139 @@ func (s *Server) creatorCancelInvoice(c *gin.Context) {
 	response.OK(c, gin.H{"id": id, "deleted": true})
 }
 
+// === 2026-07-02 流程图步骤 1 预览结算单 ===
+// creatorPreviewSettlement —— GET /v1/creator/settlement/preview?period=YYYY-MM
+// 实时聚合 creator_stats_daily，按 period（默认当月）返回"截至当前的快照"结算单预览。
+// 与 /settlements 列表的差异：列表返已落库（cron / 财务手动 generate）的结算单，
+// 预览返"按月实时算"的——金额随流水变化，月内可多次调用。
+// 不写库：纯展示 + 创作者"开多少发票"做参考。
+func (s *Server) creatorPreviewSettlement(c *gin.Context) {
+	creatorID := middleware.CurrentID(c)
+	period := c.Query("period")
+	if period == "" {
+		period = time.Now().Format("2006-01")
+	}
+	if _, err := time.Parse("2006-01", period); err != nil {
+		response.InvalidParam(c, "period 格式必须为 YYYY-MM")
+		return
+	}
+	startStr := period + "-01"
+	endMonth, _ := time.Parse("2006-01", period)
+	endStr := endMonth.AddDate(0, 1, 0).Format("2006-01-02")
+
+	// 1) 创作者主信息
+	var creator model.Creator
+	if err := s.db.First(&creator, creatorID).Error; err != nil {
+		response.ServerError(c, "查询创作者失败")
+		return
+	}
+
+	// 2) 按剧聚合收入
+	type dramaAgg struct {
+		DramaID     uint64
+		IncomeCents int64
+		PlayCount   int64
+	}
+	var aggs []dramaAgg
+	s.db.Table("creator_stats_daily").
+		Select("drama_id, SUM(income_cents) AS income_cents, SUM(play_count) AS play_count").
+		Where("creator_id = ? AND stat_date >= ? AND stat_date < ?", creatorID, startStr, endStr).
+		Group("drama_id").
+		Order("income_cents DESC").
+		Scan(&aggs)
+
+	// 3) 按剧聚合已提现（pending+approved+paid）
+	type dramaWithdrawn struct {
+		DramaID       uint64
+		WithdrawnCents int64
+	}
+	var wds []dramaWithdrawn
+	s.db.Table("withdrawals").
+		Select("drama_id, COALESCE(SUM(amount_cents),0) AS withdrawn_cents").
+		Where("creator_id = ? AND status IN ?", creatorID, activeWithdrawalStatuses).
+		Group("drama_id").Scan(&wds)
+	withdrawnMap := map[uint64]int64{}
+	for _, w := range wds {
+		withdrawnMap[w.DramaID] = w.WithdrawnCents
+	}
+
+	// 4) 拉 drama 标题
+	dramaIDs := make([]uint64, 0, len(aggs))
+	for _, a := range aggs {
+		dramaIDs = append(dramaIDs, a.DramaID)
+	}
+	titleMap := map[uint64]string{}
+	if len(dramaIDs) > 0 {
+		var dramas []model.Drama
+		s.db.Select("id, title").Where("id IN ?", dramaIDs).Find(&dramas)
+		for _, d := range dramas {
+			titleMap[d.ID] = d.Title
+		}
+	}
+
+	// 5) 平台抽成比例（与 cron 一致）
+	creatorShareRate := s.cfg.CreatorShareRate
+	if creatorShareRate <= 0 || creatorShareRate > 1 {
+		creatorShareRate = 0.7
+	}
+
+	// 6) 组装
+	minWithdrawal := int64(10000)
+	if s.cfg.MinWithdrawalCents > 0 {
+		minWithdrawal = s.cfg.MinWithdrawalCents
+	}
+	var totalIncome, totalWithdrawable, totalWithdrawn int64
+	items := make([]gin.H, 0, len(aggs))
+	for _, a := range aggs {
+		withdrawn := withdrawnMap[a.DramaID]
+		withdrawable := a.IncomeCents - withdrawn
+		if withdrawable < 0 {
+			withdrawable = 0
+		}
+		gross := int64(float64(a.IncomeCents) / creatorShareRate)
+		platformCents := gross - a.IncomeCents
+		totalIncome += a.IncomeCents
+		totalWithdrawable += withdrawable
+		totalWithdrawn += withdrawn
+		items = append(items, gin.H{
+			"drama_id":           a.DramaID,
+			"drama_title":        titleMap[a.DramaID],
+			"income_cents":       a.IncomeCents,    // 创作者实得（period 内）
+			"gross_cents":        gross,            // 总流水
+			"platform_cents":     platformCents,    // 平台抽成
+			"withdrawable_cents": withdrawable,
+			"withdrawn_cents":    withdrawn,
+			"play_count":         a.PlayCount,
+		})
+	}
+
+	// 7) 提示：是否已落库（cron / generate）
+	var hasStored int64
+	s.db.Model(&model.Settlement{}).Where("creator_id = ? AND period = ?", creatorID, period).Count(&hasStored)
+	source := "preview"
+	if hasStored > 0 {
+		source = "stored+preview"
+	}
+
+	response.OK(c, gin.H{
+		"period":           period,
+		"source":           source, // "preview" 纯实时 / "stored+preview" 已落库且实时更新
+		"is_stored":        hasStored > 0,
+		"creator_id":       creatorID,
+		"creator_type":     creator.CreatorType,
+		"transfer_type":    model.TransferTypeOf(creator.CreatorType),
+		"min_withdrawal_cents": minWithdrawal,
+		"summary": gin.H{
+			"income_cents":        totalIncome,
+			"withdrawable_cents":  totalWithdrawable,
+			"withdrawn_cents":     totalWithdrawn,
+			"creator_share_rate":  creatorShareRate,
+		},
+		"items": items,
+		"note":  "本接口为实时快照（不入库），最终结算金额以系统每月 1 号 02:00 自动生成的结算单为准",
+	})
+}
+
 // generateInvoiceBizNo 生成发票业务编号（INVyyyyMM-XXXX）。
 // 简化实现：yyyyMM + 当前秒的 hex 末 4 位；并发场景下不保证唯一，
 // 真实生产应改成 MAX(invoice_no) 自增或在 DB 加 unique index 兜底。
