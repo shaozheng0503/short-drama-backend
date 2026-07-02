@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"strings"
+
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/response"
@@ -32,8 +34,20 @@ func (s *Server) requireActiveCreator() gin.HandlerFunc {
 // 对应需求「没认证通过不能上传还有相关操作」。挂在 requireActiveCreator 之后（账号正常前提下再校验认证）。
 // 未通过认证统一返回 40301 + need_verification 标记，前端据此把用户引导到实名认证页。
 // 只读接口（列表 / 详情 / 拉默认值）与认证提交接口本身不挂此中间件，否则没法完成认证。
+//
+// 2026-07-02 修：吴建棉 14:07 反馈「只做企业认证，上传不了营业执照」——
+// 死锁问题：要做企业认证要传营业执照图片 → 传图片要 image-sign → image-sign 挂 verified → verified 要做完企业认证。
+// 解法：white-list 凡是「做认证本身需要」的 path（/verification/、/bank-card/、/uploads/），verified 拦截器放行。
+// 风险评估：image-sign 只是签 cos URL 拿上传地址，不会真存到库；最多被作恶者拿来签 cos URL 传图到平台桶。
+// 但 cos 桶的 key 前缀/路径后续可在 handler 里加强校验（如要求传图必须用 business-license/ 前缀），先做最小白名单。
 func (s *Server) requireVerifiedCreator() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// 2026-07-02 修：白名单，做认证本身需要的接口放行
+		path := c.Request.URL.Path
+		if isVerificationRelatedPath(path) {
+			c.Next()
+			return
+		}
 		id := middleware.CurrentID(c)
 		var creator model.Creator
 		if err := s.db.Select("verify_status").First(&creator, id).Error; err != nil {
@@ -55,6 +69,22 @@ func (s *Server) requireVerifiedCreator() gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+// isVerificationRelatedPath 2026-07-02 修：「做认证本身需要」的 path 白名单
+// 包括：提交个人/企业认证、提交企业认证 OCR、换绑银行卡、上传文件（image-sign/vod-sign 给营业执照/身份证/银行卡用）
+func isVerificationRelatedPath(path string) bool {
+	whiteList := []string{
+		"/v1/creator/verification/",     // 个人/企业/OCR 提交
+		"/v1/creator/bank-card/",        // 换绑银行卡（含 4 要素验证）
+		"/v1/creator/uploads/",          // image-sign / vod-sign（做认证要传图）
+	}
+	for _, p := range whiteList {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
 }
 
 const ctxAdminRole = "admin.role"
