@@ -20,32 +20,157 @@ import (
 // === 创作者侧：结算单 ===
 
 // creatorSettlementSummary —— GET /v1/creator/settlement/summary
-// 创作者侧账号收益汇总（按 OpenAPI CreatorSettlementSummary schema 实现）。
+// 创作者侧账号收益 + 按剧提现页数据（按 OpenAPI CreatorSettlementSummaryPage schema 实现）。
 //
-// 2026-07-02 修：之前实现只查 settlements 表（4 个字段 lifetime/month_paid/open/total_paid），
-// 不符合 OpenAPI schema（要求 total_income_cents / balance_cents / min_withdrawal_cents），
-// 导致创作者有订单流水但接口返回 0（旧实现 lifetime=已结=0）。
+// 2026-07-02 修（邱嘉诚 15:25 反馈 schema 对不上）：
+// OpenAPI 上 schema 是 {summary, list[], page, page_size, total}，summary 含 5 字段，
+// 但之前实现只返了 3 字段（total_income/balance/min_withdrawal）且没 list。
 //
-// 新实现：直接读 creators 表维护好的 3 个字段（导入收入时已累加）。
-// - total_income_cents: 累计订单流水（导入收入时已累加到 creators.total_income_cents）
-// - balance_cents: 可提现余额（creators.balance_cents = total_income - 已提现 - frozen）
-// - min_withdrawal_cents: 最低提现门槛，从 .env 读
+// 这次补完：
+//   - summary: 新增 withdraw_hint + missing_fields（资料不全时给前端提示）
+//   - list: 按剧聚合，每部剧一行（drama_id, drama_title, income_cents, withdrawable_cents, withdrawn_cents, action）
+//   - action.enabled: balance >= min_withdrawal_cents && verify_status=verified
+//   - contract_attribute / share_type 字段暂不返（contracts 表没这 2 字段，二期加）
+//
+// 数据源：
+//   - total_income_cents / balance_cents: creators 表（导入收入时已累加）
+//   - list[].income_cents: creator_stats_daily 聚合（按 creator_id+drama_id SUM）
+//   - list[].withdrawn_cents: withdrawals 表（pending/approved/paid 状态，rejected 不算）
+//   - list[].withdrawable_cents: income_cents - withdrawn_cents
 func (s *Server) creatorSettlementSummary(c *gin.Context) {
 	creatorID := middleware.CurrentID(c)
+
+	// 1. 创作者主信息
 	var creator model.Creator
-	if err := s.db.Select("total_income_cents, balance_cents").First(&creator, creatorID).Error; err != nil {
+	if err := s.db.First(&creator, creatorID).Error; err != nil {
 		response.ServerError(c, "查询创作者收益失败")
 		return
 	}
-	minWithdrawal := int64(10000) // 默认 100 元（与 .env MIN_WITHDRAWAL_CENTS 对齐）
+
+	// 2. 最低提现门槛
+	minWithdrawal := int64(10000)
 	if s.cfg.MinWithdrawalCents > 0 {
 		minWithdrawal = s.cfg.MinWithdrawalCents
 	}
+
+	// 3. 资料完整性检查（用于 summary.missing_fields + withdraw_hint）
+	missingFields := s.collectMissingProfileFields(creator)
+	withdrawHint := ""
+	if len(missingFields) > 0 {
+		withdrawHint = "提现前需先完善实名认证和银行卡信息"
+	}
+
+	// 4. 按剧聚合收入（stats_daily）
+	type dramaAgg struct {
+		DramaID     uint64
+		IncomeCents int64
+	}
+	var dramaAggs []dramaAgg
+	s.db.Table("creator_stats_daily").
+		Select("drama_id, SUM(income_cents) AS income_cents").
+		Where("creator_id = ?", creatorID).
+		Group("drama_id").
+		Order("income_cents DESC").
+		Scan(&dramaAggs)
+
+	// 5. 按 drama 维度查已提现占用（pending/approved/paid）
+	type dramaWithdrawn struct {
+		DramaID       uint64
+		WithdrawnCents int64
+	}
+	var dramaWithdrawns []dramaWithdrawn
+	s.db.Table("withdrawals").
+		Select("drama_id, COALESCE(SUM(amount_cents),0) AS withdrawn_cents").
+		Where("creator_id = ? AND status IN ?", creatorID, []string{"pending", "approved", "paid"}).
+		Group("drama_id").
+		Scan(&dramaWithdrawns)
+	withdrawnMap := make(map[uint64]int64, len(dramaWithdrawns))
+	for _, w := range dramaWithdrawns {
+		withdrawnMap[w.DramaID] = w.WithdrawnCents
+	}
+
+	// 6. 拉 drama 标题（按 ID 一次拉完）
+	dramaIDs := make([]uint64, 0, len(dramaAggs))
+	for _, d := range dramaAggs {
+		dramaIDs = append(dramaIDs, d.DramaID)
+	}
+	titleMap := make(map[uint64]string, len(dramaIDs))
+	if len(dramaIDs) > 0 {
+		var dramas []model.Drama
+		s.db.Select("id, title").Where("id IN ?", dramaIDs).Find(&dramas)
+		for _, d := range dramas {
+			titleMap[d.ID] = d.Title
+		}
+	}
+
+	// 7. 组装 list 数组
+	verifiedCanWithdraw := creator.VerifyStatus == model.CreatorVerifyVerified && len(missingFields) == 0
+	list := make([]gin.H, 0, len(dramaAggs))
+	for _, d := range dramaAggs {
+		withdrawn := withdrawnMap[d.DramaID]
+		withdrawable := d.IncomeCents - withdrawn
+		if withdrawable < 0 {
+			withdrawable = 0
+		}
+		// 提现按钮 enabled：可提现金额 >= 最低门槛 + 实名 verified + 资料完整
+		enabled := withdrawable >= minWithdrawal && verifiedCanWithdraw
+		dramaID := d.DramaID
+		list = append(list, gin.H{
+			"drama_id":               dramaID,
+			"drama_title":            titleMap[dramaID],
+			"contract_attribute":     nil, // 暂不返（contracts 表没这字段）
+			"contract_attribute_label": "对私",  // MVP 默认值
+			"share_type":             nil, // 暂不返
+			"share_type_label":       "纯分成", // MVP 默认值
+			"income_cents":           d.IncomeCents,
+			"withdrawable_cents":     withdrawable,
+			"withdrawn_cents":        withdrawn,
+			"action": gin.H{
+				"type":         "withdraw",
+				"label":        "立即提现",
+				"enabled":      enabled,
+				"drama_id":     dramaID,
+				"amount_cents": withdrawable,
+			},
+		})
+	}
+
+	// 8. 响应
 	response.OK(c, gin.H{
-		"total_income_cents":   creator.TotalIncomeCents,
-		"balance_cents":        creator.BalanceCents,
-		"min_withdrawal_cents": minWithdrawal,
+		"summary": gin.H{
+			"total_income_cents":   creator.TotalIncomeCents,
+			"balance_cents":        creator.BalanceCents,
+			"min_withdrawal_cents": minWithdrawal,
+			"withdraw_hint":        withdrawHint,
+			"missing_fields":       missingFields,
+		},
+		"list":       list,
+		"page":       1,
+		"page_size":  len(list),
+		"total":      len(list),
 	})
+}
+
+// collectMissingProfileFields 检查创作者资料完整性，返回缺失字段列表
+// 用于 summary.missing_fields，前端根据这个决定是否显示「去完善」按钮
+func (s *Server) collectMissingProfileFields(c model.Creator) []string {
+	missing := []string{}
+	if c.Name == "" {
+		missing = append(missing, "name")
+	}
+	if c.IDCardNoEnc == "" {
+		missing = append(missing, "id_card_no")
+	}
+	if c.BankName == "" {
+		missing = append(missing, "bank_name")
+	}
+	if c.BankCardNoEnc == "" {
+		missing = append(missing, "bank_card_no")
+	}
+	if c.Phone == "" {
+		missing = append(missing, "phone")
+	}
+	return missing
 }
 
 // creatorListSettlements —— GET /v1/creator/settlements
