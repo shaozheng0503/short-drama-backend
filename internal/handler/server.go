@@ -270,7 +270,8 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.GET("/settlement/summary", s.creatorSettlementSummary) // 老接口兼容
 	creatorAuth.GET("/settlements", s.creatorListSettlements)
 	creatorAuth.GET("/settlements/:id", s.creatorGetSettlement)
-	creatorAuth.GET("/settlements/:id/download", s.creatorDownloadSettlementExcel)
+	creatorAuth.GET("/settlements/:id/download", s.creatorDownloadSettlementExcel) // Excel 对账单（电子表格，方便筛选）
+	creatorAuth.GET("/settlements/:id/download.pdf", s.creatorDownloadSettlementPDF) // PDF 对账单（存档/发邮件用，固定版式）
 	creatorAuth.POST("/invoices", s.creatorCreateInvoice)
 	creatorAuth.GET("/invoices", s.creatorListInvoices)
 	creatorAuth.GET("/invoices/:id", s.creatorGetInvoice)
@@ -370,6 +371,7 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/invoices/:id/reject", s.requireAdminRole(model.AdminRoleFinance), s.adminRejectInvoice)
 	adminAuth.GET("/settlements", s.adminListSettlements)
 	adminAuth.GET("/settlements/:id", s.adminGetSettlement)
+	adminAuth.GET("/settlements/:id/download.pdf", s.adminDownloadSettlementPDF) // 财务 PDF 对账单
 	adminAuth.POST("/settlements/generate", s.requireAdminRole(model.AdminRoleFinance), s.adminGenerateSettlements)
 	adminAuth.POST("/settlements/:id/close", s.requireAdminRole(model.AdminRoleFinance), s.adminCloseSettlement)
 

@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -310,6 +311,41 @@ func (s *Server) creatorDownloadSettlementExcel(c *gin.Context) {
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)
 	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buf.Bytes())
+}
+
+// creatorDownloadSettlementPDF —— GET /v1/creator/settlements/:id/download.pdf
+// 创作者下载结算单 PDF 对账单（存档/发邮件用，固定版式）。
+// 中文显示：embed.FS 嵌入的 Noto Sans SC subset 字体（22.7KB），渲染中文字符不乱码。
+func (s *Server) creatorDownloadSettlementPDF(c *gin.Context) {
+	creatorID := middleware.CurrentID(c)
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var st model.Settlement
+	if err := s.db.Where("id = ? AND creator_id = ?", id, creatorID).First(&st).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "结算单不存在")
+			return
+		}
+		response.ServerError(c, "查询失败")
+		return
+	}
+	var items []model.SettlementItem
+	s.db.Where("settlement_id = ?", st.ID).Order("paid_at asc, id asc").Find(&items)
+
+	// 渲染 PDF
+	var buf bytes.Buffer
+	if err := s.renderSettlementPDF(st, items, s.platformCompanyFromConfig(), &buf); err != nil {
+		log.Printf("[settlement-pdf] render err id=%d err=%v", id, err)
+		response.ServerError(c, "生成 PDF 失败")
+		return
+	}
+	filename := fmt.Sprintf("settlement_%s_%s.pdf", st.SettlementNo, time.Now().Format("20060102"))
+	c.Header("Content-Type", "application/pdf")
+	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)
+	c.Data(http.StatusOK, "application/pdf", buf.Bytes())
 }
 
 // === 创作者侧：发票 ===

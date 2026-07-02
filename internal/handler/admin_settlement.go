@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -571,4 +574,36 @@ func (s *Server) adminCloseSettlement(c *gin.Context) {
 		return
 	}
 	response.OK(c, gin.H{"id": id, "status": newStatus, "closed_at": now})
+}
+
+// adminDownloadSettlementPDF —— GET /v1/admin/settlements/:id/download.pdf
+// 财务下载任意创作者结算单的 PDF 对账单（与创作者侧版式一致，便于存档/对账）。
+func (s *Server) adminDownloadSettlementPDF(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var st model.Settlement
+	if err := s.db.First(&st, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "结算单不存在")
+			return
+		}
+		response.ServerError(c, "查询失败")
+		return
+	}
+	var items []model.SettlementItem
+	s.db.Where("settlement_id = ?", st.ID).Order("paid_at asc, id asc").Find(&items)
+
+	var buf bytes.Buffer
+	if err := s.renderSettlementPDF(st, items, s.platformCompanyFromConfig(), &buf); err != nil {
+		log.Printf("[settlement-pdf admin] render err id=%d err=%v", id, err)
+		response.ServerError(c, "生成 PDF 失败")
+		return
+	}
+	filename := fmt.Sprintf("settlement_%s_%s.pdf", st.SettlementNo, time.Now().Format("20060102"))
+	c.Header("Content-Type", "application/pdf")
+	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)
+	c.Data(http.StatusOK, "application/pdf", buf.Bytes())
 }
