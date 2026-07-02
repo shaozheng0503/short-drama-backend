@@ -99,7 +99,9 @@ func (p *TencentProvider) Send(_ context.Context, phone, code, scene string) err
 		if errors.As(err, &tcErr) {
 			log.Printf("[sms-tencent] phone=%s scene=%s SDK code=%s msg=%s requestId=%s",
 				phone, scene, tcErr.Code, tcErr.Message, tcErr.RequestId)
-			return fmt.Errorf("%w: %s %s", ErrProviderUnavailable, tcErr.Code, tcErr.Message)
+			// === 2026-07-02 加：按 SDK errCode 分类，让上层返回明确文案 ===
+			wrapped := classifyTencentSDKError(tcErr.Code, tcErr.Message)
+			return fmt.Errorf("%w: %s %s", wrapped, tcErr.Code, tcErr.Message)
 		}
 		log.Printf("[sms-tencent] phone=%s scene=%s err=%v", phone, scene, err)
 		return fmt.Errorf("%w: %v", ErrProviderUnavailable, err)
@@ -120,9 +122,50 @@ func (p *TencentProvider) Send(_ context.Context, phone, code, scene string) err
 		}
 		log.Printf("[sms-tencent] phone=%s scene=%s status code=%s msg=%s",
 			phone, scene, errCode, errMsg)
-		return fmt.Errorf("%w: %s %s", ErrProviderUnavailable, errCode, errMsg)
+		// === 2026-07-02 加：按 status errCode 分类 ===
+		wrapped := classifyTencentStatusError(errCode, errMsg)
+		return fmt.Errorf("%w: %s %s", wrapped, errCode, errMsg)
 	}
 
 	log.Printf("[sms-tencent] phone=%s scene=%s sent ok", phone, scene)
 	return nil
+}
+
+// classifyTencentSDKError 把腾讯云 SDK 错误（鉴权/模板未审核/余额不足等）按 Code 分类。
+// SDK 错误多发生在发短信之前（请求都没进队列），常见：
+//   - LimitExceeded.SmsDayLimit → 整个 app id 配额用满
+//   - FailedOperation.SignatureIncorrectOrUnapproved → 签名未通过
+//   - FailedOperation.TemplateIncorrect / TemplateNotApproved → 模板未通过
+//   - AuthFailure.* → 鉴权失败（SecretId/Key 错）
+func classifyTencentSDKError(code, msg string) error {
+	switch {
+	case strings.HasPrefix(code, "LimitExceeded"):
+		// SDK 阶段的 LimitExceeded 一般是 app id 级别的（PhoneNumber* 类的只在 status 里出现）
+		return ErrAppDayLimit
+	case strings.HasPrefix(code, "FailedOperation.Signature"),
+		strings.HasPrefix(code, "FailedOperation.Template"):
+		return ErrTemplateMissing
+	default:
+		return ErrProviderUnavailable
+	}
+}
+
+// classifyTencentStatusError 把腾讯云 status 错误（实际发送后的回执）按 Code 分类。
+// status 错误是真正发短信之后腾讯云返回的，常见：
+//   - LimitExceeded.PhoneNumberDailyLimit → 单手机号当日额度用满
+//   - LimitExceeded.PhoneNumberOneHourLimit → 单手机号 1 小时上限
+//   - FailedOperation.* → 业务失败（频率/黑名单等）
+func classifyTencentStatusError(code, msg string) error {
+	switch code {
+	case "LimitExceeded.PhoneNumberDailyLimit":
+		return ErrPhoneDailyLimit
+	case "LimitExceeded.PhoneNumberOneHourLimit":
+		return ErrPhoneHourLimit
+	case "LimitExceeded.SmsDayLimit":
+		return ErrAppDayLimit
+	}
+	if strings.HasPrefix(code, "FailedOperation") {
+		return ErrProviderUnavailable
+	}
+	return ErrProviderUnavailable
 }

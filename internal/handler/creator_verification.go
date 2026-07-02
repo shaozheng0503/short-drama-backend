@@ -434,8 +434,17 @@ func (s *Server) creatorSendBankCardSMS(c *gin.Context) {
 		switch {
 		case errors.Is(err, sms.ErrTooFrequent):
 			response.Conflict(c, "发送过于频繁，请 60 秒后重试")
+		// === 2026-07-02 加：拆开错误类型，返回更准的文案 ===
+		case errors.Is(err, sms.ErrPhoneDailyLimit):
+			response.Conflict(c, "该手机号今日短信已达上限，请明天再试或换其他手机号")
+		case errors.Is(err, sms.ErrPhoneHourLimit):
+			response.Conflict(c, "该手机号 1 小时内发送太频繁，请稍后再试")
+		case errors.Is(err, sms.ErrAppDayLimit):
+			response.Fail(c, response.CodeThirdPartyError, "平台今日短信配额已用完，请联系客服")
+		case errors.Is(err, sms.ErrTemplateMissing):
+			response.Fail(c, response.CodeThirdPartyError, "短信签名/模板未审核通过，请联系平台运营")
 		case errors.Is(err, sms.ErrProviderFail):
-			response.Fail(c, response.CodeThirdPartyError, "短信网关下发失败，请稍后重试")
+			response.Fail(c, response.CodeThirdPartyError, "短信下发失败，请稍后重试或联系平台")
 		default:
 			response.ServerError(c, "短信发送失败")
 		}

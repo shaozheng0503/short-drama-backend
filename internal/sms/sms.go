@@ -141,7 +141,11 @@ func (s *Service) Send(phone, scene string) (string, error) {
 			if deleteErr := s.db.Delete(&record).Error; deleteErr != nil {
 				log.Printf("[sms] cleanup failed sms_code_id=%d err=%v", record.ID, deleteErr)
 			}
-			return "", ErrProviderFail
+			// === 2026-07-02 改：把底层具体错误（ErrPhoneDailyLimit / ErrPhoneHourLimit / ErrAppDayLimit
+			// / ErrTemplateMissing）wrap 进 ErrProviderFail，让上层 errors.Is 区分根因 ===
+			// 之前这里直接 return ErrProviderFail 调用方没法 errors.Is 出根因，
+			// 只能统一回「短信网关下发失败」歧义很大。
+			return "", fmt.Errorf("%w: %w", ErrProviderFail, err)
 		}
 	}
 
