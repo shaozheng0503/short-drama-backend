@@ -13,14 +13,17 @@ import (
 )
 
 type dramaUpsertRequest struct {
-	Title        *string `json:"title"`
-	Description  *string `json:"description"`
-	CoverURL     *string `json:"cover_url"`
-	CategoryID   *uint64 `json:"category_id"`
-	CreatorID    *uint64 `json:"creator_id"`
-	FreeEpisodes *int    `json:"free_episodes"`
-	PriceCents   *int64  `json:"price_cents"`
-	SortOrder    *int    `json:"sort_order"`
+	Title        *string   `json:"title"`
+	Description  *string   `json:"description"`
+	CoverURL     *string   `json:"cover_url"`
+	CategoryID   *uint64   `json:"category_id"`
+	CreatorID    *uint64   `json:"creator_id"`
+	FreeEpisodes *int      `json:"free_episodes"`
+	PriceCents   *int64    `json:"price_cents"`
+	SortOrder    *int      `json:"sort_order"`
+	// 2026-07-03 加：权属文件多张图（与创作者端对齐）
+	// null = 不改；[] = 清空；[url1,url2,...] = 整体替换（最多 10 张）
+	CopyrightFileURLs *[]string `json:"copyright_file_urls"`
 }
 
 func validateDramaNumericFields(req *dramaUpsertRequest) string {
@@ -174,6 +177,11 @@ func (s *Server) adminCreateDrama(c *gin.Context) {
 		response.InvalidParam(c, msg)
 		return
 	}
+	// 2026-07-03 加：权属文件多图上限校验（与创作者端同口径）
+	if req.CopyrightFileURLs != nil && len(*req.CopyrightFileURLs) > 10 {
+		response.InvalidParam(c, "权属文件最多 10 张")
+		return
+	}
 	drama := model.Drama{
 		Title:        *req.Title,
 		Status:       model.DramaStatusDraft,
@@ -212,6 +220,10 @@ func (s *Server) adminCreateDrama(c *gin.Context) {
 	}
 	if req.SortOrder != nil {
 		drama.SortOrder = *req.SortOrder
+	}
+	// 2026-07-03 加：权属文件多图（admin 端创建时支持）
+	if req.CopyrightFileURLs != nil {
+		drama.CopyrightFileURLs = *req.CopyrightFileURLs
 	}
 	if err := s.db.Create(&drama).Error; err != nil {
 		response.ServerError(c, "创建短剧失败")
@@ -315,6 +327,11 @@ func (s *Server) adminUpdateDrama(c *gin.Context) {
 	}
 	if req.SortOrder != nil {
 		updates["sort_order"] = *req.SortOrder
+	}
+	// 2026-07-03 加：权属文件多图（admin 端可直接改）
+	// null = 不改；[] = 清空；[url1,url2,...] = 整体替换
+	if req.CopyrightFileURLs != nil {
+		updates["copyright_file_urls"] = *req.CopyrightFileURLs
 	}
 
 	if len(updates) > 0 {
