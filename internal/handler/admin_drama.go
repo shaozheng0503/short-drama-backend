@@ -288,6 +288,11 @@ func (s *Server) adminUpdateDrama(c *gin.Context) {
 		response.InvalidParam(c, msg)
 		return
 	}
+	// 2026-07-03 加：权属文件多图上限校验（与创作者端同口径，update 路径也要拦）
+	if req.CopyrightFileURLs != nil && len(*req.CopyrightFileURLs) > 10 {
+		response.InvalidParam(c, "权属文件最多 10 张")
+		return
+	}
 
 	updates := map[string]interface{}{}
 	if req.Title != nil && *req.Title != "" {
