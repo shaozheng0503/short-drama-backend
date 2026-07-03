@@ -24,17 +24,14 @@ type withdrawalRequest struct {
 	// 兼容：老接口 drama_id 必填行为由 `omitempty` + 事务内判断兼容。
 	DramaID     *uint64 `json:"drama_id"`
 	AmountCents int64   `json:"amount_cents" binding:"required"`
-	// 2026-07-02 改：invoice_id 改为可选，对齐流程图步骤 2「用户根据结算单自开发票 → 上传 → 发起提现申请」。
-	//   - 传 invoice_id：走"已审发票快通道"，校验 invoice.status=approved 且金额未超额
-	//   - 不传 invoice_id：进入"pending invoice 队列"，财务在 review 提现时一并审发票
-	InvoiceID uint64 `json:"invoice_id"`
-	// InvoiceMeta 仅在不传 invoice_id 时使用，财务审 withdrawal 时凭这俩字段"开"一张 invoice 记录。
-	InvoiceType string `json:"invoice_type"` // vat_special / vat_general / evat_special / evat_general
-	ExternalNo  string `json:"external_no"`  // 发票号（创作者自开发票上的号码）
-	// 创作者表示"我已上传发票文件，这里是 file_url/file_hash/file_size"——跟 /v1/creator/invoices 的入参一致
-	FileURL  string `json:"file_url"`
-	FileHash string `json:"file_hash"`
-	FileSize int64  `json:"file_size"`
+	// 2026-07-03 改：invoice_id 改为必填
+	// 同事反馈：发票和提现是一体的，不能不传发票，不能单独审核发票
+	// 财务审 withdrawal 时一并审发票（approve withdrawal → invoice.approved；reject → invoice.rejected 可重用）
+	// 必填原因：
+	//   · 财务需要看到「具体这张发票」才能对账
+	//   · 一笔 withdrawal 必绑定一张 invoice，避免「空头提现」
+	//   · 创作者先在 /v1/creator/invoices 上传发票，财务审核通过后再来提现
+	InvoiceID *uint64 `json:"invoice_id" binding:"required"`
 }
 
 var activeWithdrawalStatuses = []string{
@@ -96,66 +93,56 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 			}
 		}
 
-		// === 2026-07-02 改：发票从「强校验」改成「有就校验」 ===
-		// 流程图步骤 2：用户先上传发票再发起提现，财务在审 withdrawal 时一并审发票
-		// 兼容老用法：传 invoice_id 且 status=approved → 走快通道（防一张发票被多次提现到超额）
-		if req.InvoiceID > 0 {
-			var inv model.Invoice
-			if err := tx.First(&inv, req.InvoiceID).Error; err != nil {
-				if isNotFound(err) {
-					return errInvoiceNotFound
-				}
+		// === 2026-07-03 改：invoice_id 必填，发票和提现一体 ===
+		// 校验：
+		//   1) 发票存在
+		//   2) 发票属于本创作者
+		//   3) 发票关联的结算单属于本创作者
+		//   4) 结算单未作废
+		//   5) settlement 包含本剧（drama_id 传了时校验）
+		//   6) 提现金额不超发票剩余可提现余额（status≠rejected 的 withdrawal 不重复计）
+		// 不再要求 invoice.status=approved —— 财务在审 withdrawal 时一并审发票
+		// （approve withdrawal → invoice.approved；reject → invoice.rejected 可重用）
+		if req.InvoiceID == nil {
+			return errInvoiceIDRequired
+		}
+		var inv model.Invoice
+		if err := tx.First(&inv, *req.InvoiceID).Error; err != nil {
+			if isNotFound(err) {
+				return errInvoiceNotFound
+			}
+			return err
+		}
+		if inv.CreatorID != cid {
+			return errInvoiceNotOwned
+		}
+		var st model.Settlement
+		if err := tx.First(&st, inv.SettlementID).Error; err != nil {
+			return err
+		}
+		if st.CreatorID != cid {
+			return errInvoiceSettlementMismatch
+		}
+		if st.Status != model.SettlementStatusInvoiced && st.Status != model.SettlementStatusPaid {
+			return errInvoiceSettlementVoid
+		}
+		if req.DramaID != nil {
+			var stItemCount int64
+			if err := tx.Model(&model.SettlementItem{}).
+				Where("settlement_id = ? AND drama_id = ?", st.ID, *req.DramaID).
+				Count(&stItemCount).Error; err != nil {
 				return err
 			}
-			if inv.CreatorID != cid {
-				return errInvoiceNotOwned
-			}
-			if inv.Status != model.InvoiceStatusApproved {
-				return errInvoiceNotApproved
-			}
-			var st model.Settlement
-			if err := tx.First(&st, inv.SettlementID).Error; err != nil {
-				return err
-			}
-			if st.CreatorID != cid {
+			if stItemCount == 0 {
 				return errInvoiceSettlementMismatch
 			}
-			if st.Status != model.SettlementStatusInvoiced && st.Status != model.SettlementStatusPaid {
-				return errInvoiceSettlementVoid
-			}
-			// settlement 是按合同切的，可能跨多剧；要校验该结算单下确实有本剧的收入条目。
-			// drama_id 为空时跳过该校验（按结算单合并提现）。
-			if req.DramaID != nil {
-				var stItemCount int64
-				if err := tx.Model(&model.SettlementItem{}).
-					Where("settlement_id = ? AND drama_id = ?", st.ID, *req.DramaID).
-					Count(&stItemCount).Error; err != nil {
-					return err
-				}
-				if stItemCount == 0 {
-					return errInvoiceSettlementMismatch
-				}
-			}
-			// 累加：所有 status≠rejected 的提现申请对本发票的金额合计
-			var invoiceWithdrawn int64
-			tx.Model(&model.Withdrawal{}).
-				Where("invoice_id = ? AND status <> ?", req.InvoiceID, model.WithdrawalStatusRejected).
-				Select("COALESCE(SUM(amount_cents),0)").Scan(&invoiceWithdrawn)
-			if req.AmountCents > inv.AmountCents-invoiceWithdrawn {
-				return errAmountExceedsInvoiceBalance
-			}
-		} else {
-			// 没传 invoice_id：流程图步骤 2 的另一种走法
-			// ——创作者在发起提现时一并提交发票元数据，财务审 withdrawal 时一并审发票
-			if req.InvoiceType == "" || req.FileURL == "" {
-				return errInvoiceMetaMissing
-			}
-			switch req.InvoiceType {
-			case model.InvoiceTypeVATSpecial, model.InvoiceTypeVATGeneral,
-				model.InvoiceTypeEVATSpecial, model.InvoiceTypeEVATGeneral:
-			default:
-				return errInvoiceTypeInvalid
-			}
+		}
+		var invoiceWithdrawn int64
+		tx.Model(&model.Withdrawal{}).
+			Where("invoice_id = ? AND status <> ?", *req.InvoiceID, model.WithdrawalStatusRejected).
+			Select("COALESCE(SUM(amount_cents),0)").Scan(&invoiceWithdrawn)
+		if req.AmountCents > inv.AmountCents-invoiceWithdrawn {
+			return errAmountExceedsInvoiceBalance
 		}
 
 		dramaAvail := s.dramaWithdrawableCentsTx(tx, cid, req.DramaID, creator.BalanceCents)
@@ -195,30 +182,8 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 			d := *req.DramaID
 			dramaID = &d
 		}
-		// 2026-07-02 改：invoice_id 可选。如果创作者没传 invoice_id，
-		// 自动创建一张 pending invoice（金额 = withdrawal amount）并关联上 —— 对齐流程图步骤 2
-		var linkedInvoiceID *uint64
-		if req.InvoiceID > 0 {
-			id := req.InvoiceID
-			linkedInvoiceID = &id
-		} else {
-			// 创建一个"待审"发票，等财务 review withdrawal 时一并审
-			autoInvoice := model.Invoice{
-				InvoiceNo:    generateInvoiceBizNo(),
-				CreatorID:    cid,
-				InvoiceType:  req.InvoiceType,
-				ExternalNo:   req.ExternalNo,
-				AmountCents:  req.AmountCents,
-				FileURL:      req.FileURL,
-				FileHash:     req.FileHash,
-				FileSize:     req.FileSize,
-				Status:       model.InvoiceStatusPending,
-			}
-			if err := tx.Create(&autoInvoice).Error; err != nil {
-				return err
-			}
-			linkedInvoiceID = &autoInvoice.ID
-		}
+		// 2026-07-03 改：invoice_id 必填。linkedInvoiceID 直接用 *req.InvoiceID
+		// 财务审 withdrawal 时一并审发票
 		w := model.Withdrawal{
 			WithdrawalNo:        generateWithdrawalNo(),
 			CreatorID:           cid,
@@ -231,7 +196,7 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 			BankNameSnapshot:    creator.BankName,
 			BankCardNoSnapshot:  "***" + creator.BankCardLast4,
 			Status:              model.WithdrawalStatusPending,
-			InvoiceID:           linkedInvoiceID, // 2026-07-02 改：可能指向自动建的 pending 发票
+			InvoiceID:           req.InvoiceID, // 必填，与发票一一对应
 		}
 		if err := tx.Create(&w).Error; err != nil {
 			return err
@@ -263,18 +228,14 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 			response.NotFound(c, "发票不存在")
 		case errors.Is(err, errInvoiceNotOwned):
 			response.Forbidden(c, "无权使用该发票发起提现")
-		case errors.Is(err, errInvoiceNotApproved):
-			response.InvalidParam(c, "该发票尚未通过审核，请等待财务审核通过后再提现")
 		case errors.Is(err, errInvoiceSettlementMismatch):
 			response.InvalidParam(c, "发票与结算单/短剧不匹配")
 		case errors.Is(err, errInvoiceSettlementVoid):
 			response.InvalidParam(c, "该发票关联的结算单已作废，无法提现")
 		case errors.Is(err, errAmountExceedsInvoiceBalance):
 			response.InvalidParam(c, "提现金额超过该发票剩余可提现余额（同一张发票不能被多次提现到超额）")
-		case errors.Is(err, errInvoiceMetaMissing):
-			response.InvalidParam(c, "未传 invoice_id 时需附带发票元数据：invoice_type、file_url 必填")
-		case errors.Is(err, errInvoiceTypeInvalid):
-			response.InvalidParam(c, "invoice_type 不合法，可选：vat_special / vat_general / evat_special / evat_general")
+		case errors.Is(err, errInvoiceIDRequired):
+			response.InvalidParam(c, "invoice_id 必填（创作者必须先上传发票并通过财务审核）")
 		default:
 			log.Printf("[withdrawal] create err=%v", err)
 			response.ServerError(c, "申请失败")
@@ -336,10 +297,12 @@ func (s *Server) withdrawalView(w model.Withdrawal) gin.H {
 	if w.InvoiceID != nil {
 		view["invoice_id"] = *w.InvoiceID
 		var inv model.Invoice
-		if err := s.db.Select("invoice_no, settlement_id, amount_cents, status").First(&inv, *w.InvoiceID).Error; err == nil {
+		// 2026-07-03 改：发票和提现一体，发票状态不独立展示
+		// 创作者/财务看提现时，发票信息只作为附件信息展示（no/amount/settlement_no）
+		// 「发票审了没」看 withdrawal.status 即可（联动）
+		if err := s.db.Select("invoice_no, settlement_id, amount_cents").First(&inv, *w.InvoiceID).Error; err == nil {
 			view["invoice_no"] = inv.InvoiceNo
 			view["invoice_amount_cents"] = inv.AmountCents
-			view["invoice_status"] = inv.Status
 			view["settlement_id"] = inv.SettlementID
 			var stNo string
 			s.db.Model(&model.Settlement{}).Select("settlement_no").Where("id = ?", inv.SettlementID).Scan(&stNo)
@@ -451,10 +414,10 @@ var (
 	errDramaNotOwned           = errors.New("drama not owned")
 	errInvoiceNotFound         = errors.New("invoice not found")
 	errInvoiceNotOwned         = errors.New("invoice not owned")
-	errInvoiceNotApproved      = errors.New("invoice not approved")
+	// 2026-07-03 改：删 errInvoiceNotApproved / errInvoiceMetaMissing / errInvoiceTypeInvalid
+	// （发票和提现一体，invoice_id 必填，不再有"未传 invoice_id 走 meta 分支"）
+	// 加 errInvoiceIDRequired —— 必填校验
+	errInvoiceIDRequired      = errors.New("invoice_id required")
 	errInvoiceSettlementMismatch = errors.New("invoice settlement mismatch")
 	errInvoiceSettlementVoid   = errors.New("invoice settlement void")
-	// 2026-07-02 改：新增"未传 invoice_id 但 meta 不全"和"invoice_type 不合法"
-	errInvoiceMetaMissing  = errors.New("invoice meta missing")
-	errInvoiceTypeInvalid  = errors.New("invoice type invalid")
 )
