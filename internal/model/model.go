@@ -359,7 +359,10 @@ type Drama struct {
 	ProductionCostCents int64      `gorm:"column:production_cost_cents;default:0" json:"production_cost_cents"` // 备案制作金额
 	CostConfigURL       string     `gorm:"column:cost_config_url;size:512" json:"cost_config_url"`              // 成本配置（图片）
 	IsIPAdaptation      bool       `gorm:"column:is_ip_adaptation;default:false" json:"is_ip_adaptation"`       // 版权专区 IP 改编
-	CopyrightFileURL    string     `gorm:"column:copyright_file_url;size:512" json:"copyright_file_url"`        // 权署文件（图片）
+	// CopyrightFileURLs —— 2026-07-03 改：版权/授权文件多张图（吴建棉要求）
+	// 旧字段名 copyright_file_url (varchar 512, 单图) → 新字段名 copyright_file_urls (text, JSON 数组)
+	// 存 JSON 数组；老数据是单图 URL 字符串，serializer:json 反序列化失败时回退到空数组（前端用空兜底）
+	CopyrightFileURLs   []string   `gorm:"column:copyright_file_urls;type:text;serializer:json" json:"copyright_file_urls"`
 	NonInfringementURL  string     `gorm:"column:non_infringement_url;size:512" json:"non_infringement_url"`    // 不侵权承诺函
 	PublishType         string     `gorm:"column:publish_type;size:20" json:"publish_type"`                     // self/platform
 	ScheduledPublishAt  *time.Time `gorm:"column:scheduled_publish_at" json:"scheduled_publish_at"`             // 计划发布时间

@@ -139,7 +139,9 @@ func dramaAdminView(d model.Drama, categoryName, creatorName string) gin.H {
 		"production_cost_cents": d.ProductionCostCents,
 		"cost_config_url":       d.CostConfigURL,
 		"is_ip_adaptation":      d.IsIPAdaptation,
-		"copyright_file_url":    d.CopyrightFileURL,
+		// 2026-07-03 改：版权证明多张图
+		// nil/空时返回空数组（前端用空兜底，老的单图 URL 已迁移到 []string 字段）
+		"copyright_file_urls":   d.CopyrightFileURLs,
 		"non_infringement_url":  d.NonInfringementURL,
 		"publish_type":          d.PublishType,
 		"scheduled_publish_at":  d.ScheduledPublishAt,

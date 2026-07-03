@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -15,7 +16,8 @@ import (
 const (
 	dramaTitleMaxRune = 20
 	dramaDescMaxRune  = 200
-	dramaMaxCovers    = 10
+	dramaMaxCovers       = 10
+	dramaMaxCopyrightURLs = 10 // 2026-07-03 加：版权/授权文件最多 10 张（与封面同上限）
 	aigcToolMaxRune   = 64
 	aigcToolsMax      = 10
 	maxCharacters     = 50          // 角色数量上限
@@ -97,7 +99,10 @@ type creatorDramaRequest struct {
 	ProductionCostCents *int64     `json:"production_cost_cents"`
 	CostConfigURL       *string    `json:"cost_config_url"`
 	IsIPAdaptation      *bool      `json:"is_ip_adaptation"`
-	CopyrightFileURL    *string    `json:"copyright_file_url"`
+	// 2026-07-03 改：版权证明改为多张图（吴建棉：上传授权文件要支持多张）
+	// 旧版 copyright_file_url (string) → 新版 copyright_file_urls ([]string)
+	// 兼容：旧接口传字符串时，前端改传数组即可；后端用 serializer:json 存 JSON 数组
+	CopyrightFileURLs   *[]string  `json:"copyright_file_urls"`
 	NonInfringementURL  *string    `json:"non_infringement_url"`
 	PublishType         *string    `json:"publish_type"` // self/platform
 	ScheduledPublishAt  *time.Time `json:"scheduled_publish_at"`
@@ -126,6 +131,10 @@ func validateCreatorDrama(req *creatorDramaRequest) string {
 	}
 	if len(req.CoverURLs) > dramaMaxCovers {
 		return "封面最多 5 张"
+	}
+	// 2026-07-03 加：版权/授权文件多图上限
+	if req.CopyrightFileURLs != nil && len(*req.CopyrightFileURLs) > dramaMaxCopyrightURLs {
+		return fmt.Sprintf("权属文件最多 %d 张", dramaMaxCopyrightURLs)
 	}
 	if req.PriceCents != nil && (*req.PriceCents < 0 || *req.PriceCents > maxPriceCents) {
 		return "price_cents 不能为负且不超过 100000000（¥100 万）"
@@ -413,8 +422,8 @@ func applyDramaScalars(d *model.Drama, req *creatorDramaRequest) {
 	if req.IsIPAdaptation != nil {
 		d.IsIPAdaptation = *req.IsIPAdaptation
 	}
-	if req.CopyrightFileURL != nil {
-		d.CopyrightFileURL = *req.CopyrightFileURL
+	if req.CopyrightFileURLs != nil {
+		d.CopyrightFileURLs = *req.CopyrightFileURLs
 	}
 	if req.NonInfringementURL != nil {
 		d.NonInfringementURL = *req.NonInfringementURL
@@ -594,8 +603,8 @@ func buildDramaUpdates(req *creatorDramaRequest) map[string]interface{} {
 	if req.IsIPAdaptation != nil {
 		updates["is_ip_adaptation"] = *req.IsIPAdaptation
 	}
-	if req.CopyrightFileURL != nil {
-		updates["copyright_file_url"] = *req.CopyrightFileURL
+	if req.CopyrightFileURLs != nil {
+		updates["copyright_file_urls"] = *req.CopyrightFileURLs
 	}
 	if req.NonInfringementURL != nil {
 		updates["non_infringement_url"] = *req.NonInfringementURL
