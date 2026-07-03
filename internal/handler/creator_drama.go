@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -604,7 +605,10 @@ func buildDramaUpdates(req *creatorDramaRequest) map[string]interface{} {
 		updates["is_ip_adaptation"] = *req.IsIPAdaptation
 	}
 	if req.CopyrightFileURLs != nil {
-		updates["copyright_file_urls"] = *req.CopyrightFileURLs
+		// GORM serializer:json 只管 SELECT 反序列化，UPDATE 写入时直接传 []string
+		// 会被 PG 当成 (url1,url2) 复合值报 SQLSTATE 42P18。这里手动 marshal 成 JSON 字符串。
+		b, _ := json.Marshal(*req.CopyrightFileURLs)
+		updates["copyright_file_urls"] = string(b)
 	}
 	if req.NonInfringementURL != nil {
 		updates["non_infringement_url"] = *req.NonInfringementURL

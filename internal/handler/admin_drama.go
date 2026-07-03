@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -222,6 +223,7 @@ func (s *Server) adminCreateDrama(c *gin.Context) {
 		drama.SortOrder = *req.SortOrder
 	}
 	// 2026-07-03 加：权属文件多图（admin 端创建时支持）
+	// Create 路径走 struct + serializer:json，直接赋值 []string 即可
 	if req.CopyrightFileURLs != nil {
 		drama.CopyrightFileURLs = *req.CopyrightFileURLs
 	}
@@ -330,8 +332,10 @@ func (s *Server) adminUpdateDrama(c *gin.Context) {
 	}
 	// 2026-07-03 加：权属文件多图（admin 端可直接改）
 	// null = 不改；[] = 清空；[url1,url2,...] = 整体替换
+	// GORM serializer:json 只管 SELECT 反序列化，UPDATE 写入需要手动 marshal 成 JSON 字符串
 	if req.CopyrightFileURLs != nil {
-		updates["copyright_file_urls"] = *req.CopyrightFileURLs
+		b, _ := json.Marshal(*req.CopyrightFileURLs)
+		updates["copyright_file_urls"] = string(b)
 	}
 
 	if len(updates) > 0 {
