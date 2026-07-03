@@ -10,8 +10,8 @@ set -euo pipefail
 
 REPO_DIR="/Users/Admin/Downloads/短剧/DramaBackend"
 PAT_FILE="$HOME/.github_pat"
-GITHUB_USER="Gongji-hub"
-GITHUB_REPO="DramaBackend"
+GITHUB_USER="shaozheng0503"
+GITHUB_REPO="short-drama-backend"
 
 # 1. 检查 PAT 文件
 if [ ! -f "$PAT_FILE" ]; then
