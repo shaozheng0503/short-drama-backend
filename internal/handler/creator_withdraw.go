@@ -17,8 +17,13 @@ import (
 )
 
 type withdrawalRequest struct {
-	DramaID     uint64 `json:"drama_id" binding:"required"`
-	AmountCents int64  `json:"amount_cents" binding:"required"`
+	// 2026-07-03 改：drama_id 改为可空指针。
+	// 流程图步骤 2 说"根据结算单，自行制作发票，上传后发起提现申请"——只有结算单维度。
+	// 走法 A（传 invoice_id）时 drama_id 可空（结算单已固化 drama 范围）；
+	// 走法 B（不传 invoice_id）时 drama_id 可空（一张结算单对多剧合并提现）。
+	// 兼容：老接口 drama_id 必填行为由 `omitempty` + 事务内判断兼容。
+	DramaID     *uint64 `json:"drama_id"`
+	AmountCents int64   `json:"amount_cents" binding:"required"`
 	// 2026-07-02 改：invoice_id 改为可选，对齐流程图步骤 2「用户根据结算单自开发票 → 上传 → 发起提现申请」。
 	//   - 传 invoice_id：走"已审发票快通道"，校验 invoice.status=approved 且金额未超额
 	//   - 不传 invoice_id：进入"pending invoice 队列"，财务在 review 提现时一并审发票
@@ -44,8 +49,8 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 		log.Printf("[withdrawal] creator=%d idem=%s", cid, idem)
 	}
 	var req withdrawalRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.AmountCents <= 0 || req.DramaID == 0 {
-		response.InvalidParam(c, "drama_id 与 amount_cents 必填，且 amount_cents 必须为正整数")
+	if err := c.ShouldBindJSON(&req); err != nil || req.AmountCents <= 0 {
+		response.InvalidParam(c, "amount_cents 必填且为正整数；drama_id 可空（按结算单维度提现时省略）")
 		return
 	}
 	if req.AmountCents < s.cfg.MinWithdrawalCents {
@@ -75,15 +80,20 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 			return errWithdrawProfileBlocked
 		}
 
-		var drama model.Drama
-		if err := tx.First(&drama, req.DramaID).Error; err != nil {
-			if isNotFound(err) {
-				return errDramaNotFound
+		// 2026-07-03 改：drama_id 改为可空。流程图只有"结算单"维度，不强制"按剧提现"。
+		// 走法 A：drama_id 为空时跳过 drama 校验（结算单已固化 drama 范围）
+		// 走法 B：drama_id 为空时跳过 drama 校验（按结算单合并提现，drama 在结算单 items 里）
+		if req.DramaID != nil {
+			var drama model.Drama
+			if err := tx.First(&drama, *req.DramaID).Error; err != nil {
+				if isNotFound(err) {
+					return errDramaNotFound
+				}
+				return err
 			}
-			return err
-		}
-		if drama.CreatorID == nil || *drama.CreatorID != cid {
-			return errDramaNotOwned
+			if drama.CreatorID == nil || *drama.CreatorID != cid {
+				return errDramaNotOwned
+			}
 		}
 
 		// === 2026-07-02 改：发票从「强校验」改成「有就校验」 ===
@@ -114,14 +124,17 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 				return errInvoiceSettlementVoid
 			}
 			// settlement 是按合同切的，可能跨多剧；要校验该结算单下确实有本剧的收入条目。
-			var stItemCount int64
-			if err := tx.Model(&model.SettlementItem{}).
-				Where("settlement_id = ? AND drama_id = ?", st.ID, req.DramaID).
-				Count(&stItemCount).Error; err != nil {
-				return err
-			}
-			if stItemCount == 0 {
-				return errInvoiceSettlementMismatch
+			// drama_id 为空时跳过该校验（按结算单合并提现）。
+			if req.DramaID != nil {
+				var stItemCount int64
+				if err := tx.Model(&model.SettlementItem{}).
+					Where("settlement_id = ? AND drama_id = ?", st.ID, *req.DramaID).
+					Count(&stItemCount).Error; err != nil {
+					return err
+				}
+				if stItemCount == 0 {
+					return errInvoiceSettlementMismatch
+				}
 			}
 			// 累加：所有 status≠rejected 的提现申请对本发票的金额合计
 			var invoiceWithdrawn int64
@@ -153,10 +166,14 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 			return errAmountExceedsBalance
 		}
 
+		// 同结算单存在审核中的提现申请（drama_id 为空时不卡——一张结算单可有多笔不同金额提现）
 		var existingPending int64
-		if err := tx.Model(&model.Withdrawal{}).
-			Where("creator_id = ? AND drama_id = ? AND status = ?", cid, req.DramaID, model.WithdrawalStatusPending).
-			Count(&existingPending).Error; err != nil {
+		pendingQ := tx.Model(&model.Withdrawal{}).
+			Where("creator_id = ? AND status = ?", cid, model.WithdrawalStatusPending)
+		if req.DramaID != nil {
+			pendingQ = pendingQ.Where("drama_id = ?", *req.DramaID)
+		}
+		if err := pendingQ.Count(&existingPending).Error; err != nil {
 			return err
 		}
 		if existingPending > 0 {
@@ -172,7 +189,12 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 		}
 
 		taxCents, netCents, _ := s.computeWithdrawalTax(creator, req.AmountCents)
-		dramaID := req.DramaID
+		// 2026-07-03 改：drama_id 可空（按结算单维度合并提现），Withdrawal.DramaID 接受 *uint64
+		var dramaID *uint64
+		if req.DramaID != nil {
+			d := *req.DramaID
+			dramaID = &d
+		}
 		// 2026-07-02 改：invoice_id 可选。如果创作者没传 invoice_id，
 		// 自动创建一张 pending invoice（金额 = withdrawal amount）并关联上 —— 对齐流程图步骤 2
 		var linkedInvoiceID *uint64
@@ -200,7 +222,7 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 		w := model.Withdrawal{
 			WithdrawalNo:        generateWithdrawalNo(),
 			CreatorID:           cid,
-			DramaID:             &dramaID,
+			DramaID:             dramaID,
 			AmountCents:         req.AmountCents,
 			CreatorTypeSnapshot: creator.CreatorType,
 			TransferType:        model.TransferTypeOf(creator.CreatorType),
@@ -345,21 +367,28 @@ func (s *Server) dramaWithdrawnCents(creatorID, dramaID uint64) int64 {
 	return withdrawn
 }
 
-func (s *Server) dramaWithdrawableCents(creatorID, dramaID uint64, accountBalance int64) int64 {
+func (s *Server) dramaWithdrawableCents(creatorID uint64, dramaID *uint64, accountBalance int64) int64 {
 	return s.dramaWithdrawableCentsTx(s.db, creatorID, dramaID, accountBalance)
 }
 
-func (s *Server) dramaWithdrawableCentsTx(tx *gorm.DB, creatorID, dramaID uint64, accountBalance int64) int64 {
+// dramaWithdrawableCentsTx 计算"可提现余额"。
+// dramaID == nil 表示"全 creator 维度"（按结算单合并提现，对齐流程图步骤 2）。
+// dramaID != nil 表示"按剧维度"（兼容老接口）。
+func (s *Server) dramaWithdrawableCentsTx(tx *gorm.DB, creatorID uint64, dramaID *uint64, accountBalance int64) int64 {
 	var income int64
-	tx.Table("creator_stats_daily").
-		Select("COALESCE(SUM(income_cents),0)").
-		Where("creator_id = ? AND drama_id = ?", creatorID, dramaID).
-		Scan(&income)
+	q := tx.Table("creator_stats_daily").Select("COALESCE(SUM(income_cents),0)").Where("creator_id = ?", creatorID)
+	if dramaID != nil {
+		q = q.Where("drama_id = ?", *dramaID)
+	}
+	q.Scan(&income)
 	var withdrawn int64
-	tx.Model(&model.Withdrawal{}).
+	q2 := tx.Model(&model.Withdrawal{}).
 		Select("COALESCE(SUM(amount_cents),0)").
-		Where("creator_id = ? AND drama_id = ? AND status IN ?", creatorID, dramaID, activeWithdrawalStatuses).
-		Scan(&withdrawn)
+		Where("creator_id = ? AND status IN ?", creatorID, activeWithdrawalStatuses)
+	if dramaID != nil {
+		q2 = q2.Where("drama_id = ?", *dramaID)
+	}
+	q2.Scan(&withdrawn)
 	avail := income - withdrawn
 	if avail < 0 {
 		avail = 0

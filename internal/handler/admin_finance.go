@@ -876,6 +876,10 @@ func (s *Server) adminReviewWithdrawal(c *gin.Context) {
 		response.InvalidParam(c, "提现通过时不允许驳回发票（请选 approve 或 skip）")
 		return
 	}
+	// 2026-07-03 改：流程图步骤 3 要求"审核发票 + 提现信息"。
+	// 走法 B 提现时自动建的发票是 pending，财务**不能 skip**（必须 approve/reject）。
+	// 走法 A 传 approved 发票时才能 skip（幂等）。
+	// 这一步进事务前不做，等事务里查 invoice 状态后再判。
 	aid := middleware.CurrentID(c)
 	now := time.Now()
 	paid := false
@@ -891,35 +895,45 @@ func (s *Server) adminReviewWithdrawal(c *gin.Context) {
 			return errWithdrawalStatus
 		}
 		// 1) 发票审核（在 withdrawal 决策之前，单独事务失败好回滚）
-		if w.InvoiceID != nil && req.InvoiceAction != "skip" {
+		// 2026-07-03 改：流程图步骤 3 强约束"审核用户的【发票】还有提现信息"。
+		// skip 仅用于"快通道"——发票已 approved（走法 A 兼容路径）；pending 发票禁止 skip。
+		if w.InvoiceID != nil {
 			var inv model.Invoice
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&inv, *w.InvoiceID).Error; err != nil {
 				return err
 			}
-			// 只有 pending 状态的发票才允许审（approved / rejected 是终态）
-			if inv.Status != model.InvoiceStatusPending {
-				if req.InvoiceAction == "approve" && inv.Status == model.InvoiceStatusApproved {
-					// 已是 approved，幂等通过
-				} else {
-					return errInvoiceStatus
+			if req.InvoiceAction == "skip" {
+				// skip 仅当 invoice 已 approved 才合法（幂等）
+				if inv.Status != model.InvoiceStatusApproved {
+					return errInvoiceSkipOnPending
 				}
+				// 不改 invoice
 			} else {
-				newStatus := model.InvoiceStatusApproved
-				rejectReason := ""
-				if req.InvoiceAction == "reject" {
-					newStatus = model.InvoiceStatusRejected
-					rejectReason = req.Remark
+				// approve / reject 分支：只有 pending 状态的发票才允许审
+				if inv.Status != model.InvoiceStatusPending {
+					if req.InvoiceAction == "approve" && inv.Status == model.InvoiceStatusApproved {
+						// 已是 approved，幂等通过
+					} else {
+						return errInvoiceStatus
+					}
+				} else {
+					newStatus := model.InvoiceStatusApproved
+					rejectReason := ""
+					if req.InvoiceAction == "reject" {
+						newStatus = model.InvoiceStatusRejected
+						rejectReason = req.Remark
+					}
+					upd := map[string]interface{}{
+						"status":        newStatus,
+						"reviewed_by":   aid,
+						"reviewed_at":   now,
+						"reject_reason": rejectReason,
+					}
+					if err := tx.Model(&inv).Updates(upd).Error; err != nil {
+						return err
+					}
+					invoiceChangedTo = newStatus
 				}
-				upd := map[string]interface{}{
-					"status":       newStatus,
-					"reviewed_by":  aid,
-					"reviewed_at":  now,
-					"reject_reason": rejectReason,
-				}
-				if err := tx.Model(&inv).Updates(upd).Error; err != nil {
-					return err
-				}
-				invoiceChangedTo = newStatus
 			}
 		}
 		// 2) 提现决策
@@ -1099,6 +1113,8 @@ func (s *Server) respondWithdrawalResult(c *gin.Context, id uint64, err error) {
 			response.Conflict(c, "创作者冻结余额不足，账目异常，请先对账")
 		case errors.Is(err, errInvoiceStatus):
 			response.Conflict(c, "该发票已审核过（approved/rejected），不能再改")
+		case errors.Is(err, errInvoiceSkipOnPending):
+			response.Conflict(c, "该发票待审中（pending），必须选 approve 或 reject，不能 skip（skip 仅用于已审核通过的快通道）")
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			response.NotFound(c, "提现申请不存在")
 		default:
@@ -1118,6 +1134,8 @@ var (
 	errFrozenInsufficient = errors.New("frozen balance insufficient")
 	// 2026-07-02 改：合并审核时遇到发票状态非法（终态/被改过）
 	errInvoiceStatus = errors.New("invoice status invalid for review")
+	// 2026-07-03 改：流程图步骤 3 强约束——pending 发票不能 skip（必须 approve/reject）
+	errInvoiceSkipOnPending = errors.New("invoice is pending — must approve or reject, skip is only for approved invoices (fast channel)")
 )
 
 // === 订单退款 / 主动查单 (管理端) ===
