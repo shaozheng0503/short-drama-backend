@@ -180,7 +180,7 @@ func Load() Config {
 		SMSSendIPRPS:         getEnvFloat("SMS_SEND_IP_RPS", 0.2),
 		SMSSendIPBurst:       getEnvInt("SMS_SEND_IP_BURST", 3),
 
-		AdminInitUsername: getEnv("ADMIN_INIT_USERNAME", "admin"),
+		AdminInitUsername: getEnv("ADMIN_INIT_USERNAME", "郎志"), // 2026-07-02 会议：吴总要求 admin 账号改为郎志（默认；老 admin 账号保留不删）
 		AdminInitPassword: getEnv("ADMIN_INIT_PASSWORD", "admin123"),
 
 		BcryptCost: getEnvInt("BCRYPT_COST", 10),
