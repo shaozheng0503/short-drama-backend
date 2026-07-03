@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"log"
+	"time"
 
 	"ai-drama-platform/internal/model"
 	"ai-drama-platform/internal/response"
@@ -29,6 +31,8 @@ func (s *Server) creatorListEpisodes(c *gin.Context) {
 	views := make([]gin.H, 0, len(episodes))
 	for _, ep := range episodes {
 		views = append(views, episodeAdminView(ep))
+		// v0.13.1：列表加载时给 uploading 状态的剧集加一次懒同步（VOD 回调漏了的兜底）
+		s.lazySyncEpisodeVOD(&ep)
 	}
 	response.OK(c, gin.H{"list": views})
 }
@@ -346,6 +350,66 @@ func (s *Server) creatorDeleteEpisode(c *gin.Context) {
 	response.OK(c, gin.H{"deleted": true, "id": id, "drama_id": ep.DramaID})
 }
 
+// lazySyncEpisodeVOD —— 后端兜底：episode 处于 uploading 状态时，
+// 在列表 / 详情 / 预览接口里被调用，**后台**调一次 DescribeMediaInfos 自动切 ready。
+//
+// 关键点：
+//  1. **非阻塞**：用 goroutine 起，handler 不等 VOD 返回，避免拉慢剧集列表接口
+//  2. **不频繁**：用 vod_synced_at 字段节流，30 秒内已经主动同步过的就不再调
+//  3. **不写库**：只读 episodes / 只在拿到结果时写回 status / video_url / duration_seconds
+//  4. **失败静默**：任何错误只 log，不影响用户当前请求
+//
+// 这是 VOD 节点回调 / NewFileUpload 漏了的兜底——VOD 控制台没配回调时仍能自动 ready。
+// 文档：见 announcement-2026-07-03-v0.13.1.md
+func (s *Server) lazySyncEpisodeVOD(ep *model.Episode) {
+	if ep == nil {
+		return
+	}
+	if ep.Status != model.EpisodeStatusUploading {
+		return
+	}
+	if ep.VODFileID == "" {
+		return
+	}
+	if !s.vod.Configured() {
+		return
+	}
+	// 30 秒节流：避免短时间多次进入列表接口时反复调 VOD
+	if ep.VODSyncedAt != nil && time.Since(*ep.VODSyncedAt) < 30*time.Second {
+		return
+	}
+	epID := ep.ID
+	fileID := ep.VODFileID
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		info, err := s.vod.DescribeMediaInfo(ctx, fileID)
+		if err != nil {
+			log.Printf("[episode] lazy-sync vod file_id=%s err=%v", fileID, err)
+			return
+		}
+		updates := map[string]interface{}{
+			"vod_synced_at": gorm.Expr("NOW()"),
+		}
+		if info.VideoURL != "" {
+			updates["video_url"] = info.VideoURL
+		}
+		if info.DurationSeconds > 0 {
+			updates["duration_seconds"] = info.DurationSeconds
+		}
+		// 拿到 URL 即视为转码/上传完成
+		if info.VideoURL != "" {
+			updates["status"] = model.EpisodeStatusReady
+		}
+		if err := s.db.Model(&model.Episode{}).Where("id = ?", epID).Updates(updates).Error; err != nil {
+			log.Printf("[episode] lazy-sync update ep=%d err=%v", epID, err)
+		} else {
+			log.Printf("[episode] lazy-sync ep=%d file_id=%s status=%s url_set=%v",
+				epID, fileID, model.EpisodeStatusReady, info.VideoURL != "")
+		}
+	}()
+}
+
 func (s *Server) creatorRefreshEpisodeVOD(c *gin.Context) {
 	id := parseUint(c.Param("id"))
 	if id == 0 {
@@ -375,7 +439,9 @@ func (s *Server) creatorRefreshEpisodeVOD(c *gin.Context) {
 		return
 	}
 
-	updates := map[string]interface{}{}
+	updates := map[string]interface{}{
+		"vod_synced_at": gorm.Expr("NOW()"), // v0.13.1：刷新成功后写入，给懒加载节流
+	}
 	if info.VideoURL != "" {
 		updates["video_url"] = info.VideoURL
 	}
@@ -442,6 +508,10 @@ func (s *Server) creatorPreviewEpisode(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// v0.13.1：进预览页时也跑一次懒同步（创作者点「预览」= 想看片，正好兜底）
+	s.lazySyncEpisodeVOD(ep)
+	// 拿一下最新的 video_url（懒同步可能并发改库）
+	s.db.First(ep, id)
 	if ep.VideoURL == "" {
 		response.InvalidParam(c, "剧集尚未生成 video_url，无法预览")
 		return

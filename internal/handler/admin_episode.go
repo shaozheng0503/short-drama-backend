@@ -30,6 +30,8 @@ func (s *Server) adminListEpisodes(c *gin.Context) {
 	views := make([]gin.H, 0, len(episodes))
 	for _, ep := range episodes {
 		views = append(views, episodeAdminView(ep))
+		// v0.13.1：列表加载时给 uploading 状态的剧集加一次懒同步（VOD 回调漏了的兜底）
+		s.lazySyncEpisodeVOD(&ep)
 	}
 	response.OK(c, gin.H{"list": views})
 }
@@ -296,6 +298,13 @@ func (s *Server) adminPreviewEpisode(c *gin.Context) {
 		response.InvalidParam(c, "剧集尚未生成 video_url，无法预览")
 		return
 	}
+	// v0.13.1：预览接口也跑一次懒同步（兜底 VOD 回调丢失）
+	s.lazySyncEpisodeVOD(&ep)
+	s.db.First(&ep, id)
+	if ep.VideoURL == "" {
+		response.InvalidParam(c, "剧集尚未生成 video_url，无法预览")
+		return
+	}
 
 	signedURL, err := s.vod.SignPlayURL(ep.VideoURL)
 	if err != nil {
@@ -350,7 +359,9 @@ func (s *Server) adminRefreshEpisodeVOD(c *gin.Context) {
 		return
 	}
 
-	updates := map[string]interface{}{}
+	updates := map[string]interface{}{
+		"vod_synced_at": gorm.Expr("NOW()"), // v0.13.1：刷新成功后写入，给懒加载节流
+	}
 	if info.VideoURL != "" {
 		updates["video_url"] = info.VideoURL
 	}

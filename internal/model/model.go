@@ -407,14 +407,17 @@ type Episode struct {
 	ID              uint64    `gorm:"primaryKey;column:id" json:"id"`
 	DramaID         uint64    `gorm:"column:drama_id;uniqueIndex:uniq_drama_episode_no,priority:1" json:"drama_id"`
 	EpisodeNo       int       `gorm:"column:episode_no;uniqueIndex:uniq_drama_episode_no,priority:2" json:"episode_no"`
-	Title           string    `gorm:"column:title;size:128" json:"title"`
-	VODFileID       string    `gorm:"column:vod_file_id;size:128" json:"vod_file_id"`
-	VideoURL        string    `gorm:"column:video_url;size:512" json:"video_url"`
-	DurationSeconds int       `gorm:"column:duration_seconds;default:0" json:"duration_seconds"`
-	Status          string    `gorm:"column:status;size:20;default:uploading" json:"status"`
-	LikeCount       int64     `gorm:"column:like_count;default:0" json:"like_count"` // 集级点赞数（对齐红果：点赞是单集的）
-	CreatedAt       time.Time `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt       time.Time `gorm:"column:updated_at" json:"updated_at"`
+	Title           string     `gorm:"column:title;size:128" json:"title"`
+	VODFileID       string     `gorm:"column:vod_file_id;size:128" json:"vod_file_id"`
+	VideoURL        string     `gorm:"column:video_url;size:512" json:"video_url"`
+	DurationSeconds int        `gorm:"column:duration_seconds;default:0" json:"duration_seconds"`
+	Status          string     `gorm:"column:status;size:20;default:uploading" json:"status"`
+	LikeCount       int64      `gorm:"column:like_count;default:0" json:"like_count"` // 集级点赞数（对齐红果：点赞是单集的）
+	// VODSyncedAt —— 后端最近一次主动调 VOD DescribeMediaInfos 的时间
+	// （v0.13.1 懒加载机制用，30 秒内不重复调）
+	VODSyncedAt  *time.Time `gorm:"column:vod_synced_at" json:"vod_synced_at,omitempty"`
+	CreatedAt    time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt    time.Time  `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (Episode) TableName() string { return "episodes" }
