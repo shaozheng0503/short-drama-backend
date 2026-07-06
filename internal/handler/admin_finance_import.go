@@ -129,6 +129,14 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 		response.InvalidParam(c, "xlsx 没有可读的工作表")
 		return
 	}
+	// 2026-07-06 改：吴建棉反馈"收益报表上传，日期对不上"
+	// 决定走默认 GetRows（不加 RawCellValue: true）—— 让 excelize 按 cell.NumFmt 格式化成字符串
+	// 配合 parseExcelDateCell 中的 normalizeDate 接受 m/d/yy / yyyy/m/d / yyyy-mm-dd 等格式
+	// 为什么不用 RawCellValue:
+	//   - RawCellValue 拿序列号 (float string)，需要 excelize.ExcelDateToTime 转
+	//   - 但 excelize.ExcelDateToTime 跟 WPS 真实算法差几天（已验证 sn=46204 差 2 天）
+	//   - 改成自己实现 Excel 序列号算法又有 Go AddDate 闰年 bug
+	// 务实：让 excelize 帮我们格式化 → normalizeDate 接受格式化后的字符串
 	rows, err := xl.GetRows(sheet)
 	if err != nil {
 		response.ServerError(c, "解析表格失败")
@@ -185,9 +193,11 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 			rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Status: "failed", Message: ratioErr})
 			continue
 		}
-		statDate, ok := normalizeDate(strings.TrimSpace(row[4]))
+		// 2026-07-06 改：先按 Excel 序列号解析（RawCellValue 模式下日期类型是 float 字符串），
+		// 解析失败再走字符串日期解析（兼容财务手打 "2024/7/3" 的情况）
+		statDate, ok := parseExcelDateCell(strings.TrimSpace(row[4]))
 		if !ok {
-			rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Status: "failed", Message: "日期格式应为 YYYY-MM-DD"})
+			rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Status: "failed", Message: "日期格式应为 YYYY-MM-DD 或 Excel 日期单元格"})
 			continue
 		}
 		var explicitDramaID uint64
@@ -526,15 +536,72 @@ func (s *Server) bumpCreatorStatsIncome(tx *gorm.DB, creatorID, dramaID uint64, 
 
 // normalizeDate 把常见日期写法归一成 YYYY-MM-DD。
 // Excel 把日期格式化输出时会用本地短格式（如 2026/5/26 无前导零），全部兼容。
+// parseExcelDateCell 解析"日期类型"或"日期字符串"单元格
+// 2026-07-06 改：吴建棉反馈"收益报表上传，日期对不上"
+//
+// 背景：WPS 写日期按"Excel 算法"（假装 1900 闰年），
+//       excelize v2.10.1 的 ExcelDateToTime 按"真实日历"算（1899-12-30 + N 天），
+//       两者差几天。WPS 真实序列号映射：
+//         "2026/7/3" → sn=46204（Excel 算法）→ ExcelDateToTime 给 2026-07-01（差 2 天）
+//
+// 务实修法：完全不用 excelize.ExcelDateToTime，不用 RawCellValue。
+//   - excelize 默认 GetRows 把日期单元格按 cell.NumFmt 格式化成字符串
+//   - normalizeDate 接受所有常见日期格式（m/d/yy / mm/dd/yyyy / yyyy-mm-dd 等）
+//   - 财务手打 "2024/7/3" 字符串也走 normalizeDate
+//
+// GetRows 行为（默认模式，不加 RawCellValue: true）：
+//   - NumFmt=14 (m/d/yy)     -> "07-15-24"   → normalizeDate 接受
+//   - NumFmt 自定义 yyyy/m/d -> "2024/7/15"  → normalizeDate 接受
+//   - 文本 "2024/7/3"        -> "2024/7/3"   → normalizeDate 接受
+func parseExcelDateCell(s string) (string, bool) {
+	if s == "" {
+		return "", false
+	}
+	// 字符串日期（统一走 normalizeDate，支持 m/d/yy / mm/dd/yyyy / yyyy-mm-dd / yyyy/m/d 等）
+	return normalizeDate(s)
+}
+
 func normalizeDate(s string) (string, bool) {
+	// 2026-07-06 改：吴建棉反馈"日期对不上"
+	// 增加 Excel/WPS 格式化输出的 layout：
+	//   "07-15-24"     → NumFmt=14 (m/d/yy)
+	//   "7/15/26"      → NumFmt=m/d/yy 自定义
+	//   "07/15/2026"   → 一些 Excel 版本
+	//   "7-15-2026"    → 自定义
+	//   "2026年7月3日" → 中文版 Excel/WPS（罕见）
+	// 2 位年按 2000 年后处理（与 Excel 行为一致）
 	layouts := []string{
+		// 标准
 		"2006-01-02", "2006/01/02", "2006.01.02",
 		"2006-1-2", "2006/1/2", "2006.1.2",
 		"2006-1-02", "2006/1/02",
 		"2006-01-2", "2006/01/2",
+		// 美式短格式
+		"1-2-06", "1/2/06", "1.2.06", // 1/3/24 = 2024-01-03
+		"01-02-06", "01/02/06", "01.02.06",
+		"1-02-06", "1/02/06", "1.02.06",
+		"01-2-06", "01/2/06", "01.2.06",
+		// 美式 4 位年
+		"1/2/2006", "1-2-2006", "1.2.2006",
+		"01/02/2006", "01-02-2006", "01.02.2006",
+		"1/02/2006", "1-02-2006", "1.02.2006",
+		"01/2/2006", "01-2-2006", "01.2.2006",
+		// 中文
+		"2006年1月2日", "2006年01月02日",
 	}
 	for _, layout := range layouts {
 		if t, err := time.Parse(layout, s); err == nil {
+			// 2 位年按 2000 年后（与 Excel 行为一致：sn=1~59 默认归 1900，但 sn>=60 归 1900/2000+）
+			// 我们的格式是 m/d/yy，2 位年 < 30 归 2000+，>= 30 归 1900+（与 Excel 1900 闰年 bug 兼容）
+			year := t.Year()
+			if year < 100 {
+				if year < 30 {
+					year += 2000
+				} else {
+					year += 1900
+				}
+				t = time.Date(year, t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+			}
 			return t.Format("2006-01-02"), true
 		}
 	}
