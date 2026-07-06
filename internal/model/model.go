@@ -652,6 +652,13 @@ type Settlement struct {
 	CreatorID     uint64     `gorm:"column:creator_id;index" json:"creator_id"`
 	ContractNo    string     `gorm:"column:contract_no;size:64;index" json:"contract_no"`        // 关联合同编号
 	Period        string     `gorm:"column:period;size:16;index" json:"period"`                  // "2026-05" / "2026-05-R3"
+	// 2026-07-06 加：半月结算唯一键
+	// 2026-07-03 群（吴建棉）：提现改为半月度，每月 15 号 + 月末各结算一次
+	// 旧月度数据（cycle_key=""）保留——不强制迁移，新半月度数据用 2026-07-H1 / 2026-07-H2 格式
+	CycleKey string `gorm:"column:cycle_key;size:16;index" json:"cycle_key"`
+	// 2026-07-06 加：实际结算区间展示文案 "2026-07-16 ~ 2026-07-31"
+	// 区别于 Period（自然月 YYYY-MM），PeriodRange 是真实起止日期
+	PeriodRange string `gorm:"column:period_range;size:64" json:"period_range"`
 	GrossCents    int64      `gorm:"column:gross_cents;default:0" json:"gross_cents"`            // 订单总流水
 	PlatformCents int64      `gorm:"column:platform_cents;default:0" json:"platform_cents"`      // 平台抽成
 	NetCents      int64      `gorm:"column:net_cents;default:0" json:"net_cents"`                // 创作者净收入

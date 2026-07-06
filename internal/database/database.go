@@ -86,6 +86,9 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 	if err := migrateMergeDialectIntoLanguage(db); err != nil {
 		return nil, err
 	}
+	if err := migrateAddSettlementHalfMonthFields(db); err != nil {
+		return nil, err
+	}
 	if cfg.SeedMockData {
 		result, err := seed.Run(db, cfg)
 		if err != nil {
@@ -189,6 +192,44 @@ func migrateMergeDialectIntoLanguage(db *gorm.DB) error {
 		return err
 	}
 	return db.Migrator().DropColumn(&model.Drama{}, "dialect_id")
+}
+
+// migrateAddSettlementHalfMonthFields 加 settlements.cycle_key + period_range 字段。
+// 2026-07-03 群（吴建棉）：提现改为半月度，每月 15 号 + 月末各结算一次。
+//
+// 旧月度数据 cycle_key/period_range 为空，新半月度数据会填
+//   - cycle_key:  "2026-07-H1" / "2026-07-H2"（唯一键）
+//   - period_range: "2026-07-01 ~ 2026-07-15" / "2026-07-16 ~ 2026-07-31"
+//
+// 幂等：HasColumn 已存在则跳过；同时对存量月度行回填 period_range（让老数据展示更友好）。
+func migrateAddSettlementHalfMonthFields(db *gorm.DB) error {
+	if !db.Migrator().HasColumn(&model.Settlement{}, "cycle_key") {
+		if err := db.Exec(`ALTER TABLE settlements ADD COLUMN cycle_key VARCHAR(16)`).Error; err != nil {
+			return err
+		}
+		if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_settlements_cycle_key ON settlements (cycle_key)`).Error; err != nil {
+			return err
+		}
+	}
+	if !db.Migrator().HasColumn(&model.Settlement{}, "period_range") {
+		if err := db.Exec(`ALTER TABLE settlements ADD COLUMN period_range VARCHAR(64)`).Error; err != nil {
+			return err
+		}
+	}
+	// 存量月度行 period_range 回填："2026-05" → "2026-05-01 ~ 2026-05-31"
+	// 用 (period || '-01' ~ period 月末) 形式补；幂等（重复执行因值相同无副作用）。
+	if err := db.Exec(`
+		UPDATE settlements
+		SET period_range = period || '-01' || ' ~ ' || to_char(
+			(date_trunc('month', to_date(period, 'YYYY-MM')) + interval '1 month - 1 day')::date,
+			'YYYY-MM-DD'
+		)
+		WHERE period_range IS NULL OR period_range = ''
+		  AND period ~ '^\d{4}-\d{2}$'
+	`).Error; err != nil {
+		return err
+	}
+	return nil
 }
 
 func ensureInitialAdmin(db *gorm.DB, cfg config.Config) error {

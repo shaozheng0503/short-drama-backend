@@ -217,12 +217,20 @@ func (s *Server) creatorListSettlements(c *gin.Context) {
 
 	list := make([]gin.H, 0, len(rows))
 	for _, r := range rows {
+		// 2026-07-06 加：cycle_key / period_range 字段，让前端能看到半月度周期
+		periodRange := r.PeriodRange
+		if periodRange == "" {
+			// 兜底：老月度数据 period 形如 2026-05，用 period 拼成 period_range
+			periodRange = r.Period + "（整月）"
+		}
 		list = append(list, gin.H{
 			"id":                  r.ID,
 			"settlement_no":       r.SettlementNo,
 			"creator_id":          r.CreatorID,
 			"contract_no":         r.ContractNo,
 			"period":              r.Period,
+			"cycle_key":           r.CycleKey,
+			"period_range":        periodRange,
 			"gross_cents":         r.GrossCents,
 			"platform_cents":      r.PlatformCents,
 			"net_cents":           r.NetCents,
@@ -329,6 +337,8 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		"creator_id":     st.CreatorID,
 		"contract_no":    st.ContractNo,
 		"period":         st.Period,
+		"cycle_key":      st.CycleKey,   // 2026-07-06 加：半月度唯一键
+		"period_range":   st.PeriodRange, // 2026-07-06 加：实际起止日期
 		"gross_cents":    st.GrossCents,
 		"platform_cents": st.PlatformCents,
 		"net_cents":      st.NetCents,
