@@ -261,6 +261,9 @@ func (s *Server) adminGetDrama(c *gin.Context) {
 
 	view := dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID))
 	view["episodes"] = epViews
+	// 2026-07-06 加：管理中台剧详情也补 covers / characters（之前只创作者端详情有，
+	// 导致管理中台点开剧详情只看到 cover_url 一张图，看不到 drama_covers 多图封面）
+	view["covers"], view["characters"] = s.loadDramaExtras(drama.ID)
 	response.OK(c, view)
 }
 
