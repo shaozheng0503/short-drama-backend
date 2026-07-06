@@ -253,6 +253,13 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		response.ServerError(c, "查询失败")
 		return
 	}
+	// 2026-07-06 加：拉创作者主体信息（用于"对账单"结算方抬头 + 收款账户）。
+	// 结算单已确认属于本创作者，直接按 id 查 creators 即可。
+	var creator model.Creator
+	if err := s.db.First(&creator, creatorID).Error; err != nil {
+		response.ServerError(c, "查询创作者失败")
+		return
+	}
 	// 订单明细
 	var items []model.SettlementItem
 	s.db.Where("settlement_id = ?", st.ID).Order("paid_at asc, id asc").Find(&items)
@@ -304,6 +311,18 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 	platformAddress := strings.TrimSpace(s.cfg.PlatformAddress)
 	platformPhone := strings.TrimSpace(s.cfg.PlatformPhone)
 
+	// 2026-07-06 加：结算方收款账户信息（创作者抬头 + 银行账户）。
+	// 前端按 demo 流程图步骤 2「下载对账单 / 开票参考」展示"结算方实际收款账户信息"和"结算方公司全称"。
+	// 字段全部脱敏——只返 masked 后的银行卡号，原始密文 id_card_no_enc / bank_card_no_enc 绝不出接口。
+	creatorPartyName := strings.TrimSpace(creator.Name)
+	if strings.TrimSpace(creator.OrgName) != "" {
+		creatorPartyName = strings.TrimSpace(creator.OrgName)
+	}
+	// 机构类型补"工作室"后缀、个人类型保留原姓名——和 demo 文案"${creator}工作室"对齐
+	if creator.CreatorType == model.CreatorTypeOrganization && creatorPartyName != "" {
+		creatorPartyName = creatorPartyName + "工作室"
+	}
+
 	response.OK(c, gin.H{
 		"id":             st.ID,
 		"settlement_no":  st.SettlementNo,
@@ -328,6 +347,18 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 			"bank_account":  platformBankAccount,
 			"address":       platformAddress,
 			"phone":         platformPhone,
+		},
+		// 2026-07-06 加：结算方信息（创作者抬头 + 收款账户）。
+		// 配合 platform_company 一起给前端渲染"对账单 / 开票参考"——demo 流程图步骤 2。
+		"creator_party": gin.H{
+			"name":            creatorPartyName,        // 结算方公司全称 / 个人姓名
+			"id_no_masked":    creator.IDCardNoMasked,  // 身份证号脱敏
+			"bank_name":       creator.BankName,        // 开户行
+			"bank_branch":     creator.BankBranch,      // 开户支行
+			"bank_no_masked":  creator.BankCardNoMasked, // 银行卡号脱敏
+			"bank_last4":      creator.BankCardLast4,
+			"creator_type":    creator.CreatorType,     // personal / organization
+			"transfer_type":   model.TransferTypeOf(creator.CreatorType), // public / private
 		},
 	})
 }
