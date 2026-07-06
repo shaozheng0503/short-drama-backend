@@ -744,6 +744,34 @@ type CreatorStatsDaily struct {
 
 func (CreatorStatsDaily) TableName() string { return "creator_stats_daily" }
 
+// 2026-07-06 加：状态变迁事件表（事件溯源）
+// 记录结算单/发票/提现单等关键实体的状态变化，支撑"时间线按天回看"功能。
+// 只从今天起开始记——老数据回看只能回看到表里最早的 transition 时间。
+//
+// 实体类型 entity_type：
+//   - "settlement"  : 结算单（对应 settlements.id）
+//   - "invoice"     : 发票（对应 invoices.id）
+//   - "withdrawal"  : 提现申请（对应 withdrawals.id）
+//
+// actor_type 触发方：
+//   - "system"  : cron 任务 / 定时任务自动触发
+//   - "creator" : 创作者触发（如提交提现）
+//   - "admin"   : 管理员/财务触发（如审核/打款/驳回）
+type StateTransition struct {
+	ID         uint64    `gorm:"primaryKey;column:id" json:"id"`
+	EntityType string    `gorm:"column:entity_type;size:32;index" json:"entity_type"`
+	EntityID   uint64    `gorm:"column:entity_id;index" json:"entity_id"`
+	FromStatus string    `gorm:"column:from_status;size:20" json:"from_status"`
+	ToStatus   string    `gorm:"column:to_status;size:20" json:"to_status"`
+	ActorType  string    `gorm:"column:actor_type;size:16" json:"actor_type"`
+	ActorID    *uint64   `gorm:"column:actor_id" json:"actor_id"`
+	Reason     string    `gorm:"column:reason;size:255" json:"reason"`
+	Metadata   string    `gorm:"column:metadata;type:jsonb" json:"metadata"` // 额外上下文（金额变化 / 关联 invoice_ids 等）
+	CreatedAt  time.Time `gorm:"column:created_at;index" json:"created_at"`
+}
+
+func (StateTransition) TableName() string { return "state_transitions" }
+
 // ChannelIncomeDaily —— 第三方渠道每日收益明细（财务 Excel 导入）。
 // 本平台自有付费收入走支付分账写 creator_stats_daily，不进此表。
 // 唯一键 (drama_id, channel, stat_date)：同剧同渠道同日重复导入按覆盖处理。

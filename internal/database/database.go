@@ -89,6 +89,9 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 	if err := migrateAddSettlementHalfMonthFields(db); err != nil {
 		return nil, err
 	}
+	if err := migrateCreateStateTransitions(db); err != nil {
+		return nil, err
+	}
 	if cfg.SeedMockData {
 		result, err := seed.Run(db, cfg)
 		if err != nil {
@@ -227,6 +230,42 @@ func migrateAddSettlementHalfMonthFields(db *gorm.DB) error {
 		WHERE period_range IS NULL OR period_range = ''
 		  AND period ~ '^\d{4}-\d{2}$'
 	`).Error; err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrateCreateStateTransitions 创建状态变迁事件表。
+// 2026-07-06 P1-5「时间线按天回看」功能支持表。
+//
+// 表设计要点：
+//   - (entity_type, entity_id) 联合索引——回看时按实体查最近一条变迁
+//   - created_at 索引——按时间范围过滤
+//   - 不存现状——每次状态变化追加一行
+func migrateCreateStateTransitions(db *gorm.DB) error {
+	if db.Migrator().HasTable(&model.StateTransition{}) {
+		return nil
+	}
+	if err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS state_transitions (
+			id          BIGSERIAL PRIMARY KEY,
+			entity_type VARCHAR(32)  NOT NULL,
+			entity_id   BIGINT       NOT NULL,
+			from_status VARCHAR(20)  NOT NULL,
+			to_status   VARCHAR(20)  NOT NULL,
+			actor_type  VARCHAR(16)  NOT NULL,
+			actor_id    BIGINT,
+			reason      VARCHAR(255),
+			metadata    JSONB,
+			created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+		)
+	`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_state_transitions_entity ON state_transitions (entity_type, entity_id, created_at)`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_state_transitions_created_at ON state_transitions (created_at)`).Error; err != nil {
 		return err
 	}
 	return nil

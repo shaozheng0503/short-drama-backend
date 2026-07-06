@@ -244,6 +244,34 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 	}
 
 	response.OK(c, s.withdrawalView(result))
+
+	// 2026-07-06 加 P1-5：时间线
+	// 1) 记录提现申请本身的创建
+	actorID := cid
+	invoiceID := uint64(0)
+	if result.InvoiceID != nil {
+		invoiceID = *result.InvoiceID
+	}
+	s.recordTransition("withdrawal", result.ID, "", model.WithdrawalStatusPending, "creator", &actorID, "创作者发起提现申请", map[string]interface{}{
+		"amount_cents":  result.AmountCents,
+		"withdrawal_no": result.WithdrawalNo,
+		"invoice_id":    invoiceID,
+	})
+	// 2) 如果关联了 invoice，查询 invoice 对应的 settlement，标记"进入提现流程"事件
+	// 注：settlement 真实状态机没有 applied 中间态（open → invoiced → paid），
+	//     from/to 填当前状态表示"事件触发但状态未变"。
+	if result.InvoiceID != nil {
+		var inv model.Invoice
+		if err := s.db.First(&inv, *result.InvoiceID).Error; err == nil && inv.SettlementID > 0 {
+			var stNow model.Settlement
+			if err := s.db.First(&stNow, inv.SettlementID).Error; err == nil {
+				s.recordTransition("settlement", inv.SettlementID, stNow.Status, stNow.Status, "creator", &actorID, "创作者基于该结算单发起提现", map[string]interface{}{
+					"withdrawal_id": result.ID,
+					"invoice_id":    inv.ID,
+				})
+			}
+		}
+	}
 }
 
 func (s *Server) creatorListWithdrawals(c *gin.Context) {

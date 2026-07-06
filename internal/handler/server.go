@@ -276,13 +276,19 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.GET("/settlements/:id/download.pdf", s.creatorDownloadSettlementPDF) // PDF 对账单（存档/发邮件用，固定版式）
 	// 2026-07-02 改：流程图步骤 1 预览结算单（实时聚合，不入库）
 	creatorAuth.GET("/settlement/preview", s.creatorPreviewSettlement)
+	// 2026-07-06 加 P1-5：时间线按天回看
+	creatorAuth.GET("/settlements/:id/timeline", s.creatorSettlementTimeline)
 	creatorAuth.POST("/invoices", s.creatorCreateInvoice)
 	creatorAuth.GET("/invoices", s.creatorListInvoices)
 	creatorAuth.GET("/invoices/:id", s.creatorGetInvoice)
+	// 2026-07-06 加 P1-5：发票时间线
+	creatorAuth.GET("/invoices/:id/timeline", s.creatorInvoiceTimeline)
 	creatorAuth.DELETE("/invoices/:id", s.creatorCancelInvoice)
 	creatorAuth.POST("/withdrawals", s.idempotencyMiddleware("creator"), s.creatorCreateWithdrawal)
 	creatorAuth.GET("/withdrawals", s.creatorListWithdrawals)
 	creatorAuth.GET("/withdrawals/tax-preview", s.creatorWithdrawTaxPreview)
+	// 2026-07-06 加 P1-5：提现时间线
+	creatorAuth.GET("/withdrawals/:id/timeline", s.creatorWithdrawalTimeline)
 	creatorAuth.GET("/data-overview", s.creatorDataOverview)
 	creatorAuth.GET("/contracts", s.creatorListContracts)
 	creatorAuth.GET("/contracts/:id/scan", s.creatorDownloadContractScan)
