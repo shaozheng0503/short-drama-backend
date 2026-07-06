@@ -250,6 +250,8 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.POST("/dramas/:id/publish", verified, s.creatorPublishDrama)
 	creatorAuth.POST("/dramas/:id/offline", s.creatorOfflineDrama)
 	creatorAuth.GET("/dramas/:id/stats", s.creatorDramaStats)
+	// 2026-07-06 加：一键下载素材清单（前端 JSZip 打包，不走后端 zip 流）
+	creatorAuth.GET("/dramas/:id/files-manifest", s.creatorGetDramaFilesManifest)
 
 	creatorAuth.GET("/dramas/:id/episodes", s.creatorListEpisodes)
 	creatorAuth.POST("/dramas/:id/episodes", verified, s.creatorCreateEpisode)
