@@ -591,6 +591,23 @@ func (s *Server) creatorCreateInvoice(c *gin.Context) {
 		"status":        inv.Status,
 		"created_at":    inv.CreatedAt,
 	})
+
+	// 2026-07-06 加 P1-5：时间线
+	actorID := creatorID
+	s.recordTransition("invoice", inv.ID, "", model.InvoiceStatusPending, "creator", &actorID, "创作者上传发票", map[string]interface{}{
+		"invoice_no":    inv.InvoiceNo,
+		"amount_cents":  inv.AmountCents,
+		"settlement_id": inv.SettlementID,
+	})
+	// 关联的 settlement 状态变化：open → invoiced（如果之前是 open）
+	if inv.SettlementID > 0 {
+		var stNow model.Settlement
+		if err := s.db.First(&stNow, inv.SettlementID).Error; err == nil && stNow.Status == model.SettlementStatusOpen {
+			s.recordTransition("settlement", inv.SettlementID, model.SettlementStatusOpen, model.SettlementStatusInvoiced, "creator", &actorID, "创作者上传发票，结算单进入待提现状态", map[string]interface{}{
+				"invoice_id": inv.ID,
+			})
+		}
+	}
 }
 
 // creatorListInvoices —— GET /v1/creator/invoices

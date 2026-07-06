@@ -766,7 +766,8 @@ type StateTransition struct {
 	ActorType  string    `gorm:"column:actor_type;size:16" json:"actor_type"`
 	ActorID    *uint64   `gorm:"column:actor_id" json:"actor_id"`
 	Reason     string    `gorm:"column:reason;size:255" json:"reason"`
-	Metadata   string    `gorm:"column:metadata;type:jsonb" json:"metadata"` // 额外上下文（金额变化 / 关联 invoice_ids 等）
+	// 2026-07-06 改：用 *string 指针——GORM nil 写 NULL（jsonb 列不接受空字符串）
+	Metadata   *string   `gorm:"column:metadata;type:jsonb" json:"metadata"` // 额外上下文（金额变化 / 关联 invoice_ids 等）
 	CreatedAt  time.Time `gorm:"column:created_at;index" json:"created_at"`
 }
 

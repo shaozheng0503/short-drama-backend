@@ -30,10 +30,13 @@ func (s *Server) recordTransition(entityType string, entityID uint64, fromStatus
 	if entityID == 0 {
 		return
 	}
-	metaJSON := ""
+	// 2026-07-06 修：metadata 是 *string 指针——nil 写 NULL，map 序列化后传字符串指针。
+	// 配合 jsonb 列：null 和 {} 都合法。
+	var metaPtr *string
 	if metadata != nil {
 		if b, err := json.Marshal(metadata); err == nil {
-			metaJSON = string(b)
+			s := string(b)
+			metaPtr = &s
 		}
 	}
 	st := model.StateTransition{
@@ -44,7 +47,7 @@ func (s *Server) recordTransition(entityType string, entityID uint64, fromStatus
 		ActorType:  actorType,
 		ActorID:    actorID,
 		Reason:     reason,
-		Metadata:   metaJSON,
+		Metadata:   metaPtr,
 	}
 	if err := s.db.Create(&st).Error; err != nil {
 		// 不阻断业务
@@ -91,8 +94,8 @@ func (s *Server) getTimelineAsOf(entityType string, entityID uint64, asOf string
 	firstAt := ""
 	for _, r := range rows {
 		var meta map[string]interface{}
-		if r.Metadata != "" {
-			_ = json.Unmarshal([]byte(r.Metadata), &meta)
+		if r.Metadata != nil && *r.Metadata != "" {
+			_ = json.Unmarshal([]byte(*r.Metadata), &meta)
 		}
 		items = append(items, timelineItem{
 			ID:         r.ID,

@@ -829,6 +829,17 @@ func (s *Server) adminApproveWithdrawal(c *gin.Context) {
 		} else {
 			s.notifyWithdrawal(id, "提现申请已通过", "您的提现申请（%s）已通过审核，等待打款。")
 		}
+		// 2026-07-06 加 P1-5：时间线
+		if paid {
+			// 一步到位的：通过+打款
+			s.recordTransition("withdrawal", id, model.WithdrawalStatusPending, model.WithdrawalStatusPaid, "admin", &aid, "财务一步通过+打款", map[string]interface{}{
+				"transaction_no": transactionNo,
+			})
+		} else {
+			s.recordTransition("withdrawal", id, model.WithdrawalStatusPending, model.WithdrawalStatusApproved, "admin", &aid, "财务审核通过提现", map[string]interface{}{
+				"remark": req.Remark,
+			})
+		}
 	}
 	s.respondWithdrawalResult(c, id, err)
 }
@@ -984,6 +995,23 @@ func (s *Server) adminReviewWithdrawal(c *gin.Context) {
 		case withdrawalChangedTo == model.WithdrawalStatusRejected:
 			s.notifyWithdrawal(id, "提现申请被驳回", "您的提现申请（%s）被驳回，金额已退回可用余额。")
 		}
+		// 2026-07-06 加 P1-5：时间线（review 接口走的是 7/3 改的"动作合一"逻辑）
+		if withdrawalChangedTo != "" {
+			s.recordTransition("withdrawal", id, model.WithdrawalStatusPending, withdrawalChangedTo, "admin", &aid, "财务审核提现（review 接口）", map[string]interface{}{
+				"remark":         req.Remark,
+				"paid_immediate": paid,
+			})
+		}
+		// invoice 联动状态变化（如果 withdrawal 关联了 invoice 且 invoice 状态真的变了）
+		if invoiceChangedTo != "" {
+			var w model.Withdrawal
+			if err := s.db.First(&w, id).Error; err == nil && w.InvoiceID != nil {
+				s.recordTransition("invoice", *w.InvoiceID, model.InvoiceStatusPending, invoiceChangedTo, "admin", &aid, "发票随提现审核联动变更", map[string]interface{}{
+					"reason":         req.Remark,
+					"via_withdrawal": id,
+				})
+			}
+		}
 	}
 	// 扩展响应：附带 invoice_action 的最终结果
 	c.Header("X-Withdrawal-Status", withdrawalChangedTo)
@@ -1054,6 +1082,10 @@ func (s *Server) adminRejectWithdrawal(c *gin.Context) {
 	})
 	if err == nil {
 		s.notifyWithdrawal(id, "提现申请被驳回", "您的提现申请（%s）被驳回，金额已退回可用余额。")
+		// 2026-07-06 加 P1-5：时间线
+		s.recordTransition("withdrawal", id, model.WithdrawalStatusPending, model.WithdrawalStatusRejected, "admin", &aid, "财务驳回提现", map[string]interface{}{
+			"remark": req.Remark,
+		})
 	}
 	s.respondWithdrawalResult(c, id, err)
 }
@@ -1089,6 +1121,27 @@ func (s *Server) adminMarkWithdrawalPaid(c *gin.Context) {
 	})
 	if err == nil {
 		s.notifyWithdrawal(id, "提现已打款", "您的提现（%s）已完成打款，请注意查收。")
+		// 2026-07-06 加 P1-5：时间线
+		// 注意：from 状态可能是 approved（先审后打）或 pending（一步到位的打款）—— 查表拿真实值
+		var wNow model.Withdrawal
+		if err := s.db.First(&wNow, id).Error; err == nil {
+			s.recordTransition("withdrawal", id, wNow.Status, model.WithdrawalStatusPaid, "admin", &aid, "财务完成打款", map[string]interface{}{
+				"transaction_no": transactionNo,
+				"paid_at":        wNow.PaidAt,
+			})
+			// 关联的 settlement：invoiced → paid（如果未变）
+			if wNow.InvoiceID != nil {
+				var inv model.Invoice
+				if err := s.db.First(&inv, *wNow.InvoiceID).Error; err == nil && inv.SettlementID > 0 {
+					var stNow model.Settlement
+					if err := s.db.First(&stNow, inv.SettlementID).Error; err == nil && stNow.Status != model.SettlementStatusPaid {
+						s.recordTransition("settlement", inv.SettlementID, stNow.Status, model.SettlementStatusPaid, "admin", &aid, "结算单完结（打款完成）", map[string]interface{}{
+							"withdrawal_id": id,
+						})
+					}
+				}
+			}
+		}
 	}
 	s.respondWithdrawalResult(c, id, err)
 }

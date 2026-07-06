@@ -159,6 +159,9 @@ func (s *Server) adminApproveInvoice(c *gin.Context) {
 		return
 	}
 	response.OK(c, gin.H{"id": id, "status": model.InvoiceStatusApproved, "reviewed_at": now})
+
+	// 2026-07-06 加 P1-5：时间线
+	s.recordTransition("invoice", id, model.InvoiceStatusPending, model.InvoiceStatusApproved, "admin", &reviewerID, "财务审核通过发票", nil)
 }
 
 type adminInvoiceRejectRequest struct {
@@ -204,6 +207,11 @@ func (s *Server) adminRejectInvoice(c *gin.Context) {
 		return
 	}
 	response.OK(c, gin.H{"id": id, "status": model.InvoiceStatusRejected, "reject_reason": req.Reason})
+
+	// 2026-07-06 加 P1-5：时间线
+	s.recordTransition("invoice", id, model.InvoiceStatusPending, model.InvoiceStatusRejected, "admin", &reviewerID, "财务审核驳回发票", map[string]interface{}{
+		"reject_reason": req.Reason,
+	})
 }
 
 // === Admin 侧：结算单 ===

@@ -156,6 +156,14 @@ func (s *Server) runSettlementForCycle(cycleKey, startStr, endStr string) (int, 
 			return created, err
 		}
 		created++
+		// 2026-07-06 加 P1-5：时间线（系统事件）
+		var actorPtr *uint64 // system 无具体 actor
+		_ = actorPtr
+		s.recordTransition("settlement", st.ID, "", model.SettlementStatusOpen, "system", nil, "系统算账生成结算单（半月度）", map[string]interface{}{
+			"cycle_key":    cycleKey,
+			"period_range": periodRange,
+			"net_cents":    st.NetCents,
+		})
 	}
 	return created, nil
 }
