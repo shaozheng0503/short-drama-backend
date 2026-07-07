@@ -278,12 +278,8 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.GET("/settlement/preview", s.creatorPreviewSettlement)
 	// 2026-07-06 加 P1-5：时间线按天回看
 	creatorAuth.GET("/settlements/:id/timeline", s.creatorSettlementTimeline)
-	creatorAuth.POST("/invoices", s.creatorCreateInvoice)
-	creatorAuth.GET("/invoices", s.creatorListInvoices)
-	creatorAuth.GET("/invoices/:id", s.creatorGetInvoice)
-	// 2026-07-06 加 P1-5：发票时间线
-	creatorAuth.GET("/invoices/:id/timeline", s.creatorInvoiceTimeline)
-	creatorAuth.DELETE("/invoices/:id", s.creatorCancelInvoice)
+	// 2026-07-07 改（邱嘉诚反馈）：发票不再独立管理，合并到提现接口
+	// 删除 POST/GET/DELETE /invoices 系列接口，发票在提现事务内自动创建
 	creatorAuth.POST("/withdrawals", s.idempotencyMiddleware("creator"), s.creatorCreateWithdrawal)
 	creatorAuth.GET("/withdrawals", s.creatorListWithdrawals)
 	creatorAuth.GET("/withdrawals/tax-preview", s.creatorWithdrawTaxPreview)

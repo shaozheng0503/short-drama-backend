@@ -17,21 +17,16 @@ import (
 )
 
 type withdrawalRequest struct {
-	// 2026-07-03 改：drama_id 改为可空指针。
-	// 流程图步骤 2 说"根据结算单，自行制作发票，上传后发起提现申请"——只有结算单维度。
-	// 走法 A（传 invoice_id）时 drama_id 可空（结算单已固化 drama 范围）；
-	// 走法 B（不传 invoice_id）时 drama_id 可空（一张结算单对多剧合并提现）。
-	// 兼容：老接口 drama_id 必填行为由 `omitempty` + 事务内判断兼容。
-	DramaID     *uint64 `json:"drama_id"`
-	AmountCents int64   `json:"amount_cents" binding:"required"`
-	// 2026-07-03 改：invoice_id 改为必填
-	// 同事反馈：发票和提现是一体的，不能不传发票，不能单独审核发票
-	// 财务审 withdrawal 时一并审发票（approve withdrawal → invoice.approved；reject → invoice.rejected 可重用）
-	// 必填原因：
-	//   · 财务需要看到「具体这张发票」才能对账
-	//   · 一笔 withdrawal 必绑定一张 invoice，避免「空头提现」
-	//   · 创作者先在 /v1/creator/invoices 上传发票，财务审核通过后再来提现
-	InvoiceID *uint64 `json:"invoice_id" binding:"required"`
+	// 2026-07-07 改（邱嘉诚 7/7 反馈）：发票和提现合并，每次提现上传一张发票，全额提现。
+	// 不再单独调 /invoices 接口，发票在提现事务内自动创建。
+	// 不再支持结算单多次提现——一张结算单只允许一笔 pending/approved 的提现。
+	SettlementID      uint64 `json:"settlement_id" binding:"required"`
+	AmountCents       int64  `json:"amount_cents"` // 可选，不传则用 settlement.NetCents（全额提现）
+	InvoiceFileURL    string `json:"invoice_file_url" binding:"required"`
+	InvoiceType       string `json:"invoice_type" binding:"required"`
+	InvoiceExternalNo string `json:"invoice_external_no"`
+	InvoiceFileHash   string `json:"invoice_file_hash"`
+	InvoiceFileSize   int64  `json:"invoice_file_size"`
 }
 
 var activeWithdrawalStatuses = []string{
@@ -46,12 +41,16 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 		log.Printf("[withdrawal] creator=%d idem=%s", cid, idem)
 	}
 	var req withdrawalRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.AmountCents <= 0 {
-		response.InvalidParam(c, "amount_cents 必填且为正整数；drama_id 可空（按结算单维度提现时省略）")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "请求体不合法：settlement_id / invoice_file_url / invoice_type 必填，amount_cents 可选（不传则全额提现）")
 		return
 	}
-	if req.AmountCents < s.cfg.MinWithdrawalCents {
-		response.InvalidParam(c, fmt.Sprintf("提现金额不能低于 ¥%.2f", float64(s.cfg.MinWithdrawalCents)/100))
+	// 校验发票类型
+	switch req.InvoiceType {
+	case model.InvoiceTypeVATSpecial, model.InvoiceTypeVATGeneral,
+		model.InvoiceTypeEVATSpecial, model.InvoiceTypeEVATGeneral:
+	default:
+		response.InvalidParam(c, "invoice_type 不合法（可选值：evat_special / evat_general / vat_special / vat_general）")
 		return
 	}
 
@@ -68,6 +67,7 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 	}
 
 	var result model.Withdrawal
+	var newInvoice model.Invoice
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var creator model.Creator
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&creator, cid).Error; err != nil {
@@ -77,118 +77,92 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 			return errWithdrawProfileBlocked
 		}
 
-		// 2026-07-03 改：drama_id 改为可空。流程图只有"结算单"维度，不强制"按剧提现"。
-		// 走法 A：drama_id 为空时跳过 drama 校验（结算单已固化 drama 范围）
-		// 走法 B：drama_id 为空时跳过 drama 校验（按结算单合并提现，drama 在结算单 items 里）
-		if req.DramaID != nil {
-			var drama model.Drama
-			if err := tx.First(&drama, *req.DramaID).Error; err != nil {
-				if isNotFound(err) {
-					return errDramaNotFound
-				}
-				return err
-			}
-			if drama.CreatorID == nil || *drama.CreatorID != cid {
-				return errDramaNotOwned
-			}
-		}
-
-		// === 2026-07-03 改：invoice_id 必填，发票和提现一体 ===
-		// 校验：
-		//   1) 发票存在
-		//   2) 发票属于本创作者
-		//   3) 发票关联的结算单属于本创作者
-		//   4) 结算单未作废
-		//   5) settlement 包含本剧（drama_id 传了时校验）
-		//   6) 提现金额不超发票剩余可提现余额（status≠rejected 的 withdrawal 不重复计）
-		// 不再要求 invoice.status=approved —— 财务在审 withdrawal 时一并审发票
-		// （approve withdrawal → invoice.approved；reject → invoice.rejected 可重用）
-		if req.InvoiceID == nil {
-			return errInvoiceIDRequired
-		}
-		var inv model.Invoice
-		if err := tx.First(&inv, *req.InvoiceID).Error; err != nil {
-			if isNotFound(err) {
-				return errInvoiceNotFound
-			}
-			return err
-		}
-		if inv.CreatorID != cid {
-			return errInvoiceNotOwned
-		}
+		// === 2026-07-07 改：按结算单维度，提现时自动创建发票 ===
+		// 校验结算单
 		var st model.Settlement
-		if err := tx.First(&st, inv.SettlementID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&st, req.SettlementID).Error; err != nil {
+			if isNotFound(err) {
+				return errSettlementNotFound
+			}
 			return err
 		}
 		if st.CreatorID != cid {
-			return errInvoiceSettlementMismatch
+			return errSettlementNotOwned
 		}
-		if st.Status != model.SettlementStatusInvoiced && st.Status != model.SettlementStatusPaid {
-			return errInvoiceSettlementVoid
-		}
-		if req.DramaID != nil {
-			var stItemCount int64
-			if err := tx.Model(&model.SettlementItem{}).
-				Where("settlement_id = ? AND drama_id = ?", st.ID, *req.DramaID).
-				Count(&stItemCount).Error; err != nil {
-				return err
-			}
-			if stItemCount == 0 {
-				return errInvoiceSettlementMismatch
-			}
-		}
-		var invoiceWithdrawn int64
-		tx.Model(&model.Withdrawal{}).
-			Where("invoice_id = ? AND status <> ?", *req.InvoiceID, model.WithdrawalStatusRejected).
-			Select("COALESCE(SUM(amount_cents),0)").Scan(&invoiceWithdrawn)
-		if req.AmountCents > inv.AmountCents-invoiceWithdrawn {
-			return errAmountExceedsInvoiceBalance
+		if st.Status == model.SettlementStatusPaid || st.Status == model.SettlementStatusVoid {
+			return errSettlementClosed
 		}
 
-		dramaAvail := s.dramaWithdrawableCentsTx(tx, cid, req.DramaID, creator.BalanceCents)
-		if req.AmountCents > dramaAvail {
-			return errAmountExceedsDramaBalance
+		// 校验该结算单没有 pending/approved 的提现（暂不支持多次提现）
+		var existingActive int64
+		tx.Model(&model.Withdrawal{}).
+			Where("invoice_id IN (?) AND status IN ?",
+				tx.Model(&model.Invoice{}).Select("id").Where("settlement_id = ?", req.SettlementID),
+				[]string{model.WithdrawalStatusPending, model.WithdrawalStatusApproved},
+			).Count(&existingActive)
+		if existingActive > 0 {
+			return errSettlementHasWithdrawal
 		}
-		if req.AmountCents > creator.BalanceCents {
+
+		// 提现金额 = settlement.NetCents（全额提现）
+		amount := st.NetCents
+		if req.AmountCents > 0 && req.AmountCents != amount {
+			return errAmountMustFull
+		}
+		if amount < s.cfg.MinWithdrawalCents {
+			return errAmountTooSmall
+		}
+		if amount > creator.BalanceCents {
 			return errAmountExceedsBalance
 		}
-
-		// 同结算单存在审核中的提现申请（drama_id 为空时不卡——一张结算单可有多笔不同金额提现）
-		var existingPending int64
-		pendingQ := tx.Model(&model.Withdrawal{}).
-			Where("creator_id = ? AND status = ?", cid, model.WithdrawalStatusPending)
-		if req.DramaID != nil {
-			pendingQ = pendingQ.Where("drama_id = ?", *req.DramaID)
+		dramaAvail := s.dramaWithdrawableCentsTx(tx, cid, nil, creator.BalanceCents)
+		if amount > dramaAvail {
+			return errAmountExceedsDramaBalance
 		}
-		if err := pendingQ.Count(&existingPending).Error; err != nil {
+
+		// 创建发票（金额 = 提现金额 = 结算单净额）
+		inv := model.Invoice{
+			InvoiceNo:    generateInvoiceBizNo(),
+			SettlementID: req.SettlementID,
+			CreatorID:    cid,
+			InvoiceType:  req.InvoiceType,
+			ExternalNo:   req.InvoiceExternalNo,
+			AmountCents:  amount,
+			FileURL:      req.InvoiceFileURL,
+			FileHash:     req.InvoiceFileHash,
+			FileSize:     req.InvoiceFileSize,
+			Status:       model.InvoiceStatusPending,
+		}
+		if err := tx.Create(&inv).Error; err != nil {
 			return err
 		}
-		if existingPending > 0 {
-			return errPendingExists
+		newInvoice = inv
+
+		// settlement open → invoiced
+		if st.Status == model.SettlementStatusOpen {
+			if err := tx.Model(&st).Update("status", model.SettlementStatusInvoiced).Error; err != nil {
+				return err
+			}
 		}
 
+		// 扣 balance，加 frozen
 		if err := tx.Model(&model.Creator{}).Where("id = ?", cid).
 			Updates(map[string]interface{}{
-				"balance_cents": gorm.Expr("balance_cents - ?", req.AmountCents),
-				"frozen_cents":  gorm.Expr("frozen_cents + ?", req.AmountCents),
+				"balance_cents": gorm.Expr("balance_cents - ?", amount),
+				"frozen_cents":  gorm.Expr("frozen_cents + ?", amount),
 			}).Error; err != nil {
 			return err
 		}
 
-		taxCents, netCents, _ := s.computeWithdrawalTax(creator, req.AmountCents)
-		// 2026-07-03 改：drama_id 可空（按结算单维度合并提现），Withdrawal.DramaID 接受 *uint64
-		var dramaID *uint64
-		if req.DramaID != nil {
-			d := *req.DramaID
-			dramaID = &d
-		}
-		// 2026-07-03 改：invoice_id 必填。linkedInvoiceID 直接用 *req.InvoiceID
-		// 财务审 withdrawal 时一并审发票
+		// 个税
+		taxCents, netCents, _ := s.computeWithdrawalTax(creator, amount)
+
+		// 创建提现单（drama_id = nil，按结算单维度）
 		w := model.Withdrawal{
 			WithdrawalNo:        generateWithdrawalNo(),
 			CreatorID:           cid,
-			DramaID:             dramaID,
-			AmountCents:         req.AmountCents,
+			DramaID:             nil,
+			AmountCents:         amount,
 			CreatorTypeSnapshot: creator.CreatorType,
 			TransferType:        model.TransferTypeOf(creator.CreatorType),
 			TaxCents:            taxCents,
@@ -196,7 +170,7 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 			BankNameSnapshot:    creator.BankName,
 			BankCardNoSnapshot:  "***" + creator.BankCardLast4,
 			Status:              model.WithdrawalStatusPending,
-			InvoiceID:           req.InvoiceID, // 必填，与发票一一对应
+			InvoiceID:           &inv.ID,
 		}
 		if err := tx.Create(&w).Error; err != nil {
 			return err
@@ -214,28 +188,22 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 				return
 			}
 			response.InvalidParam(c, "提现资料不完整，请前往「实名认证」补充信息")
-		case errors.Is(err, errDramaNotFound):
-			response.NotFound(c, "短剧不存在")
-		case errors.Is(err, errDramaNotOwned):
-			response.Forbidden(c, "无权对该短剧发起提现")
+		case errors.Is(err, errSettlementNotFound):
+			response.NotFound(c, "结算单不存在")
+		case errors.Is(err, errSettlementNotOwned):
+			response.Forbidden(c, "无权对该结算单发起提现")
+		case errors.Is(err, errSettlementClosed):
+			response.Conflict(c, "该结算单已结清或已作废，无法提现")
+		case errors.Is(err, errSettlementHasWithdrawal):
+			response.Conflict(c, "该结算单已有审核中或已通过的提现申请，请等待处理")
+		case errors.Is(err, errAmountMustFull):
+			response.InvalidParam(c, "当前只支持全额提现（amount_cents 必须等于结算单实收金额，或不传由系统自动填）")
+		case errors.Is(err, errAmountTooSmall):
+			response.InvalidParam(c, fmt.Sprintf("结算单实收金额低于最低提现额 ¥%.2f，无法提现", float64(s.cfg.MinWithdrawalCents)/100))
 		case errors.Is(err, errAmountExceedsDramaBalance):
-			response.InvalidParam(c, fmt.Sprintf("提现金额超过该剧可提现余额（¥%.2f）", float64(s.dramaWithdrawableCents(cid, req.DramaID, creator.BalanceCents))/100))
+			response.InvalidParam(c, fmt.Sprintf("提现金额超过可提现余额（¥%.2f）", float64(s.dramaWithdrawableCents(cid, nil, creator.BalanceCents))/100))
 		case errors.Is(err, errAmountExceedsBalance):
 			response.InvalidParam(c, fmt.Sprintf("提现金额超过账户可用余额（¥%.2f）", float64(creator.BalanceCents)/100))
-		case errors.Is(err, errPendingExists):
-			response.Conflict(c, "该剧存在审核中的提现申请，请等待处理")
-		case errors.Is(err, errInvoiceNotFound):
-			response.NotFound(c, "发票不存在")
-		case errors.Is(err, errInvoiceNotOwned):
-			response.Forbidden(c, "无权使用该发票发起提现")
-		case errors.Is(err, errInvoiceSettlementMismatch):
-			response.InvalidParam(c, "发票与结算单/短剧不匹配")
-		case errors.Is(err, errInvoiceSettlementVoid):
-			response.InvalidParam(c, "该发票关联的结算单已作废，无法提现")
-		case errors.Is(err, errAmountExceedsInvoiceBalance):
-			response.InvalidParam(c, "提现金额超过该发票剩余可提现余额（同一张发票不能被多次提现到超额）")
-		case errors.Is(err, errInvoiceIDRequired):
-			response.InvalidParam(c, "invoice_id 必填（创作者必须先上传发票并通过财务审核）")
 		default:
 			log.Printf("[withdrawal] create err=%v", err)
 			response.ServerError(c, "申请失败")
@@ -245,31 +213,26 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 
 	response.OK(c, s.withdrawalView(result))
 
-	// 2026-07-06 加 P1-5：时间线
-	// 1) 记录提现申请本身的创建
+	// 时间线
 	actorID := cid
-	invoiceID := uint64(0)
-	if result.InvoiceID != nil {
-		invoiceID = *result.InvoiceID
-	}
+	s.recordTransition("invoice", newInvoice.ID, "", model.InvoiceStatusPending, "creator", &actorID, "创作者提现时上传发票", map[string]interface{}{
+		"invoice_no":    newInvoice.InvoiceNo,
+		"amount_cents":  newInvoice.AmountCents,
+		"settlement_id": newInvoice.SettlementID,
+	})
 	s.recordTransition("withdrawal", result.ID, "", model.WithdrawalStatusPending, "creator", &actorID, "创作者发起提现申请", map[string]interface{}{
 		"amount_cents":  result.AmountCents,
 		"withdrawal_no": result.WithdrawalNo,
-		"invoice_id":    invoiceID,
+		"invoice_id":    newInvoice.ID,
+		"settlement_id": req.SettlementID,
 	})
-	// 2) 如果关联了 invoice，查询 invoice 对应的 settlement，标记"进入提现流程"事件
-	// 注：settlement 真实状态机没有 applied 中间态（open → invoiced → paid），
-	//     from/to 填当前状态表示"事件触发但状态未变"。
-	if result.InvoiceID != nil {
-		var inv model.Invoice
-		if err := s.db.First(&inv, *result.InvoiceID).Error; err == nil && inv.SettlementID > 0 {
-			var stNow model.Settlement
-			if err := s.db.First(&stNow, inv.SettlementID).Error; err == nil {
-				s.recordTransition("settlement", inv.SettlementID, stNow.Status, stNow.Status, "creator", &actorID, "创作者基于该结算单发起提现", map[string]interface{}{
-					"withdrawal_id": result.ID,
-					"invoice_id":    inv.ID,
-				})
-			}
+	if newInvoice.SettlementID > 0 {
+		var stNow model.Settlement
+		if err := s.db.First(&stNow, newInvoice.SettlementID).Error; err == nil {
+			s.recordTransition("settlement", newInvoice.SettlementID, stNow.Status, stNow.Status, "creator", &actorID, "创作者基于该结算单发起提现", map[string]interface{}{
+				"withdrawal_id": result.ID,
+				"invoice_id":    newInvoice.ID,
+			})
 		}
 	}
 }
@@ -442,10 +405,14 @@ var (
 	errDramaNotOwned           = errors.New("drama not owned")
 	errInvoiceNotFound         = errors.New("invoice not found")
 	errInvoiceNotOwned         = errors.New("invoice not owned")
-	// 2026-07-03 改：删 errInvoiceNotApproved / errInvoiceMetaMissing / errInvoiceTypeInvalid
-	// （发票和提现一体，invoice_id 必填，不再有"未传 invoice_id 走 meta 分支"）
-	// 加 errInvoiceIDRequired —— 必填校验
 	errInvoiceIDRequired      = errors.New("invoice_id required")
 	errInvoiceSettlementMismatch = errors.New("invoice settlement mismatch")
 	errInvoiceSettlementVoid   = errors.New("invoice settlement void")
+	// 2026-07-07 改：发票提现合并后新增的错误
+	errSettlementNotFound     = errors.New("settlement not found")
+	errSettlementNotOwned     = errors.New("settlement not owned")
+	errSettlementClosed       = errors.New("settlement closed")
+	errSettlementHasWithdrawal = errors.New("settlement has active withdrawal")
+	errAmountMustFull         = errors.New("amount must be full settlement")
+	errAmountTooSmall         = errors.New("amount too small")
 )
