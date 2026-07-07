@@ -328,6 +328,7 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 		"creator_name":           creatorName,
 		"creator_phone":          cr.Phone,
 		"contract_no":            st.ContractNo,
+		"contracts":              s.settlementContracts(st.ID), // 2026-07-07 加：关联合同列表
 		"period":                 st.Period,
 		"gross_cents":            st.GrossCents,
 		"platform_cents":         st.PlatformCents,

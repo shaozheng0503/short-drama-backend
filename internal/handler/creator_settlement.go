@@ -243,6 +243,70 @@ func (s *Server) creatorListSettlements(c *gin.Context) {
 	response.OK(c, pageResp(list, page, pageSize, total))
 }
 
+// settlementContracts —— 查结算单关联的合同列表
+// 通过 settlement_items.drama_id → contracts.drama_id 关联，返回去重后的合同列表。
+func (s *Server) settlementContracts(settlementID uint64) []gin.H {
+	// 先查结算单拿 creator_id 和 contract_no（兜底用）
+	var st model.Settlement
+	if err := s.db.Select("id, creator_id, contract_no").First(&st, settlementID).Error; err != nil {
+		return []gin.H{}
+	}
+	// 1. 查该结算单涉及的所有 drama_id
+	var dramaIDs []uint64
+	s.db.Model(&model.SettlementItem{}).
+		Where("settlement_id = ?", settlementID).
+		Distinct("drama_id").
+		Pluck("drama_id", &dramaIDs)
+	if len(dramaIDs) == 0 {
+		// 没有 items（比如手动建的结算单），用 settlement.contract_no 兜底
+		if st.ContractNo == "" {
+			return []gin.H{}
+		}
+		var ct model.Contract
+		if err := s.db.Where("contract_no = ? AND creator_id = ?", st.ContractNo, st.CreatorID).First(&ct).Error; err == nil {
+			return []gin.H{{
+				"id":          ct.ID,
+				"contract_no": ct.ContractNo,
+				"drama_id":    ct.DramaID,
+				"status":      ct.Status,
+				"file_url":    ct.FileURL,
+				"created_at":  ct.CreatedAt,
+			}}
+		}
+		return []gin.H{{"contract_no": st.ContractNo}}
+	}
+	// 2. 查 contracts 表，按 creator_id + drama_id 关联
+	var contracts []model.Contract
+	s.db.Where("creator_id = ? AND drama_id IN ?", st.CreatorID, dramaIDs).Find(&contracts)
+	// 去重（一个 drama 可能有多份合同，取第一条）
+	seen := map[uint64]bool{}
+	result := make([]gin.H, 0, len(contracts))
+	for _, ct := range contracts {
+		if ct.DramaID == nil {
+			continue
+		}
+		if seen[*ct.DramaID] {
+			continue
+		}
+		seen[*ct.DramaID] = true
+		var dramaTitle string
+		s.db.Table("dramas").Select("title").Where("id = ?", *ct.DramaID).Scan(&dramaTitle)
+		result = append(result, gin.H{
+			"id":          ct.ID,
+			"contract_no": ct.ContractNo,
+			"drama_id":    *ct.DramaID,
+			"drama_title": dramaTitle,
+			"status":      ct.Status,
+			"file_url":    ct.FileURL,
+			"created_at":  ct.CreatedAt,
+		})
+	}
+	if len(result) == 0 && st.ContractNo != "" {
+		return []gin.H{{"contract_no": st.ContractNo}}
+	}
+	return result
+}
+
 // creatorGetSettlement —— GET /v1/creator/settlements/:id
 // 创作者查看结算单详情：基础信息 + 订单明细 + 关联发票列表。
 func (s *Server) creatorGetSettlement(c *gin.Context) {
@@ -336,6 +400,7 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		"settlement_no":  st.SettlementNo,
 		"creator_id":     st.CreatorID,
 		"contract_no":    st.ContractNo,
+		"contracts":      s.settlementContracts(st.ID), // 2026-07-07 加：关联合同列表
 		"period":         st.Period,
 		"cycle_key":      st.CycleKey,   // 2026-07-06 加：半月度唯一键
 		"period_range":   st.PeriodRange, // 2026-07-06 加：实际起止日期
