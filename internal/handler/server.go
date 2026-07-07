@@ -289,6 +289,7 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.GET("/withdrawals/tax-preview", s.creatorWithdrawTaxPreview)
 	// 2026-07-06 加 P1-5：提现时间线
 	creatorAuth.GET("/withdrawals/:id/timeline", s.creatorWithdrawalTimeline)
+	creatorAuth.GET("/withdrawals/:id/download.pdf", s.creatorDownloadWithdrawalPDF) // 提现单 PDF（报账用）
 	creatorAuth.GET("/data-overview", s.creatorDataOverview)
 	creatorAuth.GET("/contracts", s.creatorListContracts)
 	creatorAuth.GET("/contracts/:id/scan", s.creatorDownloadContractScan)
@@ -375,6 +376,7 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/withdrawals/:id/mark-paid", s.requireAdminRole(model.AdminRoleFinance), s.adminMarkWithdrawalPaid)
 	// 2026-07-02 改：流程图步骤 3「合并审核」——财务一次审完 withdrawal + invoice
 	adminAuth.POST("/withdrawals/:id/review", s.requireAdminRole(model.AdminRoleFinance), s.adminReviewWithdrawal)
+	adminAuth.GET("/withdrawals/:id/download.pdf", s.adminDownloadWithdrawalPDF) // 财务提现单 PDF
 
 	// === Admin 结算 & 发票审核（2026-07-01）===
 	adminAuth.GET("/invoices", s.adminListInvoices)
