@@ -283,6 +283,7 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.POST("/withdrawals", s.idempotencyMiddleware("creator"), s.creatorCreateWithdrawal)
 	creatorAuth.GET("/withdrawals", s.creatorListWithdrawals)
 	creatorAuth.GET("/withdrawals/tax-preview", s.creatorWithdrawTaxPreview)
+	creatorAuth.GET("/withdrawals/:id", s.creatorGetWithdrawal) // 提现记录详情（含关联发票+结算单）
 	// 2026-07-06 加 P1-5：提现时间线
 	creatorAuth.GET("/withdrawals/:id/timeline", s.creatorWithdrawalTimeline)
 	creatorAuth.GET("/withdrawals/:id/download.pdf", s.creatorDownloadWithdrawalPDF) // 提现单 PDF（报账用）

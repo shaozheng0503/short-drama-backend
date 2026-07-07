@@ -237,6 +237,27 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 	}
 }
 
+// creatorGetWithdrawal —— GET /v1/creator/withdrawals/:id
+// 提现记录详情：提现单 + 关联发票 + 关联结算单
+func (s *Server) creatorGetWithdrawal(c *gin.Context) {
+	cid := middleware.CurrentID(c)
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var w model.Withdrawal
+	if err := s.db.Where("id = ? AND creator_id = ?", id, cid).First(&w).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "提现记录不存在")
+			return
+		}
+		response.ServerError(c, "查询失败")
+		return
+	}
+	response.OK(c, s.withdrawalDetailView(w))
+}
+
 func (s *Server) creatorListWithdrawals(c *gin.Context) {
 	cid := middleware.CurrentID(c)
 	page, pageSize := paginate(c)
@@ -300,6 +321,55 @@ func (s *Server) withdrawalView(w model.Withdrawal) gin.H {
 			view["settlement_no"] = stNo
 		}
 	}
+	return view
+}
+
+// withdrawalDetailView —— 提现详情视图（提现单 + 关联发票完整信息 + 关联结算单信息）
+func (s *Server) withdrawalDetailView(w model.Withdrawal) gin.H {
+	view := s.withdrawalView(w)
+
+	// 关联发票完整信息
+	if w.InvoiceID != nil {
+		var inv model.Invoice
+		if err := s.db.First(&inv, *w.InvoiceID).Error; err == nil {
+			view["invoice"] = gin.H{
+				"id":            inv.ID,
+				"invoice_no":    inv.InvoiceNo,
+				"invoice_type":  inv.InvoiceType,
+				"external_no":   inv.ExternalNo,
+				"amount_cents":  inv.AmountCents,
+				"file_url":      inv.FileURL,
+				"file_size":     inv.FileSize,
+				"status":        inv.Status,
+				"reject_reason": inv.RejectReason,
+				"reviewed_at":   inv.ReviewedAt,
+				"created_at":    inv.CreatedAt,
+			}
+		}
+	}
+
+	// 关联结算单信息
+	if w.InvoiceID != nil {
+		var inv model.Invoice
+		if err := s.db.Select("settlement_id").First(&inv, *w.InvoiceID).Error; err == nil && inv.SettlementID > 0 {
+			var st model.Settlement
+			if err := s.db.First(&st, inv.SettlementID).Error; err == nil {
+				view["settlement"] = gin.H{
+					"id":             st.ID,
+					"settlement_no":  st.SettlementNo,
+					"period":         st.Period,
+					"cycle_key":      st.CycleKey,
+					"period_range":   st.PeriodRange,
+					"gross_cents":    st.GrossCents,
+					"platform_cents": st.PlatformCents,
+					"net_cents":      st.NetCents,
+					"status":         st.Status,
+					"created_at":     st.CreatedAt,
+				}
+			}
+		}
+	}
+
 	return view
 }
 
