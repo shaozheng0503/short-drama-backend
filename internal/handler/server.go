@@ -379,8 +379,9 @@ func (s *Server) Router() *gin.Engine {
 	// === Admin 结算 & 发票审核（2026-07-01）===
 	adminAuth.GET("/invoices", s.adminListInvoices)
 	adminAuth.GET("/invoices/:id", s.adminGetInvoice)
-	adminAuth.POST("/invoices/:id/approve", s.requireAdminRole(model.AdminRoleFinance), s.adminApproveInvoice)
-	adminAuth.POST("/invoices/:id/reject", s.requireAdminRole(model.AdminRoleFinance), s.adminRejectInvoice)
+	// 0.14.0 删除：发票不能单独审核，状态跟随提现审核自动变更
+	// adminAuth.POST("/invoices/:id/approve", s.requireAdminRole(model.AdminRoleFinance), s.adminApproveInvoice)
+	// adminAuth.POST("/invoices/:id/reject", s.requireAdminRole(model.AdminRoleFinance), s.adminRejectInvoice)
 	adminAuth.GET("/settlements", s.adminListSettlements)
 	adminAuth.GET("/settlements/:id", s.adminGetSettlement)
 	adminAuth.GET("/settlements/:id/download.pdf", s.adminDownloadSettlementPDF) // 财务 PDF 对账单

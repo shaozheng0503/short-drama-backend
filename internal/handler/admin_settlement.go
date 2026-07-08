@@ -294,20 +294,7 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 		}
 		return
 	}
-	var items []model.SettlementItem
-	s.db.Where("settlement_id = ?", st.ID).Order("paid_at asc, id asc").Find(&items)
-	itemViews := make([]gin.H, 0, len(items))
-	for _, it := range items {
-		itemViews = append(itemViews, gin.H{
-			"id":           it.ID,
-			"order_id":     it.OrderID,
-			"order_no":     it.OrderNo,
-			"drama_id":     it.DramaID,
-			"source":       it.Source,
-			"amount_cents": it.AmountCents,
-			"paid_at":      it.PaidAt,
-		})
-	}
+	// 0.14.0 移除 items 订单明细（太细，drama_summary 已按剧集汇总）
 	var invoices []model.Invoice
 	s.db.Where("settlement_id = ?", st.ID).Order("created_at desc").Find(&invoices)
 	invViews := make([]gin.H, 0, len(invoices))
@@ -350,7 +337,6 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 		"net_cents":              st.NetCents,
 		"status":                 st.Status,
 		"approved_invoice_cents": approvedSum,
-		"items":                  itemViews,
 		"invoices":               invViews,
 		"remark":                 st.Remark,
 		"opened_at":              st.OpenedAt,
