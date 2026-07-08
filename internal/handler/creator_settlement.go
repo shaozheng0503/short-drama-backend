@@ -407,29 +407,32 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		return
 	}
 	// 0.14.0 移除 items 订单明细（太细，drama_summary 已按剧集汇总）
-	// 发票列表（只返创作者自己看得到的字段）
-	var invoices []model.Invoice
-	s.db.Where("settlement_id = ?", st.ID).Order("created_at desc").Find(&invoices)
-	invViews := make([]gin.H, 0, len(invoices))
-	approvedSum := int64(0)
-	for _, inv := range invoices {
-		invView := gin.H{
-			"id":            inv.ID,
-			"invoice_no":    inv.InvoiceNo,
-			"invoice_type":  inv.InvoiceType,
-			"external_no":   inv.ExternalNo,
-			"amount_cents":  inv.AmountCents,
-			"file_url":      inv.FileURL,
-			"file_size":     inv.FileSize,
-			"status":        inv.Status,
-			"reject_reason": inv.RejectReason,
-			"reviewed_at":   inv.ReviewedAt,
-			"created_at":    inv.CreatedAt,
+	// 发票：一个结算单只有一张发票，返回单个对象（非数组）
+	var invoice *model.Invoice
+	{
+		var inv model.Invoice
+		if err := s.db.Where("settlement_id = ?", st.ID).Order("created_at desc").First(&inv).Error; err == nil {
+			invoice = &inv
 		}
-		// 私有的 file_hash / reviewed_by 不返
-		invViews = append(invViews, invView)
-		if inv.Status == model.InvoiceStatusApproved {
-			approvedSum += inv.AmountCents
+	}
+	approvedSum := int64(0)
+	var invView interface{}
+	if invoice != nil {
+		invView = gin.H{
+			"id":            invoice.ID,
+			"invoice_no":    invoice.InvoiceNo,
+			"invoice_type":  invoice.InvoiceType,
+			"external_no":   invoice.ExternalNo,
+			"amount_cents":  invoice.AmountCents,
+			"file_url":      invoice.FileURL,
+			"file_size":     invoice.FileSize,
+			"status":        invoice.Status,
+			"reject_reason": invoice.RejectReason,
+			"reviewed_at":   invoice.ReviewedAt,
+			"created_at":    invoice.CreatedAt,
+		}
+		if invoice.Status == model.InvoiceStatusApproved {
+			approvedSum = invoice.AmountCents
 		}
 	}
 	// 公司抬头（用于前端展示"请开给：xxx"，来自 .env 平台配置）
@@ -460,7 +463,6 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		"settlement_no":  st.SettlementNo,
 		"creator_id":     st.CreatorID,
 		"contract_no":    st.ContractNo,                        // 兼容旧前端
-		"contracts":      s.settlementContracts(st.ID),         // 关联合同列表
 		"drama_summary":  s.settlementDramaSummarySafe(st.ID),  // 剧集收益汇总
 		"period":         st.Period,
 		"cycle_key":      st.CycleKey,   // 2026-07-06 加：半月度唯一键
@@ -470,7 +472,7 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		"net_cents":      st.NetCents,
 		"status":         st.Status,
 		"approved_invoice_cents": approvedSum,
-		"invoices":       invViews,
+		"invoice":        invView,
 		"remark":         st.Remark,
 		"created_at":     st.CreatedAt,
 		"closed_at":      st.ClosedAt,

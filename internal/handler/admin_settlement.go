@@ -295,24 +295,30 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 		return
 	}
 	// 0.14.0 移除 items 订单明细（太细，drama_summary 已按剧集汇总）
-	var invoices []model.Invoice
-	s.db.Where("settlement_id = ?", st.ID).Order("created_at desc").Find(&invoices)
-	invViews := make([]gin.H, 0, len(invoices))
+	// 发票：一个结算单只有一张发票，返回单个对象（非数组）
+	var invoice *model.Invoice
+	{
+		var inv model.Invoice
+		if err := s.db.Where("settlement_id = ?", st.ID).Order("created_at desc").First(&inv).Error; err == nil {
+			invoice = &inv
+		}
+	}
 	approvedSum := int64(0)
-	for _, inv := range invoices {
-		invViews = append(invViews, gin.H{
-			"id":            inv.ID,
-			"invoice_no":    inv.InvoiceNo,
-			"invoice_type":  inv.InvoiceType,
-			"external_no":   inv.ExternalNo,
-			"amount_cents":  inv.AmountCents,
-			"file_url":      inv.FileURL,
-			"status":        inv.Status,
-			"reject_reason": inv.RejectReason,
-			"created_at":    inv.CreatedAt,
-		})
-		if inv.Status == model.InvoiceStatusApproved {
-			approvedSum += inv.AmountCents
+	var invView interface{}
+	if invoice != nil {
+		invView = gin.H{
+			"id":            invoice.ID,
+			"invoice_no":    invoice.InvoiceNo,
+			"invoice_type":  invoice.InvoiceType,
+			"external_no":   invoice.ExternalNo,
+			"amount_cents":  invoice.AmountCents,
+			"file_url":      invoice.FileURL,
+			"status":        invoice.Status,
+			"reject_reason": invoice.RejectReason,
+			"created_at":    invoice.CreatedAt,
+		}
+		if invoice.Status == model.InvoiceStatusApproved {
+			approvedSum = invoice.AmountCents
 		}
 	}
 	// 创作者信息
@@ -329,7 +335,6 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 		"creator_name":           creatorName,
 		"creator_phone":          cr.Phone,
 		"contract_no":            st.ContractNo,                        // 兼容旧前端
-		"contracts":              s.settlementContracts(st.ID),         // 关联合同列表
 		"drama_summary":          s.settlementDramaSummarySafe(st.ID), // 剧集收益汇总
 		"period":                 st.Period,
 		"gross_cents":            st.GrossCents,
@@ -337,7 +342,7 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 		"net_cents":              st.NetCents,
 		"status":                 st.Status,
 		"approved_invoice_cents": approvedSum,
-		"invoices":               invViews,
+		"invoice":               invView,
 		"remark":                 st.Remark,
 		"opened_at":              st.OpenedAt,
 		"closed_at":              st.ClosedAt,
