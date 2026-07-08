@@ -460,7 +460,6 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		"id":             st.ID,
 		"settlement_no":  st.SettlementNo,
 		"creator_id":     st.CreatorID,
-		"contract_no":    st.ContractNo,                        // 兼容旧前端
 		"drama_summary":  s.settlementDramaSummarySafe(st.ID),  // 剧集收益汇总
 		"period":         st.Period,
 		"cycle_key":      st.CycleKey,   // 2026-07-06 加：半月度唯一键

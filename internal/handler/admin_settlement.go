@@ -334,7 +334,6 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 		"creator_id":             st.CreatorID,
 		"creator_name":           creatorName,
 		"creator_phone":          cr.Phone,
-		"contract_no":            st.ContractNo,                        // 兼容旧前端
 		"drama_summary":          s.settlementDramaSummarySafe(st.ID), // 剧集收益汇总
 		"period":                 st.Period,
 		"gross_cents":            st.GrossCents,
