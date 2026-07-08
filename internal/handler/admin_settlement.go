@@ -263,6 +263,8 @@ func (s *Server) adminListSettlements(c *gin.Context) {
 			"creator_id":    r.CreatorID,
 			"drama_summary": ds, // 剧集收益汇总（替代 contract_no）
 			"period":        r.Period,
+			"cycle_key":     r.CycleKey,    // 半月度唯一键
+			"period_range":  r.PeriodRange, // 实际起止日期
 			"gross_cents":   r.GrossCents,
 			"platform_cents": r.PlatformCents,
 			"net_cents":     r.NetCents,

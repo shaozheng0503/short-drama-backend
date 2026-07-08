@@ -733,13 +733,85 @@ func (s *Server) adminListWithdrawals(c *gin.Context) {
 	q.Count(&total)
 	var items []model.Withdrawal
 	q.Order("created_at desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&items)
+
+	// 批量查创作者信息（拿完整银行卡号、姓名）
+	creatorIDs := make([]uint64, 0, len(items))
+	for _, w := range items {
+		creatorIDs = append(creatorIDs, w.CreatorID)
+	}
+	creatorMap := map[uint64]model.Creator{}
+	if len(creatorIDs) > 0 {
+		var creators []model.Creator
+		s.db.Where("id IN ?", creatorIDs).Find(&creators)
+		for _, cr := range creators {
+			creatorMap[cr.ID] = cr
+		}
+	}
+
 	list := make([]gin.H, 0, len(items))
 	for _, w := range items {
 		v := s.withdrawalView(w)
 		v["creator_id"] = w.CreatorID
+		// admin 侧返回完整银行卡号 + 创作者姓名（财务打款用）
+		if cr, ok := creatorMap[w.CreatorID]; ok {
+			v["creator_name"] = cr.Name
+			if cr.Nickname != "" {
+				v["creator_nickname"] = cr.Nickname
+			}
+			v["creator_phone"] = cr.Phone
+			v["bank_name"] = cr.BankName
+			v["bank_branch"] = cr.BankBranch
+			// 解密完整银行卡号
+			if s.cryptor != nil && cr.BankCardNoEnc != "" {
+				if full, err := s.cryptor.Decrypt(cr.BankCardNoEnc); err == nil && full != "" {
+					v["bank_card_no"] = full
+					v["bank_card_no_full"] = full
+				}
+			}
+		}
 		list = append(list, v)
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
+}
+
+// adminGetWithdrawal —— GET /v1/admin/withdrawals/:id
+// 财务查看提现详情（含完整银行卡号，打款用）
+func (s *Server) adminGetWithdrawal(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var w model.Withdrawal
+	if err := s.db.First(&w, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "提现记录不存在")
+			return
+		}
+		response.ServerError(c, "查询失败")
+		return
+	}
+	v := s.withdrawalDetailView(w)
+	v["creator_id"] = w.CreatorID
+	// admin 侧返回完整创作者信息 + 完整银行卡号
+	var cr model.Creator
+	if err := s.db.First(&cr, w.CreatorID).Error; err == nil {
+		v["creator_name"] = cr.Name
+		if cr.Nickname != "" {
+			v["creator_nickname"] = cr.Nickname
+		}
+		v["creator_phone"] = cr.Phone
+		v["bank_name"] = cr.BankName
+		v["bank_branch"] = cr.BankBranch
+		v["id_card_no_masked"] = cr.IDCardNoMasked
+		if s.cryptor != nil && cr.BankCardNoEnc != "" {
+			if full, err := s.cryptor.Decrypt(cr.BankCardNoEnc); err == nil && full != "" {
+				v["bank_card_no"] = full
+				v["bank_card_no_full"] = full
+			}
+		}
+	}
+	response.OK(c, v)
 }
 
 type withdrawalRemarkRequest struct {

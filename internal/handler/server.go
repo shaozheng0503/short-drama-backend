@@ -368,6 +368,7 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/orders/:order_no/sync", s.requireAdminRole(model.AdminRoleFinance), s.adminSyncOrder)
 
 	adminAuth.GET("/withdrawals", s.adminListWithdrawals)
+	adminAuth.GET("/withdrawals/:id", s.adminGetWithdrawal) // 财务提现详情（含完整银行卡号）
 	adminAuth.POST("/withdrawals/:id/approve", s.requireAdminRole(model.AdminRoleFinance), s.adminApproveWithdrawal)
 	adminAuth.POST("/withdrawals/:id/reject", s.requireAdminRole(model.AdminRoleFinance), s.adminRejectWithdrawal)
 	adminAuth.POST("/withdrawals/:id/mark-paid", s.requireAdminRole(model.AdminRoleFinance), s.adminMarkWithdrawalPaid)
