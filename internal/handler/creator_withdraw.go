@@ -361,7 +361,7 @@ func (s *Server) withdrawalDetailView(w model.Withdrawal) gin.H {
 					"cycle_key":      st.CycleKey,
 					"period_range":   st.PeriodRange,
 					"gross_cents":    st.GrossCents,
-					"platform_cents": st.PlatformCents,
+					"tax_cents": st.PlatformCents,
 					"net_cents":      st.NetCents,
 					"status":         st.Status,
 					"created_at":     st.CreatedAt,

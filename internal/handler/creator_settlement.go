@@ -239,7 +239,7 @@ func (s *Server) creatorListSettlements(c *gin.Context) {
 			"cycle_key":              r.CycleKey,
 			"period_range":           periodRange,
 			"gross_cents":            r.GrossCents,
-			"platform_cents":         r.PlatformCents,
+			"tax_cents":          r.PlatformCents,
 			"net_cents":              r.NetCents,
 			"status":                 r.Status,
 			"approved_invoice_cents": approvedSum[r.ID],
@@ -468,7 +468,7 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		"cycle_key":      st.CycleKey,   // 2026-07-06 加：半月度唯一键
 		"period_range":   st.PeriodRange, // 2026-07-06 加：实际起止日期
 		"gross_cents":    st.GrossCents,
-		"platform_cents": st.PlatformCents,
+		"tax_cents":      st.PlatformCents,
 		"net_cents":      st.NetCents,
 		"status":         st.Status,
 		"approved_invoice_cents": approvedSum,
@@ -552,7 +552,7 @@ func (s *Server) creatorDownloadSettlementExcel(c *gin.Context) {
 	f.SetCellValue(sheet, "B8", fmt.Sprintf("%.2f", float64(st.NetCents)/100))
 	f.SetCellValue(sheet, "A9", "订单总流水（元）")
 	f.SetCellValue(sheet, "B9", fmt.Sprintf("%.2f", float64(st.GrossCents)/100))
-	f.SetCellValue(sheet, "A10", "平台抽成（元）")
+	f.SetCellValue(sheet, "A10", "税率（元）")
 	f.SetCellValue(sheet, "B10", fmt.Sprintf("%.2f", float64(st.PlatformCents)/100))
 
 	// 订单明细表
@@ -936,7 +936,7 @@ func (s *Server) creatorPreviewSettlement(c *gin.Context) {
 			"drama_title":        titleMap[a.DramaID],
 			"income_cents":       a.IncomeCents,    // 创作者实得（period 内）
 			"gross_cents":        gross,            // 总流水
-			"platform_cents":     platformCents,    // 平台抽成
+			"tax_cents":     platformCents,       // 税率
 			"withdrawable_cents": withdrawable,
 			"withdrawn_cents":    withdrawn,
 			"play_count":         a.PlayCount,

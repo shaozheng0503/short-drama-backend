@@ -266,7 +266,7 @@ func (s *Server) adminListSettlements(c *gin.Context) {
 			"cycle_key":     r.CycleKey,    // 半月度唯一键
 			"period_range":  r.PeriodRange, // 实际起止日期
 			"gross_cents":   r.GrossCents,
-			"platform_cents": r.PlatformCents,
+			"tax_cents": r.PlatformCents,
 			"net_cents":     r.NetCents,
 			"status":        r.Status,
 			"remark":        r.Remark,
@@ -338,7 +338,7 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 		"drama_summary":          s.settlementDramaSummarySafe(st.ID), // 剧集收益汇总
 		"period":                 st.Period,
 		"gross_cents":            st.GrossCents,
-		"platform_cents":         st.PlatformCents,
+		"tax_cents":               st.PlatformCents,
 		"net_cents":              st.NetCents,
 		"status":                 st.Status,
 		"approved_invoice_cents": approvedSum,
@@ -411,7 +411,7 @@ func (s *Server) adminGenerateSettlements(c *gin.Context) {
 		}
 	}
 
-	// 平台抽成比例：直接读 .env 的 CreatorShareRate
+	// 税率（平台分成已在导入时扣除，此字段为税率）
 	creatorShareRate := s.cfg.CreatorShareRate
 	if creatorShareRate <= 0 || creatorShareRate > 1 {
 		creatorShareRate = 0.7 // 兜底 70%
@@ -444,7 +444,7 @@ func (s *Server) adminGenerateSettlements(c *gin.Context) {
 			"creator_id":     a.CreatorID,
 			"contract_no":    contractNo,
 			"gross_cents":    grossCents,
-			"platform_cents": platformCents,
+			"tax_cents":      platformCents,
 			"net_cents":      a.IncomeCents,
 			"play_count":     a.PlayCount,
 		})

@@ -33,7 +33,7 @@ var notoSansSCBytes []byte
 //   │ ──────────────────────────────────────── │
 //   │ 结算总金额（元）            xxx.xx        │
 //   │ 订单总流水（元）            xxx.xx        │
-//   │ 平台抽成  （元）            xxx.xx        │
+//   │ 税率  （元）                xxx.xx        │
 //   │ ──────────────────────────────────────── │
 //   │ 订单明细表头（序号|订单号|剧ID|来源|...）  │
 //   │ ┌──┬──┬──┬──┬──┬──┐                      │
@@ -85,7 +85,7 @@ func (s *Server) renderSettlementPDF(
 	pdf.CellFormat(0, 8, fmt.Sprintf("%.2f", float64(st.NetCents)/100), "1", 1, "L", false, 0, "")
 	pdf.CellFormat(60, 8, "订单总流水（元）", "1", 0, "L", true, 0, "")
 	pdf.CellFormat(0, 8, fmt.Sprintf("%.2f", float64(st.GrossCents)/100), "1", 1, "L", false, 0, "")
-	pdf.CellFormat(60, 8, "平台抽成（元）", "1", 0, "L", true, 0, "")
+	pdf.CellFormat(60, 8, "税率（元）", "1", 0, "L", true, 0, "")
 	pdf.CellFormat(0, 8, fmt.Sprintf("%.2f", float64(st.PlatformCents)/100), "1", 1, "L", false, 0, "")
 	pdf.Ln(5)
 
