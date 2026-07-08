@@ -858,7 +858,19 @@ func markWithdrawalPaidTx(tx *gorm.DB, w *model.Withdrawal, aid uint64, transact
 		updates["reviewed_by"] = aid
 		updates["reviewed_at"] = now
 	}
-	return tx.Model(w).Updates(updates).Error
+	if err := tx.Model(w).Updates(updates).Error; err != nil {
+		return err
+	}
+	// 0.14.0 发票联动：提现打款 → 发票 approved
+	if w.InvoiceID != nil {
+		tx.Model(&model.Invoice{}).Where("id = ? AND status = ?", *w.InvoiceID, model.InvoiceStatusPending).
+			Updates(map[string]interface{}{
+				"status":      model.InvoiceStatusApproved,
+				"reviewed_by": aid,
+				"reviewed_at": now,
+			})
+	}
+	return nil
 }
 
 func (s *Server) adminApproveWithdrawal(c *gin.Context) {
@@ -893,7 +905,19 @@ func (s *Server) adminApproveWithdrawal(c *gin.Context) {
 		if strings.TrimSpace(req.Remark) != "" {
 			updates["remark"] = req.Remark
 		}
-		return tx.Model(&w).Updates(updates).Error
+		if err := tx.Model(&w).Updates(updates).Error; err != nil {
+			return err
+		}
+		// 0.14.0 发票联动：提现通过 → 发票 approved
+		if w.InvoiceID != nil {
+			tx.Model(&model.Invoice{}).Where("id = ? AND status = ?", *w.InvoiceID, model.InvoiceStatusPending).
+				Updates(map[string]interface{}{
+					"status":      model.InvoiceStatusApproved,
+					"reviewed_by": aid,
+					"reviewed_at": now,
+				})
+		}
+		return nil
 	})
 	if err == nil {
 		if paid {
@@ -1145,13 +1169,26 @@ func (s *Server) adminRejectWithdrawal(c *gin.Context) {
 			return err
 		}
 		now := time.Now()
-		return tx.Model(&w).Updates(map[string]interface{}{
-			"status":      model.WithdrawalStatusRejected,
-			"remark":      req.Remark,
-			"reviewed_by": aid,
-			"reviewed_at": now,
-		}).Error
-	})
+	if err := tx.Model(&w).Updates(map[string]interface{}{
+		"status":      model.WithdrawalStatusRejected,
+		"remark":      req.Remark,
+		"reviewed_by": aid,
+		"reviewed_at": now,
+	}).Error; err != nil {
+		return err
+	}
+	// 0.14.0 发票联动：提现驳回 → 发票 rejected
+	if w.InvoiceID != nil {
+		tx.Model(&model.Invoice{}).Where("id = ? AND status = ?", *w.InvoiceID, model.InvoiceStatusPending).
+			Updates(map[string]interface{}{
+				"status":        model.InvoiceStatusRejected,
+				"reviewed_by":   aid,
+				"reviewed_at":   now,
+				"reject_reason": req.Remark,
+			})
+	}
+	return nil
+})
 	if err == nil {
 		s.notifyWithdrawal(id, "提现申请被驳回", "您的提现申请（%s）被驳回，金额已退回可用余额。")
 		// 2026-07-06 加 P1-5：时间线
