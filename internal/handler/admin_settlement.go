@@ -253,11 +253,15 @@ func (s *Server) adminListSettlements(c *gin.Context) {
 
 	list := make([]gin.H, 0, len(rows))
 	for _, r := range rows {
+		ds := dramaSummaryMap[r.ID]
+		if ds == nil {
+			ds = []gin.H{}
+		}
 		list = append(list, gin.H{
 			"id":            r.ID,
 			"settlement_no": r.SettlementNo,
 			"creator_id":    r.CreatorID,
-			"drama_summary": dramaSummaryMap[r.ID], // 剧集收益汇总（替代 contract_no）
+			"drama_summary": ds, // 剧集收益汇总（替代 contract_no）
 			"period":        r.Period,
 			"gross_cents":   r.GrossCents,
 			"platform_cents": r.PlatformCents,
@@ -337,7 +341,7 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 		"creator_phone":          cr.Phone,
 		"contract_no":            st.ContractNo,                        // 兼容旧前端
 		"contracts":              s.settlementContracts(st.ID),         // 关联合同列表
-		"drama_summary":          s.settlementDramaSummary(st.ID),      // 剧集收益汇总（替代 contract_no）
+		"drama_summary":          s.settlementDramaSummarySafe(st.ID), // 剧集收益汇总
 		"period":                 st.Period,
 		"gross_cents":            st.GrossCents,
 		"platform_cents":         st.PlatformCents,

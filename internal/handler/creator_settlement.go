@@ -226,11 +226,15 @@ func (s *Server) creatorListSettlements(c *gin.Context) {
 			// 兜底：老月度数据 period 形如 2026-05，用 period 拼成 period_range
 			periodRange = r.Period + "（整月）"
 		}
+		ds := dramaSummaryMap[r.ID]
+		if ds == nil {
+			ds = []gin.H{}
+		}
 		list = append(list, gin.H{
 			"id":                     r.ID,
 			"settlement_no":          r.SettlementNo,
 			"creator_id":             r.CreatorID,
-			"drama_summary":          dramaSummaryMap[r.ID], // 剧集收益汇总（替代 contract_no）
+			"drama_summary":          ds, // 剧集收益汇总（替代 contract_no）
 			"period":                 r.Period,
 			"cycle_key":              r.CycleKey,
 			"period_range":           periodRange,
@@ -311,10 +315,17 @@ func (s *Server) settlementContracts(settlementID uint64) []gin.H {
 }
 
 // settlementDramaSummary —— 查结算单涉及的剧集收益汇总
-// 按 settlement_items.drama_id 聚合 amount_cents，关联 dramas 表拿剧名。
-// 返回：[{drama_id, drama_title, income_cents, order_count}]
 func (s *Server) settlementDramaSummary(settlementID uint64) []gin.H {
 	return s.batchDramaSummary([]uint64{settlementID})[settlementID]
+}
+
+// settlementDramaSummarySafe —— 同上，但保证返回非 nil 数组
+func (s *Server) settlementDramaSummarySafe(settlementID uint64) []gin.H {
+	ds := s.settlementDramaSummary(settlementID)
+	if ds == nil {
+		return []gin.H{}
+	}
+	return ds
 }
 
 // batchDramaSummary —— 批量查多个结算单的剧集收益汇总（避免 N+1）
@@ -464,7 +475,7 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		"creator_id":     st.CreatorID,
 		"contract_no":    st.ContractNo,                        // 兼容旧前端
 		"contracts":      s.settlementContracts(st.ID),         // 关联合同列表
-		"drama_summary":  s.settlementDramaSummary(st.ID),      // 剧集收益汇总（替代 contract_no）
+		"drama_summary":  s.settlementDramaSummarySafe(st.ID),  // 剧集收益汇总
 		"period":         st.Period,
 		"cycle_key":      st.CycleKey,   // 2026-07-06 加：半月度唯一键
 		"period_range":   st.PeriodRange, // 2026-07-06 加：实际起止日期
