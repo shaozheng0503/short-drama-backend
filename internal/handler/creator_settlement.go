@@ -215,6 +215,9 @@ func (s *Server) creatorListSettlements(c *gin.Context) {
 		}
 	}
 
+	// 批量查剧集收益汇总（避免 N+1）
+	dramaSummaryMap := s.batchDramaSummary(settleIDs)
+
 	list := make([]gin.H, 0, len(rows))
 	for _, r := range rows {
 		// 2026-07-06 加：cycle_key / period_range 字段，让前端能看到半月度周期
@@ -224,20 +227,20 @@ func (s *Server) creatorListSettlements(c *gin.Context) {
 			periodRange = r.Period + "（整月）"
 		}
 		list = append(list, gin.H{
-			"id":                  r.ID,
-			"settlement_no":       r.SettlementNo,
-			"creator_id":          r.CreatorID,
-			"contract_no":         r.ContractNo,
-			"period":              r.Period,
-			"cycle_key":           r.CycleKey,
-			"period_range":        periodRange,
-			"gross_cents":         r.GrossCents,
-			"platform_cents":      r.PlatformCents,
-			"net_cents":           r.NetCents,
-			"status":              r.Status,
-			"approved_invoice_cents": approvedSum[r.ID], // 已审核通过发票金额合计
-			"created_at":          r.CreatedAt,
-			"closed_at":           r.ClosedAt,
+			"id":                     r.ID,
+			"settlement_no":          r.SettlementNo,
+			"creator_id":             r.CreatorID,
+			"drama_summary":          dramaSummaryMap[r.ID], // 剧集收益汇总（替代 contract_no）
+			"period":                 r.Period,
+			"cycle_key":              r.CycleKey,
+			"period_range":           periodRange,
+			"gross_cents":            r.GrossCents,
+			"platform_cents":         r.PlatformCents,
+			"net_cents":              r.NetCents,
+			"status":                 r.Status,
+			"approved_invoice_cents": approvedSum[r.ID],
+			"created_at":             r.CreatedAt,
+			"closed_at":              r.ClosedAt,
 		})
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
@@ -303,6 +306,66 @@ func (s *Server) settlementContracts(settlementID uint64) []gin.H {
 	}
 	if len(result) == 0 && st.ContractNo != "" {
 		return []gin.H{{"contract_no": st.ContractNo}}
+	}
+	return result
+}
+
+// settlementDramaSummary —— 查结算单涉及的剧集收益汇总
+// 按 settlement_items.drama_id 聚合 amount_cents，关联 dramas 表拿剧名。
+// 返回：[{drama_id, drama_title, income_cents, order_count}]
+func (s *Server) settlementDramaSummary(settlementID uint64) []gin.H {
+	return s.batchDramaSummary([]uint64{settlementID})[settlementID]
+}
+
+// batchDramaSummary —— 批量查多个结算单的剧集收益汇总（避免 N+1）
+func (s *Server) batchDramaSummary(settlementIDs []uint64) map[uint64][]gin.H {
+	result := map[uint64][]gin.H{}
+	if len(settlementIDs) == 0 {
+		return result
+	}
+	type row struct {
+		SettlementID uint64 `gorm:"column:settlement_id"`
+		DramaID      uint64 `gorm:"column:drama_id"`
+		IncomeCents  int64  `gorm:"column:income_cents"`
+		OrderCount   int64  `gorm:"column:order_count"`
+	}
+	var rows []row
+	s.db.Model(&model.SettlementItem{}).
+		Select("settlement_id, drama_id, SUM(amount_cents) AS income_cents, COUNT(*) AS order_count").
+		Where("settlement_id IN ?", settlementIDs).
+		Group("settlement_id, drama_id").
+		Order("settlement_id, income_cents DESC").
+		Scan(&rows)
+	if len(rows) == 0 {
+		return result
+	}
+	// 批量查剧名
+	dramaIDSet := map[uint64]bool{}
+	for _, r := range rows {
+		dramaIDSet[r.DramaID] = true
+	}
+	dramaIDs := make([]uint64, 0, len(dramaIDSet))
+	for id := range dramaIDSet {
+		dramaIDs = append(dramaIDs, id)
+	}
+	type dramaInfo struct {
+		ID    uint64 `gorm:"column:id"`
+		Title string `gorm:"column:title"`
+	}
+	var dramas []dramaInfo
+	s.db.Table("dramas").Select("id, title").Where("id IN ?", dramaIDs).Find(&dramas)
+	titleMap := map[uint64]string{}
+	for _, d := range dramas {
+		titleMap[d.ID] = d.Title
+	}
+	// 按 settlement_id 分组
+	for _, r := range rows {
+		result[r.SettlementID] = append(result[r.SettlementID], gin.H{
+			"drama_id":     r.DramaID,
+			"drama_title":  titleMap[r.DramaID],
+			"income_cents": r.IncomeCents,
+			"order_count":  r.OrderCount,
+		})
 	}
 	return result
 }
@@ -399,8 +462,9 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		"id":             st.ID,
 		"settlement_no":  st.SettlementNo,
 		"creator_id":     st.CreatorID,
-		"contract_no":    st.ContractNo,
-		"contracts":      s.settlementContracts(st.ID), // 2026-07-07 加：关联合同列表
+		"contract_no":    st.ContractNo,                        // 兼容旧前端
+		"contracts":      s.settlementContracts(st.ID),         // 关联合同列表
+		"drama_summary":  s.settlementDramaSummary(st.ID),      // 剧集收益汇总（替代 contract_no）
 		"period":         st.Period,
 		"cycle_key":      st.CycleKey,   // 2026-07-06 加：半月度唯一键
 		"period_range":   st.PeriodRange, // 2026-07-06 加：实际起止日期

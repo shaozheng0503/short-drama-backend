@@ -243,22 +243,30 @@ func (s *Server) adminListSettlements(c *gin.Context) {
 	q.Count(&total)
 	var rows []model.Settlement
 	q.Order("period desc, id desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows)
+
+	// 批量查剧集收益汇总（避免 N+1）
+	settleIDs := make([]uint64, 0, len(rows))
+	for _, r := range rows {
+		settleIDs = append(settleIDs, r.ID)
+	}
+	dramaSummaryMap := s.batchDramaSummary(settleIDs)
+
 	list := make([]gin.H, 0, len(rows))
 	for _, r := range rows {
 		list = append(list, gin.H{
-			"id":             r.ID,
-			"settlement_no":  r.SettlementNo,
-			"creator_id":     r.CreatorID,
-			"contract_no":    r.ContractNo,
-			"period":         r.Period,
-			"gross_cents":    r.GrossCents,
+			"id":            r.ID,
+			"settlement_no": r.SettlementNo,
+			"creator_id":    r.CreatorID,
+			"drama_summary": dramaSummaryMap[r.ID], // 剧集收益汇总（替代 contract_no）
+			"period":        r.Period,
+			"gross_cents":   r.GrossCents,
 			"platform_cents": r.PlatformCents,
-			"net_cents":      r.NetCents,
-			"status":         r.Status,
-			"remark":         r.Remark,
-			"opened_at":      r.OpenedAt,
-			"closed_at":      r.ClosedAt,
-			"created_at":     r.CreatedAt,
+			"net_cents":     r.NetCents,
+			"status":        r.Status,
+			"remark":        r.Remark,
+			"opened_at":     r.OpenedAt,
+			"closed_at":     r.ClosedAt,
+			"created_at":    r.CreatedAt,
 		})
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
@@ -327,8 +335,9 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 		"creator_id":             st.CreatorID,
 		"creator_name":           creatorName,
 		"creator_phone":          cr.Phone,
-		"contract_no":            st.ContractNo,
-		"contracts":              s.settlementContracts(st.ID), // 2026-07-07 加：关联合同列表
+		"contract_no":            st.ContractNo,                        // 兼容旧前端
+		"contracts":              s.settlementContracts(st.ID),         // 关联合同列表
+		"drama_summary":          s.settlementDramaSummary(st.ID),      // 剧集收益汇总（替代 contract_no）
 		"period":                 st.Period,
 		"gross_cents":            st.GrossCents,
 		"platform_cents":         st.PlatformCents,
