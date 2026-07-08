@@ -426,10 +426,8 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 			"amount_cents":  invoice.AmountCents,
 			"file_url":      invoice.FileURL,
 			"file_size":     invoice.FileSize,
-			"status":        invoice.Status,
-			"reject_reason": invoice.RejectReason,
-			"reviewed_at":   invoice.ReviewedAt,
 			"created_at":    invoice.CreatedAt,
+			// 0.14.0 删除 status/reject_reason/reviewed_at（发票不能单独审核，跟随提现）
 		}
 		if invoice.Status == model.InvoiceStatusApproved {
 			approvedSum = invoice.AmountCents
@@ -766,10 +764,8 @@ func (s *Server) creatorListInvoices(c *gin.Context) {
 			"amount_cents":  r.AmountCents,
 			"file_url":      r.FileURL,
 			"file_size":     r.FileSize,
-			"status":        r.Status,
-			"reject_reason": r.RejectReason,
-			"reviewed_at":   r.ReviewedAt,
 			"created_at":    r.CreatedAt,
+			// 0.14.0 删除 status/reject_reason/reviewed_at
 		})
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
@@ -801,10 +797,8 @@ func (s *Server) creatorGetInvoice(c *gin.Context) {
 		"amount_cents":  inv.AmountCents,
 		"file_url":      inv.FileURL,
 		"file_size":     inv.FileSize,
-		"status":        inv.Status,
-		"reject_reason": inv.RejectReason,
-		"reviewed_at":   inv.ReviewedAt,
 		"created_at":    inv.CreatedAt,
+		// 0.14.0 删除 status/reject_reason/reviewed_at
 	})
 }
 

@@ -340,10 +340,8 @@ func (s *Server) withdrawalDetailView(w model.Withdrawal) gin.H {
 				"amount_cents":  inv.AmountCents,
 				"file_url":      inv.FileURL,
 				"file_size":     inv.FileSize,
-				"status":        inv.Status,
-				"reject_reason": inv.RejectReason,
-				"reviewed_at":   inv.ReviewedAt,
 				"created_at":    inv.CreatedAt,
+				// 0.14.0 删除 status/reject_reason/reviewed_at（发票不能单独审核）
 			}
 		}
 	}
