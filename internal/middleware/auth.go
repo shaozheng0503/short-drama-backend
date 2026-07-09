@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	SubjectApp     = "app"
-	SubjectCreator = "creator"
-	SubjectAdmin   = "admin"
+	SubjectApp         = "app"
+	SubjectCreator     = "creator"
+	SubjectAdmin       = "admin"
+	SubjectDistributor = "distributor" // 0.15.0 发行商
 
 	ctxKeySubject = "auth.subject"
 	ctxKeyID      = "auth.id"
@@ -94,6 +95,10 @@ func RequireCreator(cfg config.Config) gin.HandlerFunc {
 
 func RequireAdmin(cfg config.Config) gin.HandlerFunc {
 	return RequireSubject(cfg, SubjectAdmin)
+}
+
+func RequireDistributor(cfg config.Config) gin.HandlerFunc {
+	return RequireSubject(cfg, SubjectDistributor)
 }
 
 func CurrentID(c *gin.Context) uint64 {

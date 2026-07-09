@@ -66,7 +66,7 @@ func (s *Service) ProviderName() string { return s.provider.Name() }
 
 func ValidScene(scene string) bool {
 	switch scene {
-	case model.SMSScenAppLogin, model.SMSSceneCreatorLogin, model.SMSSceneBankCardChange:
+	case model.SMSScenAppLogin, model.SMSSceneCreatorLogin, model.SMSSceneBankCardChange, model.SMSSceneDistributorLogin:
 		return true
 	}
 	return false

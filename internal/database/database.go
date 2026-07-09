@@ -65,6 +65,16 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		&model.OperationLog{},
 		&model.Notification{},
 		&model.GlobalConfig{},
+		// 0.15.0 发行商模块
+		&model.Distributor{},
+		&model.DistributorRecharge{},
+		&model.DistributorApplication{},
+		&model.DistributorDrama{},
+		&model.DistributorContract{},
+		&model.DistributorIncomeDaily{},
+		&model.DistributorSettlement{},
+		&model.DistributorWithdrawal{},
+		&model.DistributorInvoice{},
 	); err != nil {
 		return nil, err
 	}

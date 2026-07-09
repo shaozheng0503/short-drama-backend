@@ -89,9 +89,9 @@ func (s *Server) sendSMS(c *gin.Context) {
 		return
 	}
 	switch req.Scene {
-	case model.SMSScenAppLogin, model.SMSSceneCreatorLogin:
+	case model.SMSScenAppLogin, model.SMSSceneCreatorLogin, model.SMSSceneDistributorLogin:
 	default:
-		response.InvalidParam(c, "scene 必须是 login 或 creator_login；换绑银行卡请用 POST /creator/bank-card/send-sms")
+		response.InvalidParam(c, "scene 必须是 login / creator_login / distributor_login；换绑银行卡请用 POST /creator/bank-card/send-sms")
 		return
 	}
 	code, err := s.sms.Send(req.Phone, req.Scene)
@@ -100,7 +100,7 @@ func (s *Server) sendSMS(c *gin.Context) {
 		case errors.Is(err, sms.ErrInvalidPhone):
 			response.InvalidParam(c, "手机号格式不正确")
 		case errors.Is(err, sms.ErrInvalidScene):
-			response.InvalidParam(c, "scene 必须是 login 或 creator_login")
+			response.InvalidParam(c, "scene 必须是 login / creator_login / distributor_login")
 		case errors.Is(err, sms.ErrTooFrequent):
 			response.Conflict(c, "发送过于频繁，请 60 秒后重试")
 		case errors.Is(err, sms.ErrPhoneDailyLimit):

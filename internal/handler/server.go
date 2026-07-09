@@ -296,6 +296,19 @@ func (s *Server) Router() *gin.Engine {
 	creatorAuth.POST("/notifications/read-all", s.creatorMarkAllNotificationsRead)
 	creatorAuth.POST("/notifications/:id/read", s.creatorMarkNotificationRead)
 
+	// === Distributor（发行商，0.15.0）===
+	distributor := v1.Group("/distributor")
+	distributor.POST("/auth/login", s.distributorLogin)
+	distAuth := distributor.Group("")
+	distAuth.Use(middleware.RequireDistributor(s.cfg))
+	distAuth.Use(s.requireActiveDistributor())
+	distAuth.GET("/me", s.distributorMe)
+	distAuth.PUT("/me", s.distributorUpdateMe)
+	distAuth.GET("/verification/status", s.distributorVerificationStatus)
+	distAuth.PUT("/verification/enterprise", s.distributorUpdateEnterpriseVerification)
+	distAuth.POST("/verification/biz-license/ocr", s.distributorBizLicenseOCR)
+	distAuth.GET("/deposit/balance", s.distributorDepositBalance)
+
 	// === Admin ===
 	admin := v1.Group("/admin")
 	admin.POST("/auth/login", s.adminLogin)

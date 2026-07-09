@@ -871,3 +871,275 @@ const (
 const (
 	ShareRatioBPFull = 10000 // 100%
 )
+
+// ============================================================
+// 0.15.0 发行商（Distributor）模块
+// ============================================================
+
+// 发行商认证状态（复用 Creator 同口径值）
+const (
+	DistributorVerifyUnverified = "unverified"
+	DistributorVerifyPending    = "pending"
+	DistributorVerifyVerified   = "verified"
+	DistributorVerifyRejected   = "rejected"
+)
+
+// 发行平台
+const (
+	PlatformDouyin      = "douyin"
+	PlatformKuaishou    = "kuaishou"
+	PlatformWechatVideo = "wechat_video"
+	PlatformBilibili    = "bilibili"
+)
+
+// 领剧申请状态
+const (
+	DistAppPending    = "pending"    // 待 admin 审核
+	DistAppApproved   = "approved"   // admin 审核通过，待授权
+	DistAppAuthorized = "authorized" // 已授权，可发行
+	DistAppRejected   = "rejected"   // 驳回，保证金释放
+	DistAppWithdrawn  = "withdrawn"  // 发行商主动撤回
+)
+
+// 授权状态
+const (
+	DistDramaAuthorized = "authorized" // 已授权
+	DistDramaActive     = "active"     // 活跃发行中
+	DistDramaRevoked    = "revoked"    // 已撤销
+	DistDramaExpired    = "expired"    // 已过期
+)
+
+// 保证金状态
+const (
+	DepositFrozen    = "frozen"    // 冻结中
+	DepositReleased  = "released"  // 已释放（复活）
+	DepositForfeited = "forfeited" // 已没收（违约）
+)
+
+// 合同付款状态
+const (
+	ContractPayUnpaid  = "unpaid"
+	ContractPayPartial = "partial"
+	ContractPayPaid    = "paid"
+	ContractPayOverdue = "overdue"
+)
+
+// 保证金配置键
+const (
+	ConfigKeyDepositBaseCents       = "deposit.base_cents"        // 基础保证金（分），默认 40000
+	ConfigKeyDepositEpisodeThreshold = "deposit.episode_threshold" // 集数阈值，默认 50
+	ConfigKeyDepositEpisodeAmount    = "deposit.episode_amount"    // 阈值以上保证金（分），默认 50000
+	ConfigKeyDepositPlatformRateBP   = "deposit.platform_rate_bp"  // 每增一个平台加价（基点），默认 1500=15%
+)
+
+// 短信场景
+const (
+	SMSSceneDistributorLogin = "distributor_login"
+)
+
+// Distributor —— 发行商账号表
+type Distributor struct {
+	ID                   uint64    `gorm:"primaryKey;column:id" json:"id"`
+	Phone                string    `gorm:"column:phone;size:20;uniqueIndex" json:"phone"`
+	Name                 string    `gorm:"column:name;size:64" json:"name"`
+	Nickname             string    `gorm:"column:nickname;size:64" json:"nickname"`
+	AvatarURL            string    `gorm:"column:avatar_url;size:512" json:"avatar_url"`
+	// 企业认证字段（与 Creator 企业认证对齐）
+	OrgName              string    `gorm:"column:org_name;size:128" json:"org_name"`
+	OrgCreditCode        string    `gorm:"column:org_credit_code;size:32;index" json:"org_credit_code"`
+	OrgLegalPerson       string    `gorm:"column:org_legal_person;size:64" json:"org_legal_person"`
+	OrgLegalIDCardEnc    string    `gorm:"column:org_legal_id_card_enc;type:text" json:"-"`
+	OrgLegalIDCardMasked string    `gorm:"column:org_legal_id_card_masked;size:32" json:"org_legal_id_card_masked"`
+	BusinessLicenseURL   string    `gorm:"column:business_license_url;size:512" json:"business_license_url"`
+	BankLicenseURL       string    `gorm:"column:bank_license_url;size:512" json:"bank_license_url"`
+	BankName             string    `gorm:"column:bank_name;size:64" json:"bank_name"`
+	BankBranch           string    `gorm:"column:bank_branch;size:128" json:"bank_branch"`
+	BankCardNoEnc        string    `gorm:"column:bank_card_no_enc;type:text" json:"-"`
+	BankCardLast4        string    `gorm:"column:bank_card_last4;size:4" json:"-"`
+	BankCardNoMasked     string    `gorm:"column:bank_card_no_masked;size:32" json:"bank_card_no_masked"`
+	// 认证状态
+	VerifyStatus         string    `gorm:"column:verify_status;size:20;default:unverified;index" json:"verify_status"`
+	VerifyRejectReason   string    `gorm:"column:verify_reject_reason;size:255" json:"verify_reject_reason"`
+	VerifyRejectFields   string    `gorm:"column:verify_reject_fields;size:255" json:"verify_reject_fields"`
+	VerifySubmittedAt    *time.Time `gorm:"column:verify_submitted_at" json:"verify_submitted_at"`
+	VerifyMethod         string    `gorm:"column:verify_method;size:20" json:"verify_method"`
+	VerifyProviderResult string    `gorm:"column:verify_provider_result;type:text" json:"-"`
+	VerifyCheckedAt      *time.Time `gorm:"column:verify_checked_at" json:"verify_checked_at"`
+	// 保证金钱包
+	DepositAvailableCents int64     `gorm:"column:deposit_available_cents;default:0" json:"deposit_available_cents"`
+	DepositFrozenCents    int64     `gorm:"column:deposit_frozen_cents;default:0" json:"deposit_frozen_cents"`
+	// 收益钱包
+	TotalIncomeCents      int64     `gorm:"column:total_income_cents;default:0" json:"total_income_cents"`
+	BalanceCents          int64     `gorm:"column:balance_cents;default:0" json:"balance_cents"`
+	FrozenCents           int64     `gorm:"column:frozen_cents;default:0" json:"frozen_cents"`
+	// 账号状态
+	Status                string    `gorm:"column:status;size:20;default:active;index" json:"status"`
+	CreatedAt             time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt             time.Time `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (Distributor) TableName() string { return "distributors" }
+
+// DistributorRecharge —— 保证金充值订单表
+type DistributorRecharge struct {
+	ID              uint64     `gorm:"primaryKey;column:id" json:"id"`
+	RechargeNo      string     `gorm:"column:recharge_no;size:32;uniqueIndex" json:"recharge_no"`
+	DistributorID   uint64     `gorm:"column:distributor_id;index" json:"distributor_id"`
+	AmountCents     int64      `gorm:"column:amount_cents" json:"amount_cents"`
+	PaymentMethod   string     `gorm:"column:payment_method;size:20" json:"payment_method"`
+	PlatformTradeNo string     `gorm:"column:platform_trade_no;size:128;index" json:"platform_trade_no"`
+	Status          string     `gorm:"column:status;size:20;default:pending;index" json:"status"`
+	PaidAt          *time.Time `gorm:"column:paid_at" json:"paid_at"`
+	ExpiredAt       *time.Time `gorm:"column:expired_at" json:"expired_at"`
+	Remark          string     `gorm:"column:remark;size:255" json:"remark"`
+	CreatedAt       time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt       time.Time  `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (DistributorRecharge) TableName() string { return "distributor_recharges" }
+
+// DistributorApplication —— 领剧申请表
+type DistributorApplication struct {
+	ID                 uint64     `gorm:"primaryKey;column:id" json:"id"`
+	ApplicationNo      string     `gorm:"column:application_no;size:32;uniqueIndex" json:"application_no"`
+	DistributorID      uint64     `gorm:"column:distributor_id;index" json:"distributor_id"`
+	DramaID            uint64     `gorm:"column:drama_id;index" json:"drama_id"`
+	Platforms          string     `gorm:"column:platforms;type:text" json:"platforms"` // JSON 数组 ["douyin","kuaishou"]
+	DepositAmountCents int64      `gorm:"column:deposit_amount_cents" json:"deposit_amount_cents"`
+	Status             string     `gorm:"column:status;size:20;default:pending;index" json:"status"`
+	RejectReason       string     `gorm:"column:reject_reason;size:255" json:"reject_reason"`
+	ReviewedBy         *uint64    `gorm:"column:reviewed_by" json:"reviewed_by"`
+	ReviewedAt         *time.Time `gorm:"column:reviewed_at" json:"reviewed_at"`
+	AuthorizedAt       *time.Time `gorm:"column:authorized_at" json:"authorized_at"`
+	CreatedAt          time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt          time.Time  `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (DistributorApplication) TableName() string { return "distributor_applications" }
+
+// DistributorDrama —— 领剧授权关联表（已授权发行的剧）
+type DistributorDrama struct {
+	ID                 uint64     `gorm:"primaryKey;column:id" json:"id"`
+	DistributorID      uint64     `gorm:"column:distributor_id;index:idx_dist_drama,priority:1" json:"distributor_id"`
+	DramaID            uint64     `gorm:"column:drama_id;index:idx_dist_drama,priority:2" json:"drama_id"`
+	ApplicationID      uint64     `gorm:"column:application_id" json:"application_id"`
+	Platforms          string     `gorm:"column:platforms;type:text" json:"platforms"` // JSON 数组
+	Status             string     `gorm:"column:status;size:20;default:authorized;index" json:"status"`
+	AuthorizedAt       *time.Time `gorm:"column:authorized_at" json:"authorized_at"`
+	ExpiresAt          *time.Time `gorm:"column:expires_at" json:"expires_at"`
+	DepositAmountCents int64      `gorm:"column:deposit_amount_cents" json:"deposit_amount_cents"`
+	DepositStatus      string     `gorm:"column:deposit_status;size:20;default:frozen" json:"deposit_status"`
+	ReleasedAt         *time.Time `gorm:"column:released_at" json:"released_at"`
+	ContractID         *uint64    `gorm:"column:contract_id" json:"contract_id"`
+	CreatedAt          time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt          time.Time  `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (DistributorDrama) TableName() string { return "distributor_dramas" }
+
+// DistributorContract —— 发行合同表
+type DistributorContract struct {
+	ID                 uint64     `gorm:"primaryKey;column:id" json:"id"`
+	DistributorID      uint64     `gorm:"column:distributor_id;index" json:"distributor_id"`
+	DramaID            uint64     `gorm:"column:drama_id;index" json:"drama_id"`
+	DistributorDramaID uint64     `gorm:"column:distributor_drama_id" json:"distributor_drama_id"`
+	ContractNo         string     `gorm:"column:contract_no;size:32;index" json:"contract_no"`
+	EsignFlowID        string     `gorm:"column:esign_flow_id;size:128" json:"esign_flow_id"`
+	FileURL            string     `gorm:"column:file_url;size:512" json:"file_url"`
+	AmountCents        int64      `gorm:"column:amount_cents" json:"amount_cents"`
+	PaidCents          int64      `gorm:"column:paid_cents;default:0" json:"paid_cents"`
+	PaidAt             *time.Time `gorm:"column:paid_at" json:"paid_at"`
+	PenaltyCents       int64      `gorm:"column:penalty_cents;default:0" json:"penalty_cents"`
+	PaymentStatus      string     `gorm:"column:payment_status;size:20;default:unpaid;index" json:"payment_status"`
+	FinanceConfirmedBy *uint64    `gorm:"column:finance_confirmed_by" json:"finance_confirmed_by"`
+	FinanceConfirmedAt *time.Time `gorm:"column:finance_confirmed_at" json:"finance_confirmed_at"`
+	Status             string     `gorm:"column:status;size:20;default:pending;index" json:"status"`
+	CreatedAt          time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt          time.Time  `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (DistributorContract) TableName() string { return "distributor_contracts" }
+
+// DistributorIncomeDaily —— 发行商每日收益明细（财务导入）
+type DistributorIncomeDaily struct {
+	ID            uint64    `gorm:"primaryKey;column:id" json:"id"`
+	DistributorID uint64    `gorm:"column:distributor_id;index:idx_dist_income,priority:1" json:"distributor_id"`
+	DramaID       uint64    `gorm:"column:drama_id;index:idx_dist_income,priority:2" json:"drama_id"`
+	Platform      string    `gorm:"column:platform;size:32;index:idx_dist_income,priority:3" json:"platform"`
+	StatDate      string    `gorm:"column:stat_date;size:10;index:idx_dist_income,priority:4" json:"stat_date"`
+	GrossCents    int64     `gorm:"column:gross_cents" json:"gross_cents"`
+	ShareRatioBP  int       `gorm:"column:share_ratio_bp" json:"share_ratio_bp"` // 5500 = 55%
+	IncomeCents   int64     `gorm:"column:income_cents" json:"income_cents"`     // 机构实得
+	BatchNo       string    `gorm:"column:batch_no;size:32;index" json:"batch_no"`
+	ImportRowNo   int       `gorm:"column:import_row_no" json:"import_row_no"`
+	CreatedAt     time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt     time.Time `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (DistributorIncomeDaily) TableName() string { return "distributor_income_daily" }
+
+// DistributorSettlement —— 发行商结算单
+type DistributorSettlement struct {
+	ID            uint64     `gorm:"primaryKey;column:id" json:"id"`
+	SettlementNo  string     `gorm:"column:settlement_no;size:32;uniqueIndex" json:"settlement_no"`
+	DistributorID uint64     `gorm:"column:distributor_id;index" json:"distributor_id"`
+	ContractNo    string     `gorm:"column:contract_no;size:32;index" json:"contract_no"`
+	Period        string     `gorm:"column:period;size:10" json:"period"`
+	CycleKey      string     `gorm:"column:cycle_key;size:16;index" json:"cycle_key"`
+	PeriodRange   string     `gorm:"column:period_range;size:64" json:"period_range"`
+	GrossCents    int64      `gorm:"column:gross_cents" json:"gross_cents"`
+	PlatformCents int64      `gorm:"column:platform_cents" json:"platform_cents"` // 平台 45%
+	NetCents      int64      `gorm:"column:net_cents" json:"net_cents"`           // 机构 55%
+	Status        string     `gorm:"column:status;size:20;default:draft;index" json:"status"`
+	OpenedAt      *time.Time `gorm:"column:opened_at" json:"opened_at"`
+	ClosedAt      *time.Time `gorm:"column:closed_at" json:"closed_at"`
+	Remark        string     `gorm:"column:remark;size:255" json:"remark"`
+	CreatedAt     time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt     time.Time  `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (DistributorSettlement) TableName() string { return "distributor_settlements" }
+
+// DistributorWithdrawal —— 发行商提现申请
+type DistributorWithdrawal struct {
+	ID                uint64     `gorm:"primaryKey;column:id" json:"id"`
+	WithdrawalNo      string     `gorm:"column:withdrawal_no;size:32;uniqueIndex" json:"withdrawal_no"`
+	DistributorID     uint64     `gorm:"column:distributor_id;index" json:"distributor_id"`
+	SettlementID      uint64     `gorm:"column:settlement_id;index" json:"settlement_id"`
+	AmountCents       int64      `gorm:"column:amount_cents" json:"amount_cents"`
+	BankNameSnapshot  string     `gorm:"column:bank_name_snapshot;size:64" json:"bank_name_snapshot"`
+	BankCardNoSnapshot string    `gorm:"column:bank_card_no_snapshot;size:64" json:"bank_card_no_snapshot"`
+	Status            string     `gorm:"column:status;size:20;default:pending;index" json:"status"`
+	InvoiceID         *uint64    `gorm:"column:invoice_id;index" json:"invoice_id"`
+	TransactionNo     string     `gorm:"column:transaction_no;size:128" json:"transaction_no"`
+	ReviewedBy        *uint64    `gorm:"column:reviewed_by" json:"reviewed_by"`
+	ReviewedAt        *time.Time `gorm:"column:reviewed_at" json:"reviewed_at"`
+	PaidAt            *time.Time `gorm:"column:paid_at" json:"paid_at"`
+	Remark            string     `gorm:"column:remark;size:255" json:"remark"`
+	CreatedAt         time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt         time.Time  `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (DistributorWithdrawal) TableName() string { return "distributor_withdrawals" }
+
+// DistributorInvoice —— 发行商发票
+type DistributorInvoice struct {
+	ID           uint64     `gorm:"primaryKey;column:id" json:"id"`
+	InvoiceNo    string     `gorm:"column:invoice_no;size:32;uniqueIndex" json:"invoice_no"`
+	SettlementID uint64     `gorm:"column:settlement_id;index" json:"settlement_id"`
+	DistributorID uint64    `gorm:"column:distributor_id;index" json:"distributor_id"`
+	InvoiceType  string     `gorm:"column:invoice_type;size:20" json:"invoice_type"`
+	ExternalNo   string     `gorm:"column:external_no;size:64" json:"external_no"`
+	AmountCents  int64      `gorm:"column:amount_cents" json:"amount_cents"`
+	FileURL      string     `gorm:"column:file_url;size:512" json:"file_url"`
+	FileHash     string     `gorm:"column:file_hash;size:64" json:"file_hash"`
+	FileSize     int64      `gorm:"column:file_size" json:"file_size"`
+	Status       string     `gorm:"column:status;size:20;default:pending;index" json:"status"`
+	RejectReason string     `gorm:"column:reject_reason;size:255" json:"reject_reason"`
+	ReviewedBy   *uint64    `gorm:"column:reviewed_by" json:"reviewed_by"`
+	ReviewedAt   *time.Time `gorm:"column:reviewed_at" json:"reviewed_at"`
+	CreatedAt    time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt    time.Time  `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (DistributorInvoice) TableName() string { return "distributor_invoices" }

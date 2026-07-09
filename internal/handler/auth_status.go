@@ -30,6 +30,17 @@ func (s *Server) requireActiveCreator() gin.HandlerFunc {
 	}, "创作者不存在", "账号已被封禁或禁用")
 }
 
+// 0.15.0 发行商账号激活校验
+func (s *Server) requireActiveDistributor() gin.HandlerFunc {
+	return s.requireActiveAccount(middleware.SubjectDistributor, func(id uint64) (string, error) {
+		var d model.Distributor
+		if err := s.db.Select("status").First(&d, id).Error; err != nil {
+			return "", err
+		}
+		return d.Status, nil
+	}, "发行商不存在", "账号已被封禁或禁用")
+}
+
 // requireVerifiedCreator 限定只有实名认证通过(verified)的创作者才能执行上传 / 建剧 / 提交审核等写操作。
 // 对应需求「没认证通过不能上传还有相关操作」。挂在 requireActiveCreator 之后（账号正常前提下再校验认证）。
 // 未通过认证统一返回 40301 + need_verification 标记，前端据此把用户引导到实名认证页。
