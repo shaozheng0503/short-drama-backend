@@ -313,13 +313,13 @@ func (s *Server) creatorListWithdrawals(c *gin.Context) {
 // withdrawalView —— 提现列表项（按邱嘉诚规范精简）
 func (s *Server) withdrawalView(w model.Withdrawal) gin.H {
 	view := gin.H{
-		"id":           w.ID,
-		"amount_cents": w.AmountCents, // 总金额（gross）
-		"net_cents":    w.NetCents,    // 税后金额
-		"status":       w.Status,
-		"created_at":   w.CreatedAt,
-		"reviewed_at":  w.ReviewedAt,
-		"paid_at":      w.PaidAt,
+		"id":          w.ID,
+		"gross_cents": w.AmountCents, // 总金额
+		"net_cents":   w.NetCents,    // 税后金额
+		"status":      w.Status,
+		"created_at":  w.CreatedAt,
+		"reviewed_at": w.ReviewedAt,
+		"paid_at":     w.PaidAt,
 	}
 	// cycle_key 从关联结算单获取
 	if w.InvoiceID != nil {

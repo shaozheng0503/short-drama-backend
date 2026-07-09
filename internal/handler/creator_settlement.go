@@ -374,15 +374,13 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 	wdViews := make([]gin.H, 0, len(withdrawals))
 	for _, w := range withdrawals {
 		wdViews = append(wdViews, gin.H{
-			"id":            w.ID,
-			"withdrawal_no": w.WithdrawalNo,
-			"amount_cents":  w.AmountCents,
-			"tax_cents":     w.TaxCents,
-			"net_cents":     w.NetCents,
-			"status":        w.Status,
-			"remark":        w.Remark,
-			"paid_at":       w.PaidAt,
-			"created_at":    w.CreatedAt,
+			"id":          w.ID,
+			"gross_cents": w.AmountCents,
+			"net_cents":   w.NetCents,
+			"status":      w.Status,
+			"created_at":  w.CreatedAt,
+			"reviewed_at": w.ReviewedAt,
+			"paid_at":     w.PaidAt,
 		})
 	}
 	// 公司抬头（用于前端展示"请开给：xxx"，来自 .env 平台配置）

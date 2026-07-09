@@ -118,34 +118,21 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 	wdViews := make([]gin.H, 0, len(withdrawals))
 	for _, w := range withdrawals {
 		v := gin.H{
-			"id":              w.ID,
-			"withdrawal_no":   w.WithdrawalNo,
-			"amount_cents":    w.AmountCents,
-			"tax_cents":       w.TaxCents,
-			"net_cents":       w.NetCents,
-			"status":          w.Status,
-			"bank_name":       w.BankNameSnapshot,
-			"bank_card_no":    w.BankCardNoSnapshot,
-			"transaction_no":  w.TransactionNo,
-			"remark":          w.Remark,
-			"reviewed_at":     w.ReviewedAt,
-			"paid_at":         w.PaidAt,
-			"created_at":      w.CreatedAt,
+			"id":          w.ID,
+			"gross_cents": w.AmountCents,
+			"net_cents":   w.NetCents,
+			"status":      w.Status,
+			"created_at":  w.CreatedAt,
+			"reviewed_at": w.ReviewedAt,
+			"paid_at":     w.PaidAt,
 		}
 		// 带上发票信息
 		if w.InvoiceID != nil {
 			var inv model.Invoice
 			if err := s.db.First(&inv, *w.InvoiceID).Error; err == nil {
 				v["invoice"] = gin.H{
-					"id":            inv.ID,
-					"invoice_no":    inv.InvoiceNo,
-					"invoice_type":  inv.InvoiceType,
-					"external_no":   inv.ExternalNo,
-					"amount_cents":  inv.AmountCents,
-					"file_url":      inv.FileURL,
-					"status":        inv.Status,
-					"reject_reason": inv.RejectReason,
-					"created_at":    inv.CreatedAt,
+					"invoice_type":     inv.InvoiceType,
+					"invoice_file_url": inv.FileURL,
 				}
 			}
 		}

@@ -783,14 +783,14 @@ func (s *Server) adminListWithdrawals(c *gin.Context) {
 	list := make([]gin.H, 0, len(items))
 	for _, w := range items {
 		v := gin.H{
-			"id":           w.ID,
-			"creator_id":   w.CreatorID,
-			"amount_cents": w.AmountCents,
-			"net_cents":    w.NetCents,
-			"status":       w.Status,
-			"created_at":   w.CreatedAt,
-			"reviewed_at":  w.ReviewedAt,
-			"paid_at":      w.PaidAt,
+			"id":          w.ID,
+			"creator_id":  w.CreatorID,
+			"gross_cents": w.AmountCents,
+			"net_cents":   w.NetCents,
+			"status":      w.Status,
+			"created_at":  w.CreatedAt,
+			"reviewed_at": w.ReviewedAt,
+			"paid_at":     w.PaidAt,
 		}
 		// creator_name + income_type
 		if cr, ok := creatorMap[w.CreatorID]; ok {
