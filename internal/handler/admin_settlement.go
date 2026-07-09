@@ -48,35 +48,38 @@ func (s *Server) adminListSettlements(c *gin.Context) {
 	var rows []model.Settlement
 	q.Order("period desc, id desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows)
 
-	// 批量查剧集收益汇总（避免 N+1）
-	settleIDs := make([]uint64, 0, len(rows))
+	// 批量查创作者名（避免 N+1）
+	creatorIDs := make([]uint64, 0, len(rows))
 	for _, r := range rows {
-		settleIDs = append(settleIDs, r.ID)
+		creatorIDs = append(creatorIDs, r.CreatorID)
 	}
-	dramaSummaryMap := s.batchDramaSummary(settleIDs)
+	creatorNameMap := map[uint64]string{}
+	if len(creatorIDs) > 0 {
+		var creators []model.Creator
+		s.db.Select("id, name, nickname, org_name").Where("id IN ?", creatorIDs).Find(&creators)
+		for _, cr := range creators {
+			name := cr.Name
+			if cr.OrgName != "" {
+				name = cr.OrgName
+			}
+			if cr.Nickname != "" {
+				name = cr.Nickname
+			}
+			creatorNameMap[cr.ID] = name
+		}
+	}
 
 	list := make([]gin.H, 0, len(rows))
 	for _, r := range rows {
-		ds := dramaSummaryMap[r.ID]
-		if ds == nil {
-			ds = []gin.H{}
-		}
 		list = append(list, gin.H{
 			"id":            r.ID,
 			"settlement_no": r.SettlementNo,
 			"creator_id":    r.CreatorID,
-			"drama_summary": ds, // 剧集收益汇总（替代 contract_no）
-			"period":        r.Period,
-			"cycle_key":     r.CycleKey,    // 半月度唯一键
-			"period_range":  r.PeriodRange, // 实际起止日期
-			"gross_cents":   r.GrossCents,
-			"tax_cents": r.PlatformCents,
-			"net_cents":     r.NetCents,
+			"creator_name":  creatorNameMap[r.CreatorID],
+			"cycle_key":     r.CycleKey,
 			"status":        r.Status,
-			"remark":        r.Remark,
-			"opened_at":     r.OpenedAt,
-			"closed_at":     r.ClosedAt,
-			"created_at":    r.CreatedAt,
+			"gross_cents":   r.GrossCents,
+			"net_cents":     r.NetCents,
 		})
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
@@ -149,22 +152,25 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 		wdViews = append(wdViews, v)
 	}
 	response.OK(c, gin.H{
-		"id":                     st.ID,
-		"settlement_no":          st.SettlementNo,
-		"creator_id":             st.CreatorID,
-		"creator_name":           creatorName,
-		"creator_phone":          cr.Phone,
-		"drama_summary":          s.settlementDramaSummarySafe(st.ID), // 剧集收益汇总
-		"withdrawals":            wdViews,                             // 提现记录列表
-		"period":                 st.Period,
-		"gross_cents":            st.GrossCents,
-		"tax_cents":               st.PlatformCents,
-		"net_cents":              st.NetCents,
-		"status":                 st.Status,
-		"remark":                 st.Remark,
-		"opened_at":              st.OpenedAt,
-		"closed_at":              st.ClosedAt,
-		"created_at":             st.CreatedAt,
+		"id":            st.ID,
+		"settlement_no": st.SettlementNo,
+		"creator_id":    st.CreatorID,
+		"creator_name":  creatorName,
+		"creator_phone": cr.Phone,
+		"drama_summary": s.settlementDramaSummarySafe(st.ID),
+		"creator_party": s.buildCreatorParty(cr, st),
+		"withdrawals":   wdViews,
+		"period":        st.Period,
+		"cycle_key":     st.CycleKey,
+		"period_range":  st.PeriodRange,
+		"gross_cents":   st.GrossCents,
+		"tax_cents":     st.PlatformCents,
+		"net_cents":     st.NetCents,
+		"status":        st.Status,
+		"remark":        st.Remark,
+		"opened_at":     st.OpenedAt,
+		"closed_at":     st.ClosedAt,
+		"created_at":    st.CreatedAt,
 	})
 }
 

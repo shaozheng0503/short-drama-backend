@@ -194,57 +194,15 @@ func (s *Server) creatorListSettlements(c *gin.Context) {
 	q.Order("period desc, id desc").
 		Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows)
 
-	// 一次性查全部结算单的「已审核通过发票金额合计」避免 N+1
-	settleIDs := make([]uint64, 0, len(rows))
-	for _, r := range rows {
-		settleIDs = append(settleIDs, r.ID)
-	}
-	approvedSum := map[uint64]int64{}
-	if len(settleIDs) > 0 {
-		type pair struct {
-			SettlementID uint64
-			Sum          int64
-		}
-		var pairs []pair
-		s.db.Model(&model.Invoice{}).
-			Select("settlement_id, COALESCE(SUM(amount_cents),0) AS sum").
-			Where("settlement_id IN ? AND status = ?", settleIDs, model.InvoiceStatusApproved).
-			Group("settlement_id").Scan(&pairs)
-		for _, p := range pairs {
-			approvedSum[p.SettlementID] = p.Sum
-		}
-	}
-
-	// 批量查剧集收益汇总（避免 N+1）
-	dramaSummaryMap := s.batchDramaSummary(settleIDs)
-
 	list := make([]gin.H, 0, len(rows))
 	for _, r := range rows {
-		// 2026-07-06 加：cycle_key / period_range 字段，让前端能看到半月度周期
-		periodRange := r.PeriodRange
-		if periodRange == "" {
-			// 兜底：老月度数据 period 形如 2026-05，用 period 拼成 period_range
-			periodRange = r.Period + "（整月）"
-		}
-		ds := dramaSummaryMap[r.ID]
-		if ds == nil {
-			ds = []gin.H{}
-		}
 		list = append(list, gin.H{
-			"id":                     r.ID,
-			"settlement_no":          r.SettlementNo,
-			"creator_id":             r.CreatorID,
-			"drama_summary":          ds, // 剧集收益汇总（替代 contract_no）
-			"period":                 r.Period,
-			"cycle_key":              r.CycleKey,
-			"period_range":           periodRange,
-			"gross_cents":            r.GrossCents,
-			"tax_cents":          r.PlatformCents,
-			"net_cents":              r.NetCents,
-			"status":                 r.Status,
-			"approved_invoice_cents": approvedSum[r.ID],
-			"created_at":             r.CreatedAt,
-			"closed_at":              r.ClosedAt,
+			"id":            r.ID,
+			"settlement_no": r.SettlementNo,
+			"cycle_key":     r.CycleKey,
+			"status":        r.Status,
+			"gross_cents":   r.GrossCents,
+			"net_cents":     r.NetCents,
 		})
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
@@ -457,8 +415,8 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		"drama_summary":  s.settlementDramaSummarySafe(st.ID),  // 剧集收益汇总
 		"withdrawals":    wdViews,                               // 提现记录列表
 		"period":         st.Period,
-		"cycle_key":      st.CycleKey,   // 2026-07-06 加：半月度唯一键
-		"period_range":   st.PeriodRange, // 2026-07-06 加：实际起止日期
+		"cycle_key":      st.CycleKey,
+		"period_range":   st.PeriodRange,
 		"gross_cents":    st.GrossCents,
 		"tax_cents":      st.PlatformCents,
 		"net_cents":      st.NetCents,
@@ -475,19 +433,27 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 			"address":       platformAddress,
 			"phone":         platformPhone,
 		},
-		// 2026-07-06 加：结算方信息（创作者抬头 + 收款账户）。
-		// 配合 platform_company 一起给前端渲染"对账单 / 开票参考"——demo 流程图步骤 2。
-		"creator_party": gin.H{
-			"name":            creatorPartyName,        // 结算方公司全称 / 个人姓名
-			"id_no_masked":    creator.IDCardNoMasked,  // 身份证号脱敏
-			"bank_name":       creator.BankName,        // 开户行
-			"bank_branch":     creator.BankBranch,      // 开户支行
-			"bank_no_masked":  creator.BankCardNoMasked, // 银行卡号脱敏
-			"bank_last4":      creator.BankCardLast4,
-			"creator_type":    creator.CreatorType,     // personal / organization
-			"transfer_type":   model.TransferTypeOf(creator.CreatorType), // public / private
-		},
+		// 结算方信息
+		"creator_party": s.buildCreatorParty(creator, st),
 	})
+}
+
+// buildCreatorParty 构造 creator_party 嵌套对象（结算详情 / 提现详情共用）
+func (s *Server) buildCreatorParty(creator model.Creator, st model.Settlement) gin.H {
+	creatorName := strings.TrimSpace(creator.Name)
+	if strings.TrimSpace(creator.OrgName) != "" {
+		creatorName = strings.TrimSpace(creator.OrgName)
+	}
+	return gin.H{
+		"bank_name":      creator.BankName,
+		"bank_no_masked": creator.BankCardNoMasked,
+		"creator_type":   creator.CreatorType,                           // personal / organization
+		"income_type":    model.TransferTypeOf(creator.CreatorType),    // public / private 对公/对私
+		"gross_cents":    st.GrossCents,
+		"net_cents":      st.NetCents,
+		"cycle_key":      st.CycleKey,
+		"creator_name":   creatorName,
+	}
 }
 
 // creatorDownloadSettlementExcel —— GET /v1/creator/settlements/:id/download

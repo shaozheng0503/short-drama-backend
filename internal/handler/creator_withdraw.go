@@ -17,13 +17,11 @@ import (
 )
 
 type withdrawalRequest struct {
-	// 2026-07-07 改（邱嘉诚 7/7 反馈）：发票和提现合并，每次提现上传一张发票，全额提现。
-	// 不再单独调 /invoices 接口，发票在提现事务内自动创建。
-	// 不再支持结算单多次提现——一张结算单只允许一笔 pending/approved 的提现。
 	SettlementID      uint64 `json:"settlement_id" binding:"required"`
-	AmountCents       int64  `json:"amount_cents"` // 可选，不传则用 settlement.NetCents（全额提现）
-	InvoiceFileURL    string `json:"invoice_file_url" binding:"required"`
-	InvoiceType       string `json:"invoice_type" binding:"required"`
+	AmountCents       int64  `json:"amount_cents"` // 可选，不传则全额提现
+	InvoiceFileURL    string `json:"invoice_file_url"`     // 个人可不传，企业必传
+	InvoiceType       string `json:"invoice_type"`         // 个人可不传，企业必传；只允许 evat_special
+	InvoiceAccount    string `json:"invoice_account"`      // 个人可不传；只允许 无形资产·版权费 / 现代服务·版权费 / 广播影视服务·版权费
 	InvoiceExternalNo string `json:"invoice_external_no"`
 	InvoiceFileHash   string `json:"invoice_file_hash"`
 	InvoiceFileSize   int64  `json:"invoice_file_size"`
@@ -42,16 +40,41 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 	}
 	var req withdrawalRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.InvalidParam(c, "请求体不合法：settlement_id / invoice_file_url / invoice_type 必填，amount_cents 可选（不传则全额提现）")
+		response.InvalidParam(c, "请求体不合法：settlement_id 必填，amount_cents 可选")
 		return
 	}
-	// 校验发票类型
-	switch req.InvoiceType {
-	case model.InvoiceTypeVATSpecial, model.InvoiceTypeVATGeneral,
-		model.InvoiceTypeEVATSpecial, model.InvoiceTypeEVATGeneral:
-	default:
-		response.InvalidParam(c, "invoice_type 不合法（可选值：evat_special / evat_general / vat_special / vat_general）")
+	// 发票类型校验（企业必传，个人可不传）
+	var creator0 model.Creator
+	if err := s.db.First(&creator0, cid).Error; err != nil {
+		response.ServerError(c, "查询创作者失败")
 		return
+	}
+	isOrg := creator0.CreatorType == model.CreatorTypeOrganization
+	if isOrg {
+		if req.InvoiceFileURL == "" || req.InvoiceType == "" {
+			response.InvalidParam(c, "企业创作者提现必须上传发票（invoice_file_url / invoice_type 必填）")
+			return
+		}
+		if req.InvoiceType != model.InvoiceTypeEVATSpecial {
+			response.InvalidParam(c, "invoice_type 只允许传 evat_special（增值税电子专用发票）")
+			return
+		}
+		if req.InvoiceAccount == "" {
+			response.InvalidParam(c, "企业创作者提现必须传 invoice_account")
+			return
+		}
+		switch req.InvoiceAccount {
+		case "无形资产·版权费", "现代服务·版权费", "广播影视服务·版权费":
+		default:
+			response.InvalidParam(c, "invoice_account 只允许传：无形资产·版权费 / 现代服务·版权费 / 广播影视服务·版权费")
+			return
+		}
+	} else {
+		// 个人：如果传了发票字段也校验
+		if req.InvoiceType != "" && req.InvoiceType != model.InvoiceTypeEVATSpecial {
+			response.InvalidParam(c, "invoice_type 只允许传 evat_special")
+			return
+		}
 	}
 
 	var creator model.Creator
@@ -68,6 +91,7 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 
 	var result model.Withdrawal
 	var newInvoice model.Invoice
+	var newInvoicePtr *model.Invoice
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var creator model.Creator
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&creator, cid).Error; err != nil {
@@ -120,23 +144,26 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 			return errAmountExceedsDramaBalance
 		}
 
-		// 创建发票（金额 = 提现金额 = 结算单净额）
-		inv := model.Invoice{
-			InvoiceNo:    generateInvoiceBizNo(),
-			SettlementID: req.SettlementID,
-			CreatorID:    cid,
-			InvoiceType:  req.InvoiceType,
-			ExternalNo:   req.InvoiceExternalNo,
-			AmountCents:  amount,
-			FileURL:      req.InvoiceFileURL,
-			FileHash:     req.InvoiceFileHash,
-			FileSize:     req.InvoiceFileSize,
-			Status:       model.InvoiceStatusPending,
+		// 创建发票（企业必传，个人可不传）
+		if isOrg && req.InvoiceFileURL != "" {
+			inv := model.Invoice{
+				InvoiceNo:    generateInvoiceBizNo(),
+				SettlementID: req.SettlementID,
+				CreatorID:    cid,
+				InvoiceType:  req.InvoiceType,
+				ExternalNo:   req.InvoiceExternalNo,
+				AmountCents:  amount,
+				FileURL:      req.InvoiceFileURL,
+				FileHash:     req.InvoiceFileHash,
+				FileSize:     req.InvoiceFileSize,
+				Status:       model.InvoiceStatusPending,
+			}
+			if err := tx.Create(&inv).Error; err != nil {
+				return err
+			}
+			newInvoice = inv
+			newInvoicePtr = &newInvoice
 		}
-		if err := tx.Create(&inv).Error; err != nil {
-			return err
-		}
-		newInvoice = inv
 
 		// settlement open → invoiced
 		if st.Status == model.SettlementStatusOpen {
@@ -157,7 +184,7 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 		// 个税
 		taxCents, netCents, _ := s.computeWithdrawalTax(creator, amount)
 
-		// 创建提现单（drama_id = nil，按结算单维度）
+		// 创建提现单
 		w := model.Withdrawal{
 			WithdrawalNo:        generateWithdrawalNo(),
 			CreatorID:           cid,
@@ -170,7 +197,9 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 			BankNameSnapshot:    creator.BankName,
 			BankCardNoSnapshot:  "***" + creator.BankCardLast4,
 			Status:              model.WithdrawalStatusPending,
-			InvoiceID:           &inv.ID,
+		}
+		if newInvoicePtr != nil {
+			w.InvoiceID = &newInvoicePtr.ID
 		}
 		if err := tx.Create(&w).Error; err != nil {
 			return err
@@ -215,23 +244,23 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 
 	// 时间线
 	actorID := cid
-	s.recordTransition("invoice", newInvoice.ID, "", model.InvoiceStatusPending, "creator", &actorID, "创作者提现时上传发票", map[string]interface{}{
-		"invoice_no":    newInvoice.InvoiceNo,
-		"amount_cents":  newInvoice.AmountCents,
-		"settlement_id": newInvoice.SettlementID,
-	})
+	if newInvoicePtr != nil {
+		s.recordTransition("invoice", newInvoicePtr.ID, "", model.InvoiceStatusPending, "creator", &actorID, "创作者提现时上传发票", map[string]interface{}{
+			"invoice_no":    newInvoicePtr.InvoiceNo,
+			"amount_cents":  newInvoicePtr.AmountCents,
+			"settlement_id": newInvoicePtr.SettlementID,
+		})
+	}
 	s.recordTransition("withdrawal", result.ID, "", model.WithdrawalStatusPending, "creator", &actorID, "创作者发起提现申请", map[string]interface{}{
 		"amount_cents":  result.AmountCents,
 		"withdrawal_no": result.WithdrawalNo,
-		"invoice_id":    newInvoice.ID,
 		"settlement_id": req.SettlementID,
 	})
-	if newInvoice.SettlementID > 0 {
+	if req.SettlementID > 0 {
 		var stNow model.Settlement
-		if err := s.db.First(&stNow, newInvoice.SettlementID).Error; err == nil {
-			s.recordTransition("settlement", newInvoice.SettlementID, stNow.Status, stNow.Status, "creator", &actorID, "创作者基于该结算单发起提现", map[string]interface{}{
+		if err := s.db.First(&stNow, req.SettlementID).Error; err == nil {
+			s.recordTransition("settlement", req.SettlementID, stNow.Status, stNow.Status, "creator", &actorID, "创作者基于该结算单发起提现", map[string]interface{}{
 				"withdrawal_id": result.ID,
-				"invoice_id":    newInvoice.ID,
 			})
 		}
 	}
@@ -281,90 +310,56 @@ func (s *Server) creatorListWithdrawals(c *gin.Context) {
 	response.OK(c, pageResp(list, page, pageSize, total))
 }
 
+// withdrawalView —— 提现列表项（按邱嘉诚规范精简）
 func (s *Server) withdrawalView(w model.Withdrawal) gin.H {
 	view := gin.H{
-		"id":                    w.ID,
-		"withdrawal_no":         w.WithdrawalNo,
-		"amount_cents":          w.AmountCents,
-		"tax_cents":             w.TaxCents,
-		"net_cents":             w.NetCents,
-		"creator_type_snapshot": w.CreatorTypeSnapshot,
-		"transfer_type":         w.TransferType,
-		"bank_name_snapshot":    w.BankNameSnapshot,
-		"bank_card_no_snapshot": w.BankCardNoSnapshot,
-		"status":                w.Status,
-		"remark":                w.Remark,
-		"transaction_no":        w.TransactionNo,
-		"reviewed_at":           w.ReviewedAt,
-		"paid_at":               w.PaidAt,
-		"created_at":            w.CreatedAt,
+		"id":           w.ID,
+		"amount_cents": w.AmountCents, // 总金额（gross）
+		"net_cents":    w.NetCents,    // 税后金额
+		"status":       w.Status,
+		"created_at":   w.CreatedAt,
+		"reviewed_at":  w.ReviewedAt,
+		"paid_at":      w.PaidAt,
 	}
-	if w.DramaID != nil {
-		view["drama_id"] = *w.DramaID
-		var title string
-		s.db.Table("dramas").Select("title").Where("id = ?", *w.DramaID).Scan(&title)
-		view["drama_title"] = title
-	}
-	// === 2026-07-02 加：展示关联的发票和结算单号（财务/创作者看一笔提现对应哪张发票、哪张结算单）===
+	// cycle_key 从关联结算单获取
 	if w.InvoiceID != nil {
-		view["invoice_id"] = *w.InvoiceID
 		var inv model.Invoice
-		// 2026-07-03 改：发票和提现一体，发票状态不独立展示
-		// 创作者/财务看提现时，发票信息只作为附件信息展示（no/amount/settlement_no）
-		// 「发票审了没」看 withdrawal.status 即可（联动）
-		if err := s.db.Select("invoice_no, settlement_id, amount_cents").First(&inv, *w.InvoiceID).Error; err == nil {
-			view["invoice_no"] = inv.InvoiceNo
-			view["invoice_amount_cents"] = inv.AmountCents
-			view["settlement_id"] = inv.SettlementID
-			var stNo string
-			s.db.Model(&model.Settlement{}).Select("settlement_no").Where("id = ?", inv.SettlementID).Scan(&stNo)
-			view["settlement_no"] = stNo
+		if err := s.db.Select("settlement_id").First(&inv, *w.InvoiceID).Error; err == nil && inv.SettlementID > 0 {
+			var cycleKey string
+			s.db.Model(&model.Settlement{}).Select("cycle_key").Where("id = ?", inv.SettlementID).Scan(&cycleKey)
+			view["cycle_key"] = cycleKey
 		}
 	}
 	return view
 }
 
-// withdrawalDetailView —— 提现详情视图（提现单 + 关联发票完整信息 + 关联结算单信息）
+// withdrawalDetailView —— 提现详情（creator_party + invoice）
 func (s *Server) withdrawalDetailView(w model.Withdrawal) gin.H {
 	view := s.withdrawalView(w)
 
-	// 关联发票完整信息
+	// 关联结算单 + creator_party
+	var st model.Settlement
+	var stFound bool
 	if w.InvoiceID != nil {
 		var inv model.Invoice
-		if err := s.db.First(&inv, *w.InvoiceID).Error; err == nil {
-			view["invoice"] = gin.H{
-				"id":            inv.ID,
-				"invoice_no":    inv.InvoiceNo,
-				"invoice_type":  inv.InvoiceType,
-				"external_no":   inv.ExternalNo,
-				"amount_cents":  inv.AmountCents,
-				"file_url":      inv.FileURL,
-				"file_size":     inv.FileSize,
-				"created_at":    inv.CreatedAt,
-				// 0.14.0 删除 status/reject_reason/reviewed_at（发票不能单独审核）
+		if err := s.db.First(&inv, *w.InvoiceID).Error; err == nil && inv.SettlementID > 0 {
+			if err := s.db.First(&st, inv.SettlementID).Error; err == nil {
+				stFound = true
+				view["settlement_id"] = st.ID
+				// invoice
+				view["invoice"] = gin.H{
+					"invoice_type":     inv.InvoiceType,
+					"invoice_file_url": inv.FileURL,
+				}
 			}
 		}
 	}
 
-	// 关联结算单信息
-	if w.InvoiceID != nil {
-		var inv model.Invoice
-		if err := s.db.Select("settlement_id").First(&inv, *w.InvoiceID).Error; err == nil && inv.SettlementID > 0 {
-			var st model.Settlement
-			if err := s.db.First(&st, inv.SettlementID).Error; err == nil {
-				view["settlement"] = gin.H{
-					"id":             st.ID,
-					"settlement_no":  st.SettlementNo,
-					"period":         st.Period,
-					"cycle_key":      st.CycleKey,
-					"period_range":   st.PeriodRange,
-					"gross_cents":    st.GrossCents,
-					"tax_cents": st.PlatformCents,
-					"net_cents":      st.NetCents,
-					"status":         st.Status,
-					"created_at":     st.CreatedAt,
-				}
-			}
+	// creator_party
+	if stFound {
+		var creator model.Creator
+		if err := s.db.First(&creator, st.CreatorID).Error; err == nil {
+			view["creator_party"] = s.buildCreatorParty(creator, st)
 		}
 	}
 

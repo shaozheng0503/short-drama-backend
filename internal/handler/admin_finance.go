@@ -782,33 +782,29 @@ func (s *Server) adminListWithdrawals(c *gin.Context) {
 
 	list := make([]gin.H, 0, len(items))
 	for _, w := range items {
-		v := s.withdrawalView(w)
-		v["creator_id"] = w.CreatorID
-		// admin 侧返回完整银行卡号 + 创作者姓名（财务打款用）
-		if cr, ok := creatorMap[w.CreatorID]; ok {
-			v["creator_name"] = cr.Name
-			if cr.Nickname != "" {
-				v["creator_nickname"] = cr.Nickname
-			}
-			v["creator_phone"] = cr.Phone
-			v["bank_name"] = cr.BankName
-			v["bank_branch"] = cr.BankBranch
-			// 解密完整银行卡号
-			if s.cryptor != nil && cr.BankCardNoEnc != "" {
-				if full, err := s.cryptor.Decrypt(cr.BankCardNoEnc); err == nil && full != "" {
-					v["bank_card_no"] = full
-					v["bank_card_no_full"] = full
-				}
-			}
+		v := gin.H{
+			"id":           w.ID,
+			"creator_id":   w.CreatorID,
+			"amount_cents": w.AmountCents,
+			"net_cents":    w.NetCents,
+			"status":       w.Status,
+			"created_at":   w.CreatedAt,
+			"reviewed_at":  w.ReviewedAt,
+			"paid_at":      w.PaidAt,
 		}
-		// 0.14.0 返回结算周期
+		// creator_name + income_type
+		if cr, ok := creatorMap[w.CreatorID]; ok {
+			name := cr.Name
+			if cr.Nickname != "" {
+				name = cr.Nickname
+			}
+			v["creator_name"] = name
+			v["income_type"] = model.TransferTypeOf(cr.CreatorType) // 对公/对私
+		}
+		// cycle_key
 		if w.InvoiceID != nil {
 			if st, ok := invToSettlement[*w.InvoiceID]; ok {
-				v["settlement_id"] = st.ID
-				v["settlement_no"] = st.SettlementNo
-				v["period"] = st.Period
 				v["cycle_key"] = st.CycleKey
-				v["period_range"] = st.PeriodRange
 			}
 		}
 		list = append(list, v)
@@ -835,20 +831,11 @@ func (s *Server) adminGetWithdrawal(c *gin.Context) {
 	}
 	v := s.withdrawalDetailView(w)
 	v["creator_id"] = w.CreatorID
-	// admin 侧返回完整创作者信息 + 完整银行卡号
+	// admin 侧额外返回完整银行卡号（财务打款用）
 	var cr model.Creator
 	if err := s.db.First(&cr, w.CreatorID).Error; err == nil {
-		v["creator_name"] = cr.Name
-		if cr.Nickname != "" {
-			v["creator_nickname"] = cr.Nickname
-		}
-		v["creator_phone"] = cr.Phone
-		v["bank_name"] = cr.BankName
-		v["bank_branch"] = cr.BankBranch
-		v["id_card_no_masked"] = cr.IDCardNoMasked
 		if s.cryptor != nil && cr.BankCardNoEnc != "" {
 			if full, err := s.cryptor.Decrypt(cr.BankCardNoEnc); err == nil && full != "" {
-				v["bank_card_no"] = full
 				v["bank_card_no_full"] = full
 			}
 		}
