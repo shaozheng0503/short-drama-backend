@@ -302,6 +302,48 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 	if cr.Nickname != "" {
 		creatorName = cr.Nickname
 	}
+	// 0.14.0 返回该结算单关联的提现记录（通过 invoice.settlement_id 关联）
+	var withdrawals []model.Withdrawal
+	s.db.Joins("LEFT JOIN invoices ON invoices.id = withdrawals.invoice_id").
+		Where("invoices.settlement_id = ?", st.ID).
+		Order("withdrawals.created_at desc").
+		Find(&withdrawals)
+	wdViews := make([]gin.H, 0, len(withdrawals))
+	for _, w := range withdrawals {
+		v := gin.H{
+			"id":              w.ID,
+			"withdrawal_no":   w.WithdrawalNo,
+			"amount_cents":    w.AmountCents,
+			"tax_cents":       w.TaxCents,
+			"net_cents":       w.NetCents,
+			"status":          w.Status,
+			"bank_name":       w.BankNameSnapshot,
+			"bank_card_no":    w.BankCardNoSnapshot,
+			"transaction_no":  w.TransactionNo,
+			"remark":          w.Remark,
+			"reviewed_at":     w.ReviewedAt,
+			"paid_at":         w.PaidAt,
+			"created_at":      w.CreatedAt,
+		}
+		// 带上发票信息
+		if w.InvoiceID != nil {
+			var inv model.Invoice
+			if err := s.db.First(&inv, *w.InvoiceID).Error; err == nil {
+				v["invoice"] = gin.H{
+					"id":            inv.ID,
+					"invoice_no":    inv.InvoiceNo,
+					"invoice_type":  inv.InvoiceType,
+					"external_no":   inv.ExternalNo,
+					"amount_cents":  inv.AmountCents,
+					"file_url":      inv.FileURL,
+					"status":        inv.Status,
+					"reject_reason": inv.RejectReason,
+					"created_at":    inv.CreatedAt,
+				}
+			}
+		}
+		wdViews = append(wdViews, v)
+	}
 	response.OK(c, gin.H{
 		"id":                     st.ID,
 		"settlement_no":          st.SettlementNo,
@@ -309,6 +351,7 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 		"creator_name":           creatorName,
 		"creator_phone":          cr.Phone,
 		"drama_summary":          s.settlementDramaSummarySafe(st.ID), // 剧集收益汇总
+		"withdrawals":            wdViews,                             // 提现记录列表
 		"period":                 st.Period,
 		"gross_cents":            st.GrossCents,
 		"tax_cents":               st.PlatformCents,

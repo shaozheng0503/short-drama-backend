@@ -407,6 +407,26 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		return
 	}
 	// 0.14.0 发票跟提现绑定，结算单不再返回发票
+	// 0.14.0 返回该结算单关联的提现记录（通过 invoice.settlement_id 关联）
+	var withdrawals []model.Withdrawal
+	s.db.Joins("LEFT JOIN invoices ON invoices.id = withdrawals.invoice_id").
+		Where("invoices.settlement_id = ?", st.ID).
+		Order("withdrawals.created_at desc").
+		Find(&withdrawals)
+	wdViews := make([]gin.H, 0, len(withdrawals))
+	for _, w := range withdrawals {
+		wdViews = append(wdViews, gin.H{
+			"id":            w.ID,
+			"withdrawal_no": w.WithdrawalNo,
+			"amount_cents":  w.AmountCents,
+			"tax_cents":     w.TaxCents,
+			"net_cents":     w.NetCents,
+			"status":        w.Status,
+			"remark":        w.Remark,
+			"paid_at":       w.PaidAt,
+			"created_at":    w.CreatedAt,
+		})
+	}
 	// 公司抬头（用于前端展示"请开给：xxx"，来自 .env 平台配置）
 	platformName := strings.TrimSpace(s.cfg.PlatformCompanyName)
 	if platformName == "" {
@@ -435,6 +455,7 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		"settlement_no":  st.SettlementNo,
 		"creator_id":     st.CreatorID,
 		"drama_summary":  s.settlementDramaSummarySafe(st.ID),  // 剧集收益汇总
+		"withdrawals":    wdViews,                               // 提现记录列表
 		"period":         st.Period,
 		"cycle_key":      st.CycleKey,   // 2026-07-06 加：半月度唯一键
 		"period_range":   st.PeriodRange, // 2026-07-06 加：实际起止日期
