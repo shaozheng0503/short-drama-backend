@@ -376,12 +376,8 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/withdrawals/:id/review", s.requireAdminRole(model.AdminRoleFinance), s.adminReviewWithdrawal)
 	adminAuth.GET("/withdrawals/:id/download.pdf", s.adminDownloadWithdrawalPDF) // 财务提现单 PDF
 
-	// === Admin 结算 & 发票审核（2026-07-01）===
-	adminAuth.GET("/invoices", s.adminListInvoices)
-	adminAuth.GET("/invoices/:id", s.adminGetInvoice)
-	// 0.14.0 删除：发票不能单独审核，状态跟随提现审核自动变更
-	// adminAuth.POST("/invoices/:id/approve", s.requireAdminRole(model.AdminRoleFinance), s.adminApproveInvoice)
-	// adminAuth.POST("/invoices/:id/reject", s.requireAdminRole(model.AdminRoleFinance), s.adminRejectInvoice)
+	// === Admin 结算（2026-07-01）===
+	// 0.14.0 删除发票列表/详情/审核接口（发票跟提现绑定，通过提现记录查看）
 	adminAuth.GET("/settlements", s.adminListSettlements)
 	adminAuth.GET("/settlements/:id", s.adminGetSettlement)
 	adminAuth.GET("/settlements/:id/download.pdf", s.adminDownloadSettlementPDF) // 财务 PDF 对账单
