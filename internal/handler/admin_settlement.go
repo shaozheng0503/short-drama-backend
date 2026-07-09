@@ -151,7 +151,6 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 		"cycle_key":     st.CycleKey,
 		"period_range":  st.PeriodRange,
 		"gross_cents":   st.GrossCents,
-		"tax_cents":     st.PlatformCents,
 		"net_cents":     st.NetCents,
 		"status":        st.Status,
 		"remark":        st.Remark,

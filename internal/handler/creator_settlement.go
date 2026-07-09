@@ -333,7 +333,6 @@ func (s *Server) batchDramaSummary(settlementIDs []uint64) map[uint64][]gin.H {
 			"drama_id":     r.DramaID,
 			"drama_title":  titleMap[r.DramaID],
 			"income_cents": r.IncomeCents,
-			"order_count":  r.OrderCount,
 		})
 	}
 	return result
@@ -416,7 +415,6 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		"cycle_key":      st.CycleKey,
 		"period_range":   st.PeriodRange,
 		"gross_cents":    st.GrossCents,
-		"tax_cents":      st.PlatformCents,
 		"net_cents":      st.NetCents,
 		"status":         st.Status,
 		"remark":         st.Remark,
