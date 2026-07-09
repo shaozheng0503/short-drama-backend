@@ -748,6 +748,38 @@ func (s *Server) adminListWithdrawals(c *gin.Context) {
 		}
 	}
 
+	// 0.14.0 批量查关联的结算单（通过 invoice.settlement_id）—— 返回结算周期
+	invoiceIDs := make([]uint64, 0, len(items))
+	for _, w := range items {
+		if w.InvoiceID != nil {
+			invoiceIDs = append(invoiceIDs, *w.InvoiceID)
+		}
+	}
+	invToSettlement := map[uint64]model.Settlement{}
+	if len(invoiceIDs) > 0 {
+		var invoices []model.Invoice
+		s.db.Select("id, settlement_id").Where("id IN ?", invoiceIDs).Find(&invoices)
+		sIDs := make([]uint64, 0, len(invoices))
+		for _, inv := range invoices {
+			if inv.SettlementID > 0 {
+				sIDs = append(sIDs, inv.SettlementID)
+			}
+		}
+		settlementMap := map[uint64]model.Settlement{}
+		if len(sIDs) > 0 {
+			var settlements []model.Settlement
+			s.db.Where("id IN ?", sIDs).Find(&settlements)
+			for _, st := range settlements {
+				settlementMap[st.ID] = st
+			}
+		}
+		for _, inv := range invoices {
+			if st, ok := settlementMap[inv.SettlementID]; ok {
+				invToSettlement[inv.ID] = st
+			}
+		}
+	}
+
 	list := make([]gin.H, 0, len(items))
 	for _, w := range items {
 		v := s.withdrawalView(w)
@@ -767,6 +799,16 @@ func (s *Server) adminListWithdrawals(c *gin.Context) {
 					v["bank_card_no"] = full
 					v["bank_card_no_full"] = full
 				}
+			}
+		}
+		// 0.14.0 返回结算周期
+		if w.InvoiceID != nil {
+			if st, ok := invToSettlement[*w.InvoiceID]; ok {
+				v["settlement_id"] = st.ID
+				v["settlement_no"] = st.SettlementNo
+				v["period"] = st.Period
+				v["cycle_key"] = st.CycleKey
+				v["period_range"] = st.PeriodRange
 			}
 		}
 		list = append(list, v)
