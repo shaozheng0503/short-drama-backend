@@ -35,13 +35,13 @@ func (s *Server) publisherDashboard(c *gin.Context) {
 	s.db.Model(&model.DistributorApplication{}).Where("distributor_id = ? AND status IN ?", id, []string{model.ClaimReviewPending, model.ClaimContractPending}).Count(&pendingClaims)
 
 	response.OK(c, gin.H{
-		"verify_status":          d.VerifyStatus,
-		"claimed_drama_count":    claimedCount,
+		"verify_status":           d.VerifyStatus,
+		"claimed_drama_count":     claimedCount,
 		"deposit_available_cents": d.DepositAvailableCents,
-		"deposit_frozen_cents":   d.DepositFrozenCents,
-		"deposit_deducted_cents": d.DepositDeductedCents,
-		"balance_cents":          d.BalanceCents,
-		"pending_claim_count":    pendingClaims,
+		"deposit_frozen_cents":    d.DepositFrozenCents,
+		"deposit_deducted_cents":  d.DepositDeductedCents,
+		"withdrawable_cents":      d.BalanceCents,
+		"pending_claim_count":     pendingClaims,
 	})
 }
 

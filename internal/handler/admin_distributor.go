@@ -374,7 +374,20 @@ func (s *Server) adminImportDistributorIncome(c *gin.Context) {
 
 	batchNo := fmt.Sprintf("BATCH%06d", time.Now().UnixMilli()%1000000)
 	successCount := 0
+	failedCount := 0
+	var failedReasons []string
 	for i, row := range rows {
+		// 验证 distributor_drama 关联存在性（发行商必须已认领该剧）
+		var ddCount int64
+		s.db.Model(&model.DistributorDrama{}).
+			Where("distributor_id = ? AND drama_id = ? AND status IN ?", row.DistributorID, row.DramaID, []string{"authorized", "active"}).
+			Count(&ddCount)
+		if ddCount == 0 {
+			failedCount++
+			failedReasons = append(failedReasons, fmt.Sprintf("row %d: 发行商 %d 未认领剧集 %d", i+1, row.DistributorID, row.DramaID))
+			continue
+		}
+
 		shareBP := 5500 // 55%
 		incomeCents := row.GrossCents * int64(shareBP) / 10000
 
@@ -390,6 +403,8 @@ func (s *Server) adminImportDistributorIncome(c *gin.Context) {
 			ImportRowNo:   i + 1,
 		}
 		if err := s.db.Create(&inc).Error; err != nil {
+			failedCount++
+			failedReasons = append(failedReasons, fmt.Sprintf("row %d: %v", i+1, err))
 			continue
 		}
 		// 累加发行商收益
@@ -402,10 +417,11 @@ func (s *Server) adminImportDistributorIncome(c *gin.Context) {
 	}
 
 	response.OK(c, gin.H{
-		"batch_no":       batchNo,
-		"total":          len(rows),
-		"success":        successCount,
-		"failed":         len(rows) - successCount,
+		"batch_no":        batchNo,
+		"total":           len(rows),
+		"success":         successCount,
+		"failed":          failedCount,
+		"failed_reasons":  failedReasons,
 	})
 }
 

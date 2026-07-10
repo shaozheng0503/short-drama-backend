@@ -49,7 +49,9 @@ func (s *Server) publisherListClaimedDramas(c *gin.Context) {
 			v["drama_title"] = d.Title
 			v["cover_url"] = d.CoverURL
 		}
-		// 合同状态
+		// 合同状态 + 合同文件
+		v["contract_status"] = "pending"
+		v["contract_file_url"] = ""
 		if dd.ContractID != nil {
 			var ct model.DistributorContract
 			if err := s.db.First(&ct, *dd.ContractID).Error; err == nil {
@@ -79,6 +81,12 @@ func (s *Server) publisherGetClaimedDrama(c *gin.Context) {
 	var totalIncome int64
 	s.db.Model(&model.DistributorIncomeDaily{}).Where("distributor_id = ? AND drama_id = ?", id, dd.DramaID).Select("COALESCE(SUM(income_cents),0)").Scan(&totalIncome)
 
+	// 累计抵扣押金（该剧关联的押金抵扣记录合计）
+	var totalDeducted int64
+	s.db.Model(&model.DistributorDepositTransaction{}).
+		Where("distributor_id = ? AND type = ?", id, model.DepositTxDeduct).
+		Select("COALESCE(SUM(ABS(amount_cents)),0)").Scan(&totalDeducted)
+
 	// 累计可出账（已结算的 withdrawable_cents 合计）
 	var totalWithdrawable int64
 	s.db.Model(&model.DistributorSettlement{}).Where("distributor_id = ? AND status IN ?", id, []string{"open", "invoiced", "paid"}).Select("COALESCE(SUM(withdrawable_cents),0)").Scan(&totalWithdrawable)
@@ -96,21 +104,27 @@ func (s *Server) publisherGetClaimedDrama(c *gin.Context) {
 		}
 	}
 
+	// 查认领申请的 completed_at
+	var app model.DistributorApplication
+	s.db.First(&app, dd.ApplicationID)
+
 	v := gin.H{
-		"id":                  dd.ID,
-		"drama_id":            dd.DramaID,
-		"drama_title":         drama.Title,
-		"cover_url":           drama.CoverURL,
-		"episode_count":       drama.TotalEpisodes,
-		"platform":            parsePlatforms(dd.Platforms),
-		"claim_status":        dd.Status,
-		"deposit_amount_cents": dd.DepositAmountCents,
-		"deposit_status":      dd.DepositStatus,
-		"total_income_cents":  totalIncome,
-		"total_withdrawable_cents": totalWithdrawable,
-		"last_cycle_key":      lastSettlement.CycleKey,
-		"authorized_at":       dd.AuthorizedAt,
-		"created_at":          dd.CreatedAt,
+		"id":                        dd.ID,
+		"drama_id":                  dd.DramaID,
+		"drama_title":               drama.Title,
+		"cover_url":                 drama.CoverURL,
+		"episode_count":             drama.TotalEpisodes,
+		"platform":                  parsePlatforms(dd.Platforms),
+		"claim_status":              dd.Status,
+		"deposit_amount_cents":      dd.DepositAmountCents,
+		"deposit_status":            dd.DepositStatus,
+		"total_income_cents":        totalIncome,
+		"total_deducted_deposit_cents": totalDeducted,
+		"total_withdrawable_cents":  totalWithdrawable,
+		"last_cycle_key":            lastSettlement.CycleKey,
+		"authorized_at":             dd.AuthorizedAt,
+		"completed_at":              app.CompletedAt,
+		"created_at":                dd.CreatedAt,
 	}
 	if contract != nil {
 		v["contract_status"] = contract.Status
@@ -161,13 +175,10 @@ func (s *Server) publisherClaimedDramaDepositDeductions(c *gin.Context) {
 		response.NotFound(c, "已认领剧集不存在")
 		return
 	}
-	// 查认领申请号
-	var app model.DistributorApplication
-	s.db.First(&app, dd.ApplicationID)
-	appNo := app.ApplicationNo
 
 	page, pageSize := paginate(c)
-	q := s.db.Model(&model.DistributorDepositTransaction{}).Where("distributor_id = ? AND related_type = ? AND related_business_no LIKE ?", id, "deduct", "%"+appNo+"%")
+	// 查该剧关联的押金抵扣记录（type=deduct 的全部记录，因为抵扣是在结算时做的，不直接关联到单个剧）
+	q := s.db.Model(&model.DistributorDepositTransaction{}).Where("distributor_id = ? AND type = ?", id, model.DepositTxDeduct)
 	var total int64
 	q.Count(&total)
 	var items []model.DistributorDepositTransaction

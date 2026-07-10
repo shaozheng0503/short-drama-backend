@@ -66,18 +66,32 @@ func (s *Server) publisherGetSettlement(c *gin.Context) {
 		return
 	}
 
-	// 剧集收益汇总
+	// 剧集收益汇总 — 从 period_range 提取起止日期
 	type dramaIncomeRow struct {
 		DramaID     uint64
 		DramaTitle  string
 		IncomeCents int64
 	}
+	// period_range 格式: "2026-07-16 ~ 2026-07-31"
+	startDate := ""
+	endDate := ""
+	if len(st.PeriodRange) >= 21 {
+		startDate = st.PeriodRange[:10]
+		endDate = st.PeriodRange[len(st.PeriodRange)-10:]
+	} else if st.PeriodRange != "" {
+		// fallback: 尝试用 cycle_key 月份
+		startDate = st.CycleKey[:7] + "-01"
+		endDate = st.CycleKey[:7] + "-31"
+	}
+
 	var dramaRows []dramaIncomeRow
-	s.db.Table("distributor_income_daily").
+	q := s.db.Table("distributor_income_daily").
 		Select("drama_id, '' as drama_title, COALESCE(SUM(income_cents),0) as income_cents").
-		Where("distributor_id = ? AND stat_date >= ? AND stat_date <= ?",
-			id, st.PeriodRange[:10], st.PeriodRange[len(st.PeriodRange)-10:]).
-		Group("drama_id").Scan(&dramaRows)
+		Where("distributor_id = ?", id)
+	if startDate != "" && endDate != "" {
+		q = q.Where("stat_date >= ? AND stat_date <= ?", startDate, endDate)
+	}
+	q.Group("drama_id").Scan(&dramaRows)
 	// 查剧名
 	for i, r := range dramaRows {
 		var title string
@@ -173,6 +187,13 @@ type publisherWithdrawalRequest struct {
 // POST /v1/publisher/withdrawals —— 提交提现申请
 func (s *Server) publisherCreateWithdrawal(c *gin.Context) {
 	id := middleware.CurrentID(c)
+
+	// 业务规则：未认证用户不可发起提现
+	if !s.isDistributorVerified(id) {
+		response.Forbidden(c, "未认证用户不可发起提现，请先完成企业认证")
+		return
+	}
+
 	var req publisherWithdrawalRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.InvalidParam(c, "settlement_id 必填")
@@ -288,14 +309,22 @@ func (s *Server) publisherListWithdrawals(c *gin.Context) {
 
 	list := make([]gin.H, 0, len(items))
 	for _, w := range items {
+		// processed_at = paid_at 或 reviewed_at（取有值的最后一个）
+		var processedAt *time.Time
+		if w.PaidAt != nil {
+			processedAt = w.PaidAt
+		} else if w.ReviewedAt != nil {
+			processedAt = w.ReviewedAt
+		}
 		v := gin.H{
-			"id":             w.ID,
-			"withdrawal_no":  w.WithdrawalNo,
-			"amount_cents":   w.AmountCents,
-			"status":         w.Status,
-			"created_at":     w.CreatedAt,
-			"reviewed_at":    w.ReviewedAt,
-			"paid_at":        w.PaidAt,
+			"id":            w.ID,
+			"withdrawal_no": w.WithdrawalNo,
+			"amount_cents":  w.AmountCents,
+			"status":        w.Status,
+			"created_at":    w.CreatedAt,
+			"reviewed_at":   w.ReviewedAt,
+			"paid_at":       w.PaidAt,
+			"processed_at":  processedAt,
 		}
 		if st, ok := stMap[w.SettlementID]; ok {
 			v["settlement_no"] = st.SettlementNo
@@ -322,6 +351,14 @@ func (s *Server) publisherGetWithdrawal(c *gin.Context) {
 	var d model.Distributor
 	s.db.First(&d, id)
 
+	// processed_at = paid_at 或 reviewed_at
+	var processedAt *time.Time
+	if w.PaidAt != nil {
+		processedAt = w.PaidAt
+	} else if w.ReviewedAt != nil {
+		processedAt = w.ReviewedAt
+	}
+
 	v := gin.H{
 		"id":             w.ID,
 		"withdrawal_no":  w.WithdrawalNo,
@@ -333,6 +370,7 @@ func (s *Server) publisherGetWithdrawal(c *gin.Context) {
 		"created_at":     w.CreatedAt,
 		"reviewed_at":    w.ReviewedAt,
 		"paid_at":        w.PaidAt,
+		"processed_at":   processedAt,
 		"remark":         w.Remark,
 		"transaction_no": w.TransactionNo,
 		"creator_party": gin.H{

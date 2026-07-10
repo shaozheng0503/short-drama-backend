@@ -26,6 +26,13 @@ type createClaimRequest struct {
 // POST /v1/publisher/claims —— 创建认领申请
 func (s *Server) publisherCreateClaim(c *gin.Context) {
 	id := middleware.CurrentID(c)
+
+	// 业务规则：未认证用户不可认领剧集
+	if !s.isDistributorVerified(id) {
+		response.Forbidden(c, "未认证用户不可认领剧集，请先完成企业认证")
+		return
+	}
+
 	var req createClaimRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.InvalidParam(c, "drama_id 和 platforms 必填")
@@ -208,11 +215,13 @@ func (s *Server) publisherSubmitClaim(c *gin.Context) {
 
 // claimView 认领申请视图
 func (s *Server) claimView(claim model.DistributorApplication) gin.H {
+	platforms := parsePlatforms(claim.Platforms)
 	v := gin.H{
 		"claim_id":                claim.ID,
 		"application_no":          claim.ApplicationNo,
 		"drama_id":                claim.DramaID,
-		"platforms":               parsePlatforms(claim.Platforms),
+		"platforms":               platforms,
+		"platform":                platforms, // 文档字段名，与 platforms 同义
 		"deposit_amount_cents":    claim.DepositAmountCents,
 		"deposit_status":          claim.DepositStatus,
 		"authorization_confirmed": claim.AuthorizationConfirmed,
@@ -222,6 +231,7 @@ func (s *Server) claimView(claim model.DistributorApplication) gin.H {
 		"reject_reason":           claim.RejectReason,
 		"completed_at":            claim.CompletedAt,
 		"created_at":              claim.CreatedAt,
+		"reviewed_at":             claim.ReviewedAt,
 	}
 	// 剧名
 	var drama model.Drama
