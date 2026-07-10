@@ -473,6 +473,28 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/contracts/:id/cancel", s.adminCancelContract)
 	adminAuth.POST("/contracts/:id/esign", s.adminEsignContract)
 
+	// === Admin 发行商管理（0.15.0）===
+	adminAuth.GET("/distributors", s.adminListDistributors)
+	adminAuth.GET("/distributors/:id", s.adminGetDistributor)
+	adminAuth.POST("/distributors/:id/verification/approve", s.requireAdminRole(model.AdminRoleAuditor), s.adminApproveDistributorVerification)
+	adminAuth.POST("/distributors/:id/verification/reject", s.requireAdminRole(model.AdminRoleAuditor), s.adminRejectDistributorVerification)
+	adminAuth.POST("/distributors/:id/ban", s.adminBanDistributor)
+	adminAuth.POST("/distributors/:id/unban", s.adminUnbanDistributor)
+	// 认领审核
+	adminAuth.GET("/distributor-claims", s.adminListDistributorClaims)
+	adminAuth.POST("/distributor-claims/:id/approve", s.requireAdminRole(model.AdminRoleAuditor), s.adminApproveClaim)
+	adminAuth.POST("/distributor-claims/:id/reject", s.requireAdminRole(model.AdminRoleAuditor), s.adminRejectClaim)
+	adminAuth.POST("/distributor-claims/:id/contract", s.requireAdminRole(model.AdminRoleAuditor), s.adminUploadContract)
+	// 收益导入
+	adminAuth.POST("/finance/distributor-income/import", s.requireAdminRole(model.AdminRoleFinance), s.adminImportDistributorIncome)
+	// 结算管理
+	adminAuth.GET("/distributor-settlements", s.adminListDistributorSettlements)
+	adminAuth.POST("/distributor-settlements/generate", s.requireAdminRole(model.AdminRoleFinance), s.adminGenerateDistributorSettlement)
+	// 提现管理
+	adminAuth.GET("/distributor-withdrawals", s.adminListDistributorWithdrawals)
+	adminAuth.POST("/distributor-withdrawals/:id/review", s.requireAdminRole(model.AdminRoleFinance), s.adminReviewDistributorWithdrawal)
+	adminAuth.POST("/distributor-withdrawals/:id/mark-paid", s.requireAdminRole(model.AdminRoleFinance), s.adminMarkPaidDistributorWithdrawal)
+
 	// === Webhooks（公开，由 provider 自己验签）===
 	webhooks := v1.Group("/webhooks")
 	webhooks.POST("/wechat/pay", s.webhookWechatPay)
