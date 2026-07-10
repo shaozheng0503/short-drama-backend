@@ -309,6 +309,46 @@ func (s *Server) Router() *gin.Engine {
 	distAuth.POST("/verification/biz-license/ocr", s.distributorBizLicenseOCR)
 	distAuth.GET("/deposit/balance", s.distributorDepositBalance)
 
+	// === Publisher（发行商 /publisher，0.15.0）===
+	pub := v1.Group("/publisher")
+	pub.POST("/auth/login", s.distributorLogin) // 复用 distributor 登录
+	pubAuth := pub.Group("")
+	pubAuth.Use(middleware.RequireDistributor(s.cfg))
+	pubAuth.Use(s.requireActiveDistributor())
+	pubAuth.GET("/me", s.distributorMe)
+	pubAuth.PUT("/me", s.distributorUpdateMe)
+	pubAuth.GET("/profile/verification", s.distributorVerificationStatus)
+	pubAuth.POST("/profile/verification", s.distributorUpdateEnterpriseVerification)
+	pubAuth.POST("/upload", s.publisherUpload)
+	pubAuth.GET("/dashboard", s.publisherDashboard)
+	// 剧集广场
+	pubAuth.GET("/dramas", s.publisherListDramas)
+	pubAuth.GET("/dramas/:id", s.publisherGetDrama)
+	// 认领
+	pubAuth.GET("/claims", s.publisherListClaims)
+	pubAuth.POST("/claims", s.publisherCreateClaim)
+	pubAuth.GET("/claims/:id", s.publisherGetClaim)
+	pubAuth.POST("/claims/:id/deposit", s.publisherPayDeposit)
+	pubAuth.POST("/claims/:id/submit", s.publisherSubmitClaim)
+	// 已认领剧集
+	pubAuth.GET("/claimed-dramas", s.publisherListClaimedDramas)
+	pubAuth.GET("/claimed-dramas/:id", s.publisherGetClaimedDrama)
+	pubAuth.GET("/claimed-dramas/:id/income-records", s.publisherClaimedDramaIncomeRecords)
+	pubAuth.GET("/claimed-dramas/:id/deposit-deductions", s.publisherClaimedDramaDepositDeductions)
+	// 押金
+	pubAuth.GET("/deposit/account", s.publisherDepositAccount)
+	pubAuth.POST("/deposit/recharge", s.publisherRecharge)
+	pubAuth.GET("/deposit/transactions", s.publisherDepositTransactions)
+	// 结算
+	pubAuth.GET("/settlements/summary", s.publisherSettlementSummary)
+	pubAuth.GET("/settlements", s.publisherListSettlements)
+	pubAuth.GET("/settlements/:id", s.publisherGetSettlement)
+	pubAuth.GET("/settlements/:id/withdrawal-preview", s.publisherWithdrawalPreview)
+	// 提现
+	pubAuth.GET("/withdrawals", s.publisherListWithdrawals)
+	pubAuth.POST("/withdrawals", s.publisherCreateWithdrawal)
+	pubAuth.GET("/withdrawals/:id", s.publisherGetWithdrawal)
+
 	// === Admin ===
 	admin := v1.Group("/admin")
 	admin.POST("/auth/login", s.adminLogin)
