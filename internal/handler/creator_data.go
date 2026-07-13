@@ -260,16 +260,25 @@ func (s *Server) creatorListDramas(c *gin.Context) {
 		if cats == nil {
 			cats = []gin.H{} // 前端遍历友好：永远是数组，不出现 null
 		}
+		// 草稿状态：审核维度显示 not_submitted，避免前端误显示"审核中"
+		auditStatus := d.AuditStatus
+		contentAuditStatus := d.ContentAuditStatus
+		videoAuditStatus := d.VideoAuditStatus
+		if d.Status == model.DramaStatusDraft {
+			auditStatus = "not_submitted"
+			contentAuditStatus = "not_submitted"
+			videoAuditStatus = "not_submitted"
+		}
 		list = append(list, gin.H{
 			"id":                   d.ID,
 			"title":                d.Title,
 			"cover_url":            d.CoverURL,
 			"status":               d.Status,
-			"audit_status":         d.AuditStatus,
+			"audit_status":         auditStatus,
 			"audit_reason":         d.AuditReason,
-			"content_audit_status": d.ContentAuditStatus, // 分批审核：资料内容维度
+			"content_audit_status": contentAuditStatus, // 分批审核：资料内容维度
 			"content_audit_reason": d.ContentAuditReason,
-			"video_audit_status":   d.VideoAuditStatus, // 分批审核：视频内容维度
+			"video_audit_status":   videoAuditStatus, // 分批审核：视频内容维度
 			"video_audit_reason":   d.VideoAuditReason,
 			"total_episodes":       d.TotalEpisodes,
 			"audience":             d.Audience,

@@ -18,6 +18,10 @@ func adminDramaListItemView(
 	if auditStatus == "" {
 		auditStatus = model.DramaAuditApproved
 	}
+	// 草稿状态：审核维度显示 not_submitted，避免前端误显示"审核中"
+	if d.Status == model.DramaStatusDraft {
+		auditStatus = "not_submitted"
+	}
 	contractAudit := contractStatusToAudit(contractStatus)
 
 	publishStatus := "unpublished"

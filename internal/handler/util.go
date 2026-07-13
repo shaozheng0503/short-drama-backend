@@ -101,6 +101,15 @@ func dramaCardView(d model.Drama, freeEpisodes int) gin.H {
 }
 
 func dramaAdminView(d model.Drama, categoryName, creatorName string) gin.H {
+	// 草稿状态：审核维度统一显示 not_submitted，避免前端把 pending 误显示为"审核中"
+	auditStatus := d.AuditStatus
+	contentAuditStatus := d.ContentAuditStatus
+	videoAuditStatus := d.VideoAuditStatus
+	if d.Status == model.DramaStatusDraft {
+		auditStatus = "not_submitted"
+		contentAuditStatus = "not_submitted"
+		videoAuditStatus = "not_submitted"
+	}
 	view := gin.H{
 		"id":             d.ID,
 		"title":          d.Title,
@@ -115,12 +124,12 @@ func dramaAdminView(d model.Drama, categoryName, creatorName string) gin.H {
 		"price_cents":    d.PriceCents,
 		"sort_order":     d.SortOrder,
 		"status":         d.Status,
-		"audit_status":   d.AuditStatus, // 派生总状态：资料✓且视频✓才 approved
+		"audit_status":   auditStatus, // 派生总状态：资料✓且视频✓才 approved；草稿→not_submitted
 		"audit_reason":   d.AuditReason,
 		// 分批审核维度（资料内容 / 视频内容），各带状态 + 备注；前端可展示"哪项没过、原因"
-		"content_audit_status": d.ContentAuditStatus,
+		"content_audit_status": contentAuditStatus,
 		"content_audit_reason": d.ContentAuditReason,
-		"video_audit_status":   d.VideoAuditStatus,
+		"video_audit_status":   videoAuditStatus,
 		"video_audit_reason":   d.VideoAuditReason,
 		"audit_submitted_at":   d.AuditSubmittedAt,
 		"reviewer_id":          d.ReviewerID,
