@@ -530,6 +530,27 @@ func (s *Server) adminApproveDrama(c *gin.Context) {
 	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
 }
 
+// adminSetDistributable —— 开关剧集发行商认领。
+// PUT /admin/dramas/:id/distributable  body {"distributable": true/false}
+func (s *Server) adminSetDistributable(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	var drama model.Drama
+	if err := s.db.First(&drama, id).Error; err != nil {
+		response.NotFound(c, "剧集不存在")
+		return
+	}
+	var req struct {
+		Distributable bool `json:"distributable"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "distributable 必填")
+		return
+	}
+	s.db.Model(&drama).Update("distributable", req.Distributable)
+	s.db.First(&drama, id)
+	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
+}
+
 // adminAuditDrama —— 分批审核：按维度(content=资料内容 / video=视频内容)分别通过/驳回。
 // POST /admin/dramas/:id/audit  body {dimension, action(approve/reject), reason}
 // 写入该维度后重算派生总状态(audit_status)：两维度全通过→approved→awaiting_publish+签约+通知；

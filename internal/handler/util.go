@@ -159,6 +159,7 @@ func dramaAdminView(d model.Drama, categoryName, creatorName string) gin.H {
 		"favorite_count":        d.FavoriteCount,
 		"share_count":           d.ShareCount,
 		"published_at":          d.PublishedAt,
+		"distributable":         d.Distributable == nil || *d.Distributable, // 是否开放发行商认领
 		"created_at":            d.CreatedAt,
 		"updated_at":            d.UpdatedAt,
 	}

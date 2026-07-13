@@ -375,6 +375,8 @@ type Drama struct {
 	ShareCount    int64      `gorm:"column:share_count;default:0" json:"share_count"`
 	SortOrder     int        `gorm:"column:sort_order;default:0" json:"sort_order"`
 	PublishedAt   *time.Time `gorm:"column:published_at" json:"published_at"`
+	// Distributable —— 是否开放发行商认领（admin 手动开关，默认 true：已上架剧自动开放发行）
+	Distributable *bool      `gorm:"column:distributable;default:true" json:"distributable"`
 	CreatedAt     time.Time  `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt     time.Time  `gorm:"column:updated_at" json:"updated_at"`
 }

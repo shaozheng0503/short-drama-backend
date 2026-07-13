@@ -42,10 +42,13 @@ func (s *Server) publisherListDramas(c *gin.Context) {
 
 	list := make([]gin.H, 0, len(dramas))
 	distID := middleware.CurrentID(c)
+	verified := s.isDistributorVerified(distID)
 	for _, d := range dramas {
 		platforms := releasedPlatforms[d.ID]
 		available := getAvailablePlatforms(platforms)
-		claimable := d.Status == "published" && len(available) > 0 && s.isDistributorVerified(distID)
+		// claimable 只表示剧集本身是否可认领（已上架 + 有可发行平台 + 开放发行）
+		// 发行商认证状态单独通过 can_claim 表示，前端据此提示"请先认证"
+		distributable := d.Status == "published" && len(available) > 0 && isDistributable(d)
 		list = append(list, gin.H{
 			"id":                  d.ID,
 			"title":               d.Title,
@@ -54,7 +57,8 @@ func (s *Server) publisherListDramas(c *gin.Context) {
 			"price_cents":         d.PriceCents,
 			"available_platforms": available,
 			"released_platforms":  uniqueStrings(platforms),
-			"claimable":           claimable,
+			"claimable":           distributable,
+			"can_claim":           distributable && verified,
 		})
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
@@ -84,6 +88,7 @@ func (s *Server) publisherGetDrama(c *gin.Context) {
 
 	// 保证金计算预览
 	distID := middleware.CurrentID(c)
+	verified := s.isDistributorVerified(distID)
 	depositExamples := map[string]int64{}
 	for _, p := range available {
 		depositExamples[p] = s.calcDepositAmount(drama, []string{p})
@@ -91,6 +96,8 @@ func (s *Server) publisherGetDrama(c *gin.Context) {
 	if len(available) >= 2 {
 		depositExamples["all"] = s.calcDepositAmount(drama, available)
 	}
+
+	distributable := drama.Status == "published" && len(available) > 0 && isDistributable(drama)
 
 	response.OK(c, gin.H{
 		"id":                  drama.ID,
@@ -106,7 +113,8 @@ func (s *Server) publisherGetDrama(c *gin.Context) {
 			"platform_rate":   "每增加一个平台 +15%",
 			"deposit_examples": depositExamples,
 		},
-		"claimable": drama.Status == "published" && len(available) > 0 && s.isDistributorVerified(distID),
+		"claimable": distributable,
+		"can_claim": distributable && verified,
 	})
 }
 
@@ -120,6 +128,11 @@ func (s *Server) isDistributorVerified(id uint64) bool {
 		return false
 	}
 	return d.VerifyStatus == model.DistributorVerifyVerified
+}
+
+// isDistributable 判断剧集是否开放发行（Distributable 为 nil 或 true 都视为开放）
+func isDistributable(d model.Drama) bool {
+	return d.Distributable == nil || *d.Distributable
 }
 
 // getAvailablePlatforms 返回未发行的平台
