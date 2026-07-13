@@ -31,6 +31,10 @@ type Config struct {
 	RateLimitRPS     float64
 	RateLimitBurst   int
 
+	// 上传签名类路由专用限流（前端批量上传时密集调用 vod-sign / image-sign）
+	RateLimitUploadRPS   float64
+	RateLimitUploadBurst int
+
 	AlertEnabled    bool
 	AlertWebhookURL string
 	AlertTimeout    time.Duration
@@ -168,6 +172,9 @@ func Load() Config {
 		RateLimitEnabled: getEnvBool("RATE_LIMIT_ENABLED", true), // 默认开：新部署忘配也有兜底抗滥用
 		RateLimitRPS:     getEnvFloat("RATE_LIMIT_RPS", 20),
 		RateLimitBurst:   getEnvInt("RATE_LIMIT_BURST", 40),
+		// 上传签名类路由：默认 60 RPS、burst 100，足够前端批量上传 10+ 集时连续获取签名
+		RateLimitUploadRPS:   getEnvFloat("RATE_LIMIT_UPLOAD_RPS", 60),
+		RateLimitUploadBurst: getEnvInt("RATE_LIMIT_UPLOAD_BURST", 100),
 		AlertEnabled:     getEnvBool("ALERT_ENABLED", false),
 		AlertWebhookURL:  getEnv("ALERT_WEBHOOK_URL", ""),
 		AlertTimeout:     time.Duration(getEnvInt("ALERT_TIMEOUT_SECONDS", 3)) * time.Second,

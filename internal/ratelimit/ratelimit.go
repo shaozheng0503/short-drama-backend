@@ -18,6 +18,10 @@ type Middleware struct {
 	rps     rate.Limit
 	burst   int
 
+	// uploadRPS / uploadBurst：上传签名类路由的专用限流（比全局更高，因为前端批量上传时会在短时间内连续请求 vod-sign）
+	uploadRPS   rate.Limit
+	uploadBurst int
+
 	mu              sync.Mutex
 	limiters        map[string]*visitorLimiter
 	lastCleanup     time.Time
@@ -35,9 +39,25 @@ func New(cfg config.Config) *Middleware {
 		enabled:         cfg.RateLimitEnabled,
 		rps:             rate.Limit(cfg.RateLimitRPS),
 		burst:           cfg.RateLimitBurst,
+		uploadRPS:       rate.Limit(cfg.RateLimitUploadRPS),
+		uploadBurst:     cfg.RateLimitUploadBurst,
 		limiters:        map[string]*visitorLimiter{},
 		cleanupInterval: time.Minute,
 		visitorTTL:      10 * time.Minute,
+	}
+}
+
+// isUploadRoute 判断是否为上传签名类路由（轻量接口，前端批量上传时会密集调用）
+func isUploadRoute(route string) bool {
+	switch route {
+	case "/v1/creator/uploads/vod-sign",
+		"/v1/creator/uploads/image-sign",
+		"/v1/admin/uploads/vod-sign",
+		"/v1/admin/uploads/contract-sign",
+		"/v1/common/uploads/image-sign":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -58,7 +78,7 @@ func (m *Middleware) Handler() gin.HandlerFunc {
 		if route == "" {
 			route = "_unmatched"
 		}
-		if !m.allow(c.ClientIP() + ":" + route) {
+		if !m.allow(c.ClientIP()+":"+route, isUploadRoute(route)) {
 			c.JSON(http.StatusTooManyRequests, response.Body{
 				Code:    response.CodeRateLimited,
 				Message: "请求过于频繁，请稍后重试",
@@ -71,14 +91,18 @@ func (m *Middleware) Handler() gin.HandlerFunc {
 	}
 }
 
-func (m *Middleware) allow(key string) bool {
+func (m *Middleware) allow(key string, isUpload bool) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	now := time.Now()
 	item, ok := m.limiters[key]
 	if !ok {
-		item = &visitorLimiter{limiter: rate.NewLimiter(m.rps, m.burst)}
+		if isUpload {
+			item = &visitorLimiter{limiter: rate.NewLimiter(m.uploadRPS, m.uploadBurst)}
+		} else {
+			item = &visitorLimiter{limiter: rate.NewLimiter(m.rps, m.burst)}
+		}
 		m.limiters[key] = item
 	}
 	item.lastSeen = now

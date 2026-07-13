@@ -451,6 +451,16 @@ func (s *Server) creatorRefreshEpisodeVOD(c *gin.Context) {
 	if info.VideoURL != "" && ep.Status != model.EpisodeStatusReady {
 		updates["status"] = model.EpisodeStatusReady
 	}
+	// 如果 VOD 文件存在但 VideoURL 仍为空，说明文件还在上传中/转码中，不改状态
+	if info.VideoURL == "" {
+		response.OK(c, gin.H{
+			"updated":  false,
+			"episode":  episodeAdminView(*ep),
+			"vod_status": "uploading",
+			"hint":     "VOD 文件仍在上传或转码中，请稍后再试",
+		})
+		return
+	}
 	if len(updates) == 0 {
 		response.OK(c, gin.H{"updated": false, "episode": episodeAdminView(*ep)})
 		return
