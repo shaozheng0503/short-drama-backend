@@ -904,11 +904,11 @@ const (
 
 	// 0.15.0 认领流程状态
 	ClaimDepositPending    = "deposit_pending"     // 待支付押金
-	ClaimAuthPending       = "authorization_pending" // 待手动授权
-	ClaimReviewPending     = "review_pending"       // 待审核
-	ClaimContractPending   = "contract_pending"     // 待签署合同
-	ClaimCompleted         = "completed"            // 已完成
-	ClaimRejected          = "rejected"             // 已驳回
+	ClaimAuthPending       = "auth_pending"        // 待手动授权
+	ClaimReviewPending     = "review_pending"      // 待审核
+	ClaimContractPending   = "contract_pending"    // 待签署合同
+	ClaimCompleted         = "completed"           // 已完成
+	ClaimRejected          = "rejected"            // 已驳回
 )
 
 // 认领押金状态
