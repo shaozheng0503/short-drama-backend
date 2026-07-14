@@ -394,18 +394,26 @@ type DramaCover struct {
 
 func (DramaCover) TableName() string { return "drama_covers" }
 
-// DramaCharacter —— 角色信息（至少 1 位）。姓名必填，照片/简介选填。
+// DramaCharacter —— 角色信息（至少 1 位）。姓名必填，照片/简介/性质选填。
 type DramaCharacter struct {
 	ID        uint64    `gorm:"primaryKey;column:id" json:"id"`
 	DramaID   uint64    `gorm:"column:drama_id;index" json:"drama_id"`
 	Name      string    `gorm:"column:name;size:64" json:"name"`
 	PhotoURL  string    `gorm:"column:photo_url;size:512" json:"photo_url"`
 	Intro     string    `gorm:"column:intro;type:text" json:"intro"`
+	Role      string    `gorm:"column:role;size:20;default:cast" json:"role"` // lead=主角 / supporting=配角 / cast=参演
 	SortOrder int       `gorm:"column:sort_order;default:0" json:"sort_order"`
 	CreatedAt time.Time `gorm:"column:created_at" json:"created_at"`
 }
 
 func (DramaCharacter) TableName() string { return "drama_characters" }
+
+// 角色性质枚举
+const (
+	CharacterRoleLead       = "lead"       // 主角
+	CharacterRoleSupporting = "supporting" // 配角
+	CharacterRoleCast       = "cast"       // 参演
+)
 
 // Episode —— 剧集（MVP 数据库设计 3.7）
 type Episode struct {

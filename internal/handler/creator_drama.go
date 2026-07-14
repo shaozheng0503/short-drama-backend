@@ -64,11 +64,12 @@ func normalizeTags(in []string) []string {
 	return out
 }
 
-// characterInput —— 角色录入。姓名必填，照片/简介选填。
+// characterInput —— 角色录入。姓名必填，照片/简介/性质选填。
 type characterInput struct {
 	Name     string `json:"name"`
 	PhotoURL string `json:"photo_url"`
 	Intro    string `json:"intro"`
+	Role     string `json:"role"` // lead=主角 / supporting=配角 / cast=参演（默认 cast）
 }
 
 // creatorDramaRequest —— 创作者侧的创建/更新载荷。
@@ -231,11 +232,18 @@ func (s *Server) replaceDramaCharacters(tx *gorm.DB, dramaID uint64, chars []cha
 		return err
 	}
 	for i, ch := range chars {
+		// 规范化 role：只接受 lead/supporting/cast，其他一律按 cast
+		role := model.CharacterRoleCast
+		switch ch.Role {
+		case model.CharacterRoleLead, model.CharacterRoleSupporting:
+			role = ch.Role
+		}
 		row := model.DramaCharacter{
 			DramaID:   dramaID,
 			Name:      ch.Name,
 			PhotoURL:  ch.PhotoURL,
 			Intro:     ch.Intro,
+			Role:      role,
 			SortOrder: i,
 		}
 		if err := tx.Create(&row).Error; err != nil {
@@ -281,7 +289,8 @@ func (s *Server) loadDramaExtras(dramaID uint64) (covers []gin.H, characters []g
 	characters = make([]gin.H, 0, len(charRows))
 	for _, ch := range charRows {
 		characters = append(characters, gin.H{
-			"id": ch.ID, "name": ch.Name, "photo_url": ch.PhotoURL, "intro": ch.Intro, "sort_order": ch.SortOrder,
+			"id": ch.ID, "name": ch.Name, "photo_url": ch.PhotoURL, "intro": ch.Intro,
+			"role": ch.Role, "sort_order": ch.SortOrder,
 		})
 	}
 	return covers, characters
