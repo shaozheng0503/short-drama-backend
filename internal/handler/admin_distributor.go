@@ -144,7 +144,7 @@ func (s *Server) adminListDistributorClaims(c *gin.Context) {
 	var items []model.DistributorApplication
 	q.Order("created_at desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&items)
 
-	// 批量查发行商名 + 剧名
+	// 批量查发行商名 + 剧名 + 封面
 	distIDs := make([]uint64, 0, len(items))
 	dramaIDs := make([]uint64, 0, len(items))
 	for _, cl := range items {
@@ -159,32 +159,38 @@ func (s *Server) adminListDistributorClaims(c *gin.Context) {
 			distMap[d.ID] = distributorName(&d)
 		}
 	}
-	dramaMap := map[uint64]string{}
+	type dramaInfo struct {
+		Title    string
+		CoverURL string
+	}
+	dramaMap := map[uint64]dramaInfo{}
 	if len(dramaIDs) > 0 {
 		var dramas []model.Drama
-		s.db.Select("id, title").Where("id IN ?", dramaIDs).Find(&dramas)
+		s.db.Select("id, title, cover_url").Where("id IN ?", dramaIDs).Find(&dramas)
 		for _, d := range dramas {
-			dramaMap[d.ID] = d.Title
+			dramaMap[d.ID] = dramaInfo{Title: d.Title, CoverURL: d.CoverURL}
 		}
 	}
 
 	list := make([]gin.H, 0, len(items))
 	for _, cl := range items {
+		di := dramaMap[cl.DramaID]
 		list = append(list, gin.H{
-			"id":                  cl.ID,
-			"application_no":      cl.ApplicationNo,
-			"distributor_id":      cl.DistributorID,
-			"distributor_name":    distMap[cl.DistributorID],
-			"drama_id":            cl.DramaID,
-			"drama_title":         dramaMap[cl.DramaID],
-			"platforms":           parsePlatforms(cl.Platforms),
+			"id":                   cl.ID,
+			"application_no":       cl.ApplicationNo,
+			"distributor_id":       cl.DistributorID,
+			"distributor_name":     distMap[cl.DistributorID],
+			"drama_id":             cl.DramaID,
+			"drama_title":          di.Title,
+			"drama_cover_url":      di.CoverURL,
+			"platforms":            parsePlatforms(cl.Platforms),
 			"deposit_amount_cents": cl.DepositAmountCents,
-			"deposit_status":      cl.DepositStatus,
-			"status":              cl.Status,
-			"contract_status":     cl.ContractStatus,
-			"reject_reason":       cl.RejectReason,
-			"created_at":          cl.CreatedAt,
-			"reviewed_at":         cl.ReviewedAt,
+			"deposit_status":       cl.DepositStatus,
+			"status":               cl.Status,
+			"contract_status":      cl.ContractStatus,
+			"reject_reason":        cl.RejectReason,
+			"created_at":           cl.CreatedAt,
+			"reviewed_at":          cl.ReviewedAt,
 		})
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
@@ -300,13 +306,14 @@ func (s *Server) adminRejectClaim(c *gin.Context) {
 }
 
 // POST /admin/distributor-claims/:id/contract —— 上传合同 + 标记完成
+// 前端流程：先调 POST /admin/uploads/contract-sign 拿 upload_url + key → PUT 上传 PDF → 回填 contract_file_key 到本接口
 func (s *Server) adminUploadContract(c *gin.Context) {
 	claimID := parseUint(c.Param("id"))
 	var req struct {
-		ContractFileURL string `json:"contract_file_url" binding:"required"`
+		ContractFileKey string `json:"contract_file_key" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.InvalidParam(c, "contract_file_url 必填")
+		response.InvalidParam(c, "contract_file_key 必填")
 		return
 	}
 	var claim model.DistributorApplication
@@ -319,13 +326,16 @@ func (s *Server) adminUploadContract(c *gin.Context) {
 		return
 	}
 
+	// 生成公开访问 URL（合同 PDF 存私有 COS，这里生成短时 presigned GET 下载链接）
+	contractFileURL := s.cos.PublicURL(req.ContractFileKey)
+
 	now := time.Now()
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		// 更新认领状态为已完成
+		// 更新认领状态为已完成，同时存 key 和 presigned URL
 		if err := tx.Model(&claim).Updates(map[string]interface{}{
 			"status":            model.ClaimCompleted,
 			"contract_status":   "completed",
-			"contract_file_url": req.ContractFileURL,
+			"contract_file_url": contractFileURL,
 			"completed_at":      now,
 		}).Error; err != nil {
 			return err
@@ -336,7 +346,7 @@ func (s *Server) adminUploadContract(c *gin.Context) {
 		}
 		// 更新合同
 		return tx.Model(&model.DistributorContract{}).Where("distributor_drama_id IN (SELECT id FROM distributor_dramas WHERE application_id = ?)", claimID).Updates(map[string]interface{}{
-			"file_url": req.ContractFileURL,
+			"file_url": contractFileURL,
 			"status":   "signed",
 		}).Error
 	})
@@ -345,7 +355,7 @@ func (s *Server) adminUploadContract(c *gin.Context) {
 		return
 	}
 
-	response.OK(c, gin.H{"id": claimID, "status": model.ClaimCompleted})
+	response.OK(c, gin.H{"id": claimID, "status": model.ClaimCompleted, "contract_file_url": contractFileURL})
 }
 
 // ============================================================
