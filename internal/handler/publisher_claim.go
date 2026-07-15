@@ -141,7 +141,7 @@ func (s *Server) publisherPayDeposit(c *gin.Context) {
 		return
 	}
 	if d.DepositAvailableCents < claim.DepositAmountCents {
-		response.Conflict(c, fmt.Sprintf("押金余额不足，需要 %d 分，当前可用 %d 分", claim.DepositAmountCents, d.DepositAvailableCents))
+		response.Conflict(c, fmt.Sprintf("押金余额不足，需要 %.2f 元，当前可用 %.2f 元", float64(claim.DepositAmountCents)/100, float64(d.DepositAvailableCents)/100))
 		return
 	}
 
