@@ -18,6 +18,22 @@ import (
 // 认领流程（Claim）
 // ============================================================
 
+// platformLabel 返回平台的中文显示名
+func platformLabel(p string) string {
+	switch p {
+	case model.PlatformDouyin:
+		return "抖音"
+	case model.PlatformKuaishou:
+		return "快手"
+	case model.PlatformWechatVideo:
+		return "微信视频号"
+	case model.PlatformBilibili:
+		return "哔哩哔哩"
+	default:
+		return p
+	}
+}
+
 type createClaimRequest struct {
 	DramaID   uint64   `json:"drama_id" binding:"required"`
 	Platforms []string `json:"platforms" binding:"required"`
@@ -63,18 +79,11 @@ func (s *Server) publisherCreateClaim(c *gin.Context) {
 		return
 	}
 
-	// 校验未发行平台不重复
-	var existing []model.DistributorDrama
-	s.db.Where("drama_id = ? AND status IN ?", req.DramaID, []string{"authorized", "active"}).Find(&existing)
-	releasedMap := map[string]bool{}
-	for _, dd := range existing {
-		for _, p := range parsePlatforms(dd.Platforms) {
-			releasedMap[p] = true
-		}
-	}
+	// 校验平台未被占用（含已发行 + 审核中的认领）
+	occupied := s.getOccupiedPlatforms(req.DramaID)
 	for _, p := range req.Platforms {
-		if releasedMap[p] {
-			response.Conflict(c, "平台 "+p+" 已被发行")
+		if occupied[p] {
+			response.Conflict(c, "平台 "+platformLabel(p)+" 已被其他发行商认领或发行")
 			return
 		}
 	}
