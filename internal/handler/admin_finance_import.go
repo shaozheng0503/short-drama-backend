@@ -37,6 +37,29 @@ type incomeImportRowReport struct {
 	CreatorID       uint64 `json:"creator_id,omitempty"`
 	DuplicateOfRow  int    `json:"duplicate_of_row,omitempty"`
 	ChannelIncomeID uint64 `json:"channel_income_id,omitempty"`
+	// 发行商收益信息（自动生成）
+	DistributorID       uint64 `json:"distributor_id,omitempty"`
+	DistributorName     string `json:"distributor_name,omitempty"`
+	DistributorIncome   int64  `json:"distributor_income_cents,omitempty"`  // 发行商实得（55%）
+	DistributorStatus   string `json:"distributor_status,omitempty"`        // created / skipped / failed
+	DistributorMessage  string `json:"distributor_message,omitempty"`
+}
+
+// channelToPlatform 将中文渠道名映射为发行商系统平台 key。
+// 匹配不上返回空串（表示该渠道没有对应发行商平台，只走创作者分成）。
+func channelToPlatform(channel string) string {
+	switch strings.TrimSpace(channel) {
+	case "抖音":
+		return model.PlatformDouyin
+	case "快手":
+		return model.PlatformKuaishou
+	case "视频号", "微信视频号":
+		return model.PlatformWechatVideo
+	case "B站", "哔哩哔哩", "哔哩":
+		return model.PlatformBilibili
+	default:
+		return ""
+	}
 }
 
 // adminDownloadIncomeTemplate —— GET /v1/admin/finance/income/template.xlsx
@@ -408,11 +431,29 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 					}
 				}
 				totalDelta += delta
-			}
-			rowReports = append(rowReports, report)
 		}
-		return nil
-	})
+
+		// ---- 自动生成发行商收益记录 ----
+		// 渠道映射到发行商平台 key；匹配不上则跳过（该渠道没有发行商体系）
+		platformKey := channelToPlatform(pr.channel)
+		if platformKey != "" && report.Status != "failed" {
+			distID, distInc, distStatus, distMsg := s.generateDistributorIncome(tx, drama.ID, platformKey, pr.statDate, pr.grossCents, batchNo, pr.rowNo, dryRun)
+			report.DistributorID = distID
+			report.DistributorIncome = distInc
+			report.DistributorStatus = distStatus
+			report.DistributorMessage = distMsg
+			// 填充发行商名称
+			if distID > 0 && (distStatus == "created" || distStatus == "skipped") {
+				var dist model.Distributor
+				tx.Select("id, name, org_name, nickname").Where("id = ?", distID).First(&dist)
+				report.DistributorName = distributorName(&dist)
+			}
+		}
+
+		rowReports = append(rowReports, report)
+	}
+	return nil
+})
 	if err != nil {
 		response.ServerError(c, "导入失败，已回滚")
 		return
@@ -532,6 +573,72 @@ func (s *Server) bumpCreatorStatsIncome(tx *gorm.DB, creatorID, dramaID uint64, 
 	return tx.Create(&model.CreatorStatsDaily{
 		CreatorID: creatorID, DramaID: dramaID, StatDate: statDate, IncomeCents: delta,
 	}).Error
+}
+
+// generateDistributorIncome 在导入渠道收益时，自动为认领了该剧该平台的发行商生成收益记录。
+// 返回 (发行商ID, 发行商实得分, 状态, 消息)。状态：created=新建 / skipped=无人认领或已存在 / failed=出错。
+func (s *Server) generateDistributorIncome(tx *gorm.DB, dramaID uint64, platform, statDate string, grossCents int64, batchNo string, rowNo int, dryRun bool) (uint64, int64, string, string) {
+	// 查找认领了该剧该平台的活跃发行商
+	var dds []model.DistributorDrama
+	tx.Where("drama_id = ? AND status IN ?", dramaID, []string{"authorized", "active"}).Find(&dds)
+	var matchedDD *model.DistributorDrama
+	for i := range dds {
+		platforms := parsePlatforms(dds[i].Platforms)
+		for _, p := range platforms {
+			if p == platform {
+				matchedDD = &dds[i]
+				break
+			}
+		}
+		if matchedDD != nil {
+			break
+		}
+	}
+	if matchedDD == nil {
+		return 0, 0, "skipped", "该剧该平台无发行商认领，跳过发行商收益"
+	}
+
+	// 检查是否已存在同日记录（幂等，不重复入账）
+	var existing model.DistributorIncomeDaily
+	errFind := tx.Where("distributor_id = ? AND drama_id = ? AND platform = ? AND stat_date = ?",
+		matchedDD.DistributorID, dramaID, platform, statDate).First(&existing).Error
+	if errFind == nil {
+		return matchedDD.DistributorID, 0, "skipped", fmt.Sprintf("发行商收益已存在（batch=%s），跳过", existing.BatchNo)
+	}
+
+	shareBP := 5500 // 发行商 55%
+	incomeCents := grossCents * int64(shareBP) / 10000
+
+	if dryRun {
+		return matchedDD.DistributorID, incomeCents, "created", fmt.Sprintf("试算：发行商实得 %.2f 元（55%%）", float64(incomeCents)/100)
+	}
+
+	inc := model.DistributorIncomeDaily{
+		DistributorID: matchedDD.DistributorID,
+		DramaID:       dramaID,
+		Platform:      platform,
+		StatDate:      statDate,
+		GrossCents:    grossCents,
+		ShareRatioBP:  shareBP,
+		IncomeCents:   incomeCents,
+		BatchNo:       batchNo,
+		ImportRowNo:   rowNo,
+	}
+	if err := tx.Create(&inc).Error; err != nil {
+		return matchedDD.DistributorID, 0, "failed", fmt.Sprintf("创建发行商收益失败: %v", err)
+	}
+
+	// 累加发行商收益
+	if err := tx.Model(&model.Distributor{}).
+		Where("id = ?", matchedDD.DistributorID).
+		UpdateColumns(map[string]interface{}{
+			"total_income_cents": gorm.Expr("total_income_cents + ?", incomeCents),
+			"balance_cents":      gorm.Expr("balance_cents + ?", incomeCents),
+		}).Error; err != nil {
+		return matchedDD.DistributorID, 0, "failed", fmt.Sprintf("更新发行商余额失败: %v", err)
+	}
+
+	return matchedDD.DistributorID, incomeCents, "created", fmt.Sprintf("发行商实得 %.2f 元（55%%）", float64(incomeCents)/100)
 }
 
 // normalizeDate 把常见日期写法归一成 YYYY-MM-DD。
