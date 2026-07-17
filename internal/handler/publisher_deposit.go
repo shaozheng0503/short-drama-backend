@@ -41,12 +41,12 @@ func (s *Server) publisherRecharge(c *gin.Context) {
 		response.InvalidParam(c, "amount_cents 必填")
 		return
 	}
-	if req.AmountCents < 10000 {
-		response.InvalidParam(c, "充值金额最低 100 元")
+	if req.AmountCents <= 0 {
+		response.InvalidParam(c, "充值金额必须大于 0")
 		return
 	}
 	if req.PaymentMethod == "" {
-		req.PaymentMethod = "wechat"
+		req.PaymentMethod = "alipay"
 	}
 
 	// dev 模式：直接充值成功
