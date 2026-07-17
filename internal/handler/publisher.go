@@ -87,15 +87,27 @@ func (s *Server) publisherUpload(c *gin.Context) {
 // 共用辅助函数
 // ============================================================
 
-// calcDepositAmount 计算保证金金额
+// calcDepositAmount 计算保证金金额（首单：基础押金 + 平台加价）
 func (s *Server) calcDepositAmount(drama model.Drama, platforms []string) int64 {
-	base := int64(40000) // 400 元
-	if drama.TotalEpisodes >= 50 {
-		base = 50000 // 500 元
-	}
+	base := s.depositBaseCents(drama)
 	rateBP := 1500 // 15%
 	n := len(platforms)
 	return base * (10000 + int64(rateBP*(n-1))) / 10000
+}
+
+// calcAppendDepositAmount 计算追加平台的增量押金（不重新收基础押金，只按新增平台数 × 加价比例）
+func (s *Server) calcAppendDepositAmount(drama model.Drama, newPlatformCount int) int64 {
+	base := s.depositBaseCents(drama)
+	rateBP := 1500 // 15%
+	return base * int64(rateBP) * int64(newPlatformCount) / 10000
+}
+
+// depositBaseCents 返回基础押金（分）
+func (s *Server) depositBaseCents(drama model.Drama) int64 {
+	if drama.TotalEpisodes >= 50 {
+		return 50000 // 500 元
+	}
+	return 40000 // 400 元
 }
 
 // recordDepositTx 记录押金流水

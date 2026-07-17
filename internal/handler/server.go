@@ -333,6 +333,7 @@ func (s *Server) Router() *gin.Engine {
 	// 已认领剧集
 	pubAuth.GET("/claimed-dramas", s.publisherListClaimedDramas)
 	pubAuth.GET("/claimed-dramas/:id", s.publisherGetClaimedDrama)
+	pubAuth.GET("/claimed-dramas/:id/claims", s.publisherClaimedDramaClaims)
 	pubAuth.GET("/claimed-dramas/:id/income-records", s.publisherClaimedDramaIncomeRecords)
 	pubAuth.GET("/claimed-dramas/:id/deposit-deductions", s.publisherClaimedDramaDepositDeductions)
 	// 押金

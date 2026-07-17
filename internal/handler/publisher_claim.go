@@ -88,8 +88,29 @@ func (s *Server) publisherCreateClaim(c *gin.Context) {
 		}
 	}
 
+	// 判断是否为追加认领：同一发行商对该剧是否已有有效认领/授权
+	var existingDDs []model.DistributorDrama
+	s.db.Where("distributor_id = ? AND drama_id = ? AND status IN ?", id, req.DramaID,
+		[]string{model.DistDramaAuthorized, model.DistDramaActive}).Find(&existingDDs)
+	hasExisting := len(existingDDs) > 0
+	// 也检查自己是否有审核中的认领
+	var existingApps int64
+	s.db.Model(&model.DistributorApplication{}).Where("distributor_id = ? AND drama_id = ? AND status IN ?",
+		id, req.DramaID, []string{
+			model.ClaimDepositPending, model.ClaimAuthPending,
+			model.ClaimReviewPending, model.ClaimContractPending,
+		}).Count(&existingApps)
+	hasExisting = hasExisting || existingApps > 0
+
 	// 计算保证金
-	depositAmount := s.calcDepositAmount(drama, req.Platforms)
+	var depositAmount int64
+	if hasExisting {
+		// 追加认领：只收新增平台 × 加价比例，不重新收基础押金
+		depositAmount = s.calcAppendDepositAmount(drama, len(req.Platforms))
+	} else {
+		// 首单：基础押金 + 平台加价
+		depositAmount = s.calcDepositAmount(drama, req.Platforms)
+	}
 
 	// 创建认领申请
 	claim := model.DistributorApplication{
