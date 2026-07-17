@@ -6,6 +6,7 @@ import (
 
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
+	"ai-drama-platform/internal/payment"
 	"ai-drama-platform/internal/response"
 
 	"github.com/gin-gonic/gin"
@@ -83,7 +84,7 @@ func (s *Server) publisherRecharge(c *gin.Context) {
 		return
 	}
 
-	// 生产模式：创建充值单，返回支付参数
+	// 生产模式：创建充值单，调支付 provider 拿 prepay 参数
 	rc := model.DistributorRecharge{
 		RechargeNo:    fmt.Sprintf("RC%06d", time.Now().UnixMilli()%1000000),
 		DistributorID: id,
@@ -98,13 +99,32 @@ func (s *Server) publisherRecharge(c *gin.Context) {
 	}
 
 	// 调支付 provider 拿 prepay 参数
-	// TODO: 接入真实支付
+	provider, err := s.payments.Get(req.PaymentMethod)
+	if err != nil {
+		response.Fail(c, response.CodeThirdPartyError, "支付渠道不可用: "+req.PaymentMethod)
+		return
+	}
+	payScene := "wap" // 发行商端是 H5，默认用 wap 支付
+	prepayParams, err := provider.Prepay(payment.PrepayInput{
+		OrderNo:     rc.RechargeNo,
+		AmountCents: rc.AmountCents,
+		Subject:     "发行商押金充值",
+		Scene:       payScene,
+		ExpireAt:    time.Now().Add(s.cfg.PaymentExpire),
+	})
+	if err != nil {
+		s.db.Delete(&rc) // prepay 失败删掉充值单
+		response.ServerError(c, "调起支付失败: "+err.Error())
+		return
+	}
+
 	response.OK(c, gin.H{
 		"recharge_no":    rc.RechargeNo,
 		"amount_cents":   rc.AmountCents,
 		"payment_method": rc.PaymentMethod,
 		"status":         "pending",
 		"expired_at":     rc.ExpiredAt,
+		"pay_params":     prepayParams,
 	})
 }
 

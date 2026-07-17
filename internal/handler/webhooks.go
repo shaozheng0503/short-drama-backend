@@ -83,18 +83,14 @@ func (s *Server) handlePayWebhook(c *gin.Context, method string) {
 	if err := s.billing.MarkOrderPaid(event.OrderNo, event.PlatformTradeNo, method, event.AmountCents, paidAt); err != nil {
 		switch {
 		case errors.Is(err, billing.ErrOrderNotFound):
-			log.Printf("[webhook] %s order=%s not found", method, event.OrderNo)
-			s.alerts.SendAsync(alert.Event{
-				Level:   "error",
-				Type:    "payment_webhook_failed",
-				Message: "支付回调订单不存在",
-				Fields: map[string]interface{}{
-					"method":   method,
-					"order_no": event.OrderNo,
-					"error":    err.Error(),
-				},
-			})
-			response.WebhookRetry(c, "订单不存在")
+			// 可能是押金充值单（RC 开头），尝试 MarkRechargePaid
+			if err2 := s.billing.MarkRechargePaid(event.OrderNo, event.PlatformTradeNo, method, event.AmountCents, paidAt); err2 != nil {
+				log.Printf("[webhook] %s order/recharge=%s not found or failed: order_err=%v recharge_err=%v", method, event.OrderNo, err, err2)
+				response.WebhookRetry(c, "订单/充值单不存在")
+			} else {
+				log.Printf("[webhook] %s recharge=%s marked paid", method, event.OrderNo)
+				ackPayWebhook(c, method, gin.H{"ack": true})
+			}
 		case errors.Is(err, billing.ErrOrderNotPaid):
 			log.Printf("[webhook] %s order=%s invalid status", method, event.OrderNo)
 			s.alerts.SendAsync(alert.Event{

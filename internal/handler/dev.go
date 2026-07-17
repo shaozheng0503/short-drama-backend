@@ -67,3 +67,44 @@ func (s *Server) devMockPayOrder(c *gin.Context) {
 		"mock":              true,
 	})
 }
+
+// devMockPayRecharge 一键模拟押金充值到账，仅在 PAYMENT_DEV_MODE=true 时挂载。
+// 前端联调路径：POST /v1/dev/recharges/:recharge_no/pay
+// 走的是和真实 webhook 同一条 billing.MarkRechargePaid 链路，会触发加余额 + 写流水。
+func (s *Server) devMockPayRecharge(c *gin.Context) {
+	rechargeNo := c.Param("recharge_no")
+	if rechargeNo == "" {
+		response.InvalidParam(c, "recharge_no 必填")
+		return
+	}
+	var rc model.DistributorRecharge
+	if err := s.db.Where("recharge_no = ?", rechargeNo).First(&rc).Error; err != nil {
+		response.NotFound(c, "充值单不存在")
+		return
+	}
+
+	paidAt := time.Now()
+	tradeNo := "DEV-MOCK-" + rechargeNo
+	log.Printf("[payment-dev] mock-pay-recharge recharge_no=%s amount=%d method=%s",
+		rechargeNo, rc.AmountCents, rc.PaymentMethod)
+
+	if err := s.billing.MarkRechargePaid(rechargeNo, tradeNo, rc.PaymentMethod, rc.AmountCents, paidAt); err != nil {
+		switch {
+		case errors.Is(err, billing.ErrRechargeNotFound):
+			response.NotFound(c, "充值单不存在")
+		case errors.Is(err, billing.ErrRechargeAmountMismatch):
+			response.Conflict(c, "充值金额不一致")
+		default:
+			response.ServerError(c, "mock 充值到账失败")
+		}
+		return
+	}
+
+	response.OK(c, gin.H{
+		"recharge_no":       rechargeNo,
+		"status":            "paid",
+		"paid_at":           paidAt,
+		"platform_trade_no": tradeNo,
+		"mock":              true,
+	})
+}

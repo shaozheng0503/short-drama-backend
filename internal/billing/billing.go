@@ -877,3 +877,62 @@ func generateOrderNo() string {
 	now := time.Now()
 	return fmt.Sprintf("%s%04d%05d", now.Format("20060102150405"), now.Nanosecond()/1000%10000, rand.Intn(100000))
 }
+
+// ErrRechargeNotFound 充值单不存在
+var ErrRechargeNotFound = errors.New("充值单不存在")
+
+// ErrRechargeAmountMismatch 充值回调金额不一致
+var ErrRechargeAmountMismatch = errors.New("充值回调金额与充值单金额不一致")
+
+// MarkRechargePaid 押金充值到账：更新充值单状态 → 加余额 → 写流水。
+// 重复回调（充值单已 paid）幂等返回 nil。
+func (s *Service) MarkRechargePaid(rechargeNo, platformTradeNo, paymentMethod string, amountCents int64, paidAt time.Time) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var rc model.DistributorRecharge
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("recharge_no = ?", rechargeNo).
+			First(&rc).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrRechargeNotFound
+			}
+			return err
+		}
+		if rc.Status == "paid" {
+			return nil // 幂等
+		}
+		if amountCents != rc.AmountCents {
+			return ErrRechargeAmountMismatch
+		}
+
+		// 1. 更新充值单
+		if err := tx.Model(&rc).Updates(map[string]interface{}{
+			"status":            "paid",
+			"paid_at":           paidAt,
+			"platform_trade_no": platformTradeNo,
+		}).Error; err != nil {
+			return err
+		}
+
+		// 2. 加余额
+		var dist model.Distributor
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, rc.DistributorID).Error; err != nil {
+			return err
+		}
+		dist.DepositAvailableCents += rc.AmountCents
+		if err := tx.Save(&dist).Error; err != nil {
+			return err
+		}
+
+		// 3. 写流水
+		tx.Create(&model.DistributorDepositTransaction{
+			DistributorID:      rc.DistributorID,
+			Type:               model.DepositTxRecharge,
+			AmountCents:        rc.AmountCents,
+			BalanceAfterCents:  dist.DepositAvailableCents,
+			RelatedType:        "recharge",
+			RelatedBusinessNo:  rc.RechargeNo,
+			Remark:             "押金充值（" + paymentMethod + "）",
+		})
+		return nil
+	})
+}
