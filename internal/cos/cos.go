@@ -10,17 +10,21 @@
 package cos
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
 	"time"
 
 	"ai-drama-platform/internal/config"
+
+	cos "github.com/tencentyun/cos-go-sdk-v5"
 )
 
 var ErrNotConfigured = errors.New("cos not configured")
@@ -112,12 +116,25 @@ func (s *Signer) PresignedPUTWithACL(key, acl string) (signedURL string, expires
 }
 
 // PresignedGET 生成 GET 下载预签名 URL，用于读取私有对象（如合同扫描件 PDF）。
+// 使用官方 cos-go-sdk-v5 生成签名，确保兼容性。
 // 短时有效，由后端鉴权通过后下发，避免把私有合同放成公共可访问。
 // 始终走 COS 默认域名（不走 CDN，CDN 通常不校验 COS 签名）。
 func (s *Signer) PresignedGET(key string) (signedURL string, expiresAt time.Time, err error) {
 	if !s.Configured() {
 		return "", time.Time{}, ErrNotConfigured
 	}
+
+	// 优先用官方 SDK 生成 presigned URL
+	u, err2 := s.presignedGetSDK(key)
+	if err2 == nil && u != "" {
+		expire := s.cfg.COSSignExpire
+		if expire <= 0 {
+			expire = 15 * time.Minute
+		}
+		return u, time.Now().Add(expire), nil
+	}
+
+	// fallback: 手工签名
 	now := time.Now()
 	expire := s.cfg.COSSignExpire
 	if expire <= 0 {
@@ -150,6 +167,37 @@ func (s *Signer) PresignedGET(key string) (signedURL string, expiresAt time.Time
 
 	signedURL = "https://" + s.Host() + "/" + strings.TrimLeft(key, "/") + "?" + sortedEncode(q)
 	return signedURL, expiresAt, nil
+}
+
+// presignedGetSDK 使用官方 cos-go-sdk-v5 生成 presigned GET URL
+func (s *Signer) presignedGetSDK(key string) (string, error) {
+	bucketURL := fmt.Sprintf("https://%s.cos.%s.myqcloud.com", s.cfg.COSBucket, s.cfg.COSRegion)
+	u, err := url.Parse(bucketURL)
+	if err != nil {
+		return "", err
+	}
+	b := &cos.BaseURL{BucketURL: u}
+	client := cos.NewClient(b, &http.Client{
+		Transport: &cos.AuthorizationTransport{
+			SecretID:  s.cfg.COSSecretID,
+			SecretKey: s.cfg.COSSecretKey,
+		},
+	})
+
+	expire := s.cfg.COSSignExpire
+	if expire <= 0 {
+		expire = 15 * time.Minute
+	}
+
+	opt := &cos.PresignedURLOptions{
+		Query:  nil,
+		Header: nil,
+	}
+	signedURL, err := client.Object.GetPresignedURL(context.Background(), http.MethodGet, key, s.cfg.COSSecretID, s.cfg.COSSecretKey, expire, opt)
+	if err != nil {
+		return "", err
+	}
+	return signedURL.String(), nil
 }
 
 // buildHeaderParts 输出两个值：
