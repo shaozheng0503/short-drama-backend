@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"ai-drama-platform/internal/middleware"
@@ -36,6 +37,7 @@ func (s *Server) publisherRecharge(c *gin.Context) {
 	var req struct {
 		AmountCents   int64  `json:"amount_cents" binding:"required"`
 		PaymentMethod string `json:"payment_method"`
+		PayScene      string `json:"pay_scene"` // app / wap，默认 wap（网页端）
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.InvalidParam(c, "amount_cents 必填")
@@ -47,6 +49,9 @@ func (s *Server) publisherRecharge(c *gin.Context) {
 	}
 	if req.PaymentMethod == "" {
 		req.PaymentMethod = "alipay"
+	}
+	if req.PayScene == "" {
+		req.PayScene = "wap" // 默认网页 H5 支付
 	}
 
 	// dev 模式：直接充值成功
@@ -98,23 +103,28 @@ func (s *Server) publisherRecharge(c *gin.Context) {
 		return
 	}
 
-	// 调支付 provider 拿 prepay 参数
+	// 调支付 provider 拿 prepay 参数，按前端传入的 pay_scene 决定走 wap(H5) 还是 app
 	provider, err := s.payments.Get(req.PaymentMethod)
 	if err != nil {
 		response.Fail(c, response.CodeThirdPartyError, "支付渠道不可用: "+req.PaymentMethod)
 		return
 	}
-	payScene := "app" // 复用 App 支付（已签约），返回 order_string 供客户端唤起
 	prepayParams, err := provider.Prepay(payment.PrepayInput{
 		OrderNo:     rc.RechargeNo,
 		AmountCents: rc.AmountCents,
 		Subject:     "发行商押金充值",
-		Scene:       payScene,
+		Scene:       req.PayScene,
 		ExpireAt:    time.Now().Add(s.cfg.PaymentExpire),
 	})
 	if err != nil {
 		s.db.Delete(&rc) // prepay 失败删掉充值单
-		response.ServerError(c, "调起支付失败: "+err.Error())
+		errMsg := err.Error()
+		// 支付宝 wap 未签约时给出明确提示
+		if req.PayScene == "wap" && (strings.Contains(errMsg, "insufficient-isv-permissions") || strings.Contains(errMsg, "ISV")) {
+			response.Fail(c, response.CodeThirdPartyError, "支付宝尚未签约「手机网站支付」产品，请先在支付宝开放平台签约，或前端传 pay_scene=app 使用 App 支付")
+			return
+		}
+		response.ServerError(c, "调起支付失败: "+errMsg)
 		return
 	}
 
