@@ -13,6 +13,16 @@ import (
 // GET /v1/publisher/dramas —— 剧集广场列表
 func (s *Server) publisherListDramas(c *gin.Context) {
 	page, pageSize := paginate(c)
+	distID := middleware.CurrentID(c)
+
+	// 解析筛选参数
+	// claimable=true：只返回剧本身可认领的（已上架 + 有可发行平台 + 开放发行）
+	// can_claim=true：只返回当前发行商当前可发起认领的（claimable + 已认证）
+	// can_claim 优先级高于 claimable（can_claim 已隐含 claimable）
+	wantClaimable := c.Query("claimable") == "true"
+	wantCanClaim := c.Query("can_claim") == "true"
+
+	// 基础查询
 	q := s.db.Model(&model.Drama{}).Where("status = ?", "published")
 	if v := c.Query("keyword"); v != "" {
 		q = q.Where("title ILIKE ?", "%"+v+"%")
@@ -21,57 +31,128 @@ func (s *Server) publisherListDramas(c *gin.Context) {
 		// 筛选支持该平台的剧——暂不实现复杂筛选，返回全部
 		_ = v
 	}
+
+	// claimable/can_claim 需要排除「全平台已被占用」的剧。
+	// 全平台占用 = 该剧所有 4 个平台都出现在 distributor_dramas(authorized/active)
+	//   或 distributor_applications(审核中) 的 platforms 里。
+	if wantClaimable || wantCanClaim {
+		// 查出当前页候选剧（不分页，只取 ID）被占用的平台集合。
+		// 为了分页准确，需要先过滤掉「全平台占用」的剧，再分页。
+		// 但「全平台占用」的判定在 SQL 里较复杂（需要解析 platforms 数组），
+		// 这里采用 Go 层过滤的方式：查出所有候选 ID → 算 occupied → 过滤 → 分页。
+		// 数据量可控（已上架剧不会太多），性能可接受。
+
+		// 1. 先查所有候选剧的 ID + 基本字段（不分页）
+		var allDramas []model.Drama
+		q.Order("created_at desc").Find(&allDramas)
+
+		// 2. 批量查 occupied
+		dramaIDs := make([]uint64, 0, len(allDramas))
+		for _, d := range allDramas {
+			dramaIDs = append(dramaIDs, d.ID)
+		}
+		occupiedPlatforms := s.batchGetOccupiedPlatforms(dramaIDs)
+
+		// 3. 过滤
+		verified := s.isDistributorVerified(distID)
+		filtered := make([]model.Drama, 0, len(allDramas))
+		for _, d := range allDramas {
+			occupied := occupiedPlatforms[d.ID]
+			available := getAvailablePlatformsFromOccupied(occupied)
+			distributable := d.Status == "published" && len(available) > 0 && isDistributable(d)
+
+			if wantCanClaim {
+				if distributable && verified {
+					filtered = append(filtered, d)
+				}
+			} else if wantClaimable {
+				if distributable {
+					filtered = append(filtered, d)
+				}
+			}
+		}
+
+		// 4. 分页
+		total := int64(len(filtered))
+		start := (page - 1) * pageSize
+		if start >= len(filtered) {
+			filtered = []model.Drama{}
+		} else {
+			end := start + pageSize
+			if end > len(filtered) {
+				end = len(filtered)
+			}
+			filtered = filtered[start:end]
+		}
+
+		list := s.buildPublisherDramaList(filtered, occupiedPlatforms, distID, verified)
+		response.OK(c, pageResp(list, page, pageSize, total))
+		return
+	}
+
+	// 无 claimable/can_claim 筛选：原有逻辑
 	var total int64
 	q.Count(&total)
 	var dramas []model.Drama
 	q.Order("created_at desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&dramas)
 
-	// 查已发行 + 审核中认领占用的平台
 	dramaIDs := make([]uint64, 0, len(dramas))
 	for _, d := range dramas {
 		dramaIDs = append(dramaIDs, d.ID)
 	}
-	occupiedPlatforms := map[uint64]map[string]bool{}
-	if len(dramaIDs) > 0 {
-		// 已发行
-		var dds []model.DistributorDrama
-		s.db.Where("drama_id IN ? AND status IN ?", dramaIDs, []string{"authorized", "active"}).Find(&dds)
-		for _, dd := range dds {
-			if occupiedPlatforms[dd.DramaID] == nil {
-				occupiedPlatforms[dd.DramaID] = map[string]bool{}
-			}
-			for _, p := range parsePlatforms(dd.Platforms) {
-				occupiedPlatforms[dd.DramaID][p] = true
-			}
+	occupiedPlatforms := s.batchGetOccupiedPlatforms(dramaIDs)
+	verified := s.isDistributorVerified(distID)
+	list := s.buildPublisherDramaList(dramas, occupiedPlatforms, distID, verified)
+	response.OK(c, pageResp(list, page, pageSize, total))
+}
+
+// batchGetOccupiedPlatforms 批量查多部剧被占用的平台集合（含已发行 + 审核中认领）
+func (s *Server) batchGetOccupiedPlatforms(dramaIDs []uint64) map[uint64]map[string]bool {
+	result := map[uint64]map[string]bool{}
+	if len(dramaIDs) == 0 {
+		return result
+	}
+
+	// 已发行的
+	var dds []model.DistributorDrama
+	s.db.Where("drama_id IN ? AND status IN ?", dramaIDs, []string{"authorized", "active"}).Find(&dds)
+	for _, dd := range dds {
+		if result[dd.DramaID] == nil {
+			result[dd.DramaID] = map[string]bool{}
 		}
-		// 审核中的认领
-		activeClaimStatuses := []string{
-			model.ClaimDepositPending, model.ClaimAuthPending,
-			model.ClaimReviewPending, model.ClaimContractPending,
-		}
-		var apps []model.DistributorApplication
-		s.db.Where("drama_id IN ? AND status IN ?", dramaIDs, activeClaimStatuses).Find(&apps)
-		for _, app := range apps {
-			if occupiedPlatforms[app.DramaID] == nil {
-				occupiedPlatforms[app.DramaID] = map[string]bool{}
-			}
-			for _, p := range parsePlatforms(app.Platforms) {
-				occupiedPlatforms[app.DramaID][p] = true
-			}
+		for _, p := range parsePlatforms(dd.Platforms) {
+			result[dd.DramaID][p] = true
 		}
 	}
 
+	// 审核中的认领
+	activeClaimStatuses := []string{
+		model.ClaimDepositPending, model.ClaimAuthPending,
+		model.ClaimReviewPending, model.ClaimContractPending,
+	}
+	var apps []model.DistributorApplication
+	s.db.Where("drama_id IN ? AND status IN ?", dramaIDs, activeClaimStatuses).Find(&apps)
+	for _, app := range apps {
+		if result[app.DramaID] == nil {
+			result[app.DramaID] = map[string]bool{}
+		}
+		for _, p := range parsePlatforms(app.Platforms) {
+			result[app.DramaID][p] = true
+		}
+	}
+
+	return result
+}
+
+// buildPublisherDramaList 构建剧集广场列表响应项
+func (s *Server) buildPublisherDramaList(dramas []model.Drama, occupiedPlatforms map[uint64]map[string]bool, distID uint64, verified bool) []gin.H {
 	list := make([]gin.H, 0, len(dramas))
-	distID := middleware.CurrentID(c)
-	verified := s.isDistributorVerified(distID)
 	for _, d := range dramas {
 		occupied := occupiedPlatforms[d.ID]
 		if occupied == nil {
 			occupied = map[string]bool{}
 		}
 		available := getAvailablePlatformsFromOccupied(occupied)
-		// claimable 只表示剧集本身是否可认领（已上架 + 有可发行平台 + 开放发行）
-		// 发行商认证状态单独通过 can_claim 表示，前端据此提示"请先认证"
 		distributable := d.Status == "published" && len(available) > 0 && isDistributable(d)
 		list = append(list, gin.H{
 			"id":                  d.ID,
@@ -85,7 +166,7 @@ func (s *Server) publisherListDramas(c *gin.Context) {
 			"can_claim":           distributable && verified,
 		})
 	}
-	response.OK(c, pageResp(list, page, pageSize, total))
+	return list
 }
 
 // GET /v1/publisher/dramas/:id —— 剧集详情
