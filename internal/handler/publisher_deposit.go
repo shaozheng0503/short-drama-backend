@@ -104,7 +104,7 @@ func (s *Server) publisherRecharge(c *gin.Context) {
 		response.Fail(c, response.CodeThirdPartyError, "支付渠道不可用: "+req.PaymentMethod)
 		return
 	}
-	payScene := "wap" // 发行商端是 H5，默认用 wap 支付
+	payScene := "app" // 复用 App 支付（已签约），返回 order_string 供客户端唤起
 	prepayParams, err := provider.Prepay(payment.PrepayInput{
 		OrderNo:     rc.RechargeNo,
 		AmountCents: rc.AmountCents,
