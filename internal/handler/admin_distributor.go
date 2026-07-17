@@ -188,12 +188,71 @@ func (s *Server) adminListDistributorClaims(c *gin.Context) {
 			"deposit_status":       cl.DepositStatus,
 			"status":               cl.Status,
 			"contract_status":      cl.ContractStatus,
+			"contract_file_url":    s.contractPresignedURL(cl.ContractFileKey),
 			"reject_reason":        cl.RejectReason,
 			"created_at":           cl.CreatedAt,
 			"reviewed_at":          cl.ReviewedAt,
 		})
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
+}
+
+// GET /admin/distributor-claims/:id —— 认领申请详情
+func (s *Server) adminGetDistributorClaim(c *gin.Context) {
+	claimID := parseUint(c.Param("id"))
+	var claim model.DistributorApplication
+	if err := s.db.First(&claim, claimID).Error; err != nil {
+		response.NotFound(c, "认领申请不存在")
+		return
+	}
+
+	// 查发行商名
+	var dist model.Distributor
+	s.db.First(&dist, claim.DistributorID)
+	// 查剧信息
+	var drama model.Drama
+	s.db.Select("id, title, cover_url, total_episodes").First(&drama, claim.DramaID)
+	// 查授权记录
+	var dds []model.DistributorDrama
+	s.db.Where("application_id = ?", claimID).Find(&dds)
+	// 查合同
+	var contract *model.DistributorContract
+	for _, dd := range dds {
+		if dd.ContractID != nil {
+			var ct model.DistributorContract
+			if err := s.db.First(&ct, *dd.ContractID).Error; err == nil {
+				contract = &ct
+				break
+			}
+		}
+	}
+
+	v := gin.H{
+		"id":                   claim.ID,
+		"application_no":       claim.ApplicationNo,
+		"distributor_id":       claim.DistributorID,
+		"distributor_name":     distributorName(&dist),
+		"drama_id":             claim.DramaID,
+		"drama_title":          drama.Title,
+		"drama_cover_url":      drama.CoverURL,
+		"episode_count":        drama.TotalEpisodes,
+		"platforms":            parsePlatforms(claim.Platforms),
+		"deposit_amount_cents": claim.DepositAmountCents,
+		"deposit_status":       claim.DepositStatus,
+		"status":               claim.Status,
+		"contract_status":      claim.ContractStatus,
+		"contract_file_url":    s.contractPresignedURL(claim.ContractFileKey),
+		"reject_reason":        claim.RejectReason,
+		"reviewed_at":          claim.ReviewedAt,
+		"authorized_at":        claim.AuthorizedAt,
+		"completed_at":         claim.CompletedAt,
+		"created_at":           claim.CreatedAt,
+	}
+	if contract != nil {
+		v["contract_no"] = contract.ContractNo
+		v["contract_amount_cents"] = contract.AmountCents
+	}
+	response.OK(c, v)
 }
 
 // POST /admin/distributor-claims/:id/approve —— 审核通过（创建授权 + 合同）
@@ -326,16 +385,17 @@ func (s *Server) adminUploadContract(c *gin.Context) {
 		return
 	}
 
-	// 生成公开访问 URL（合同 PDF 存私有 COS，这里生成短时 presigned GET 下载链接）
-	contractFileURL := s.cos.PublicURL(req.ContractFileKey)
+	// 存 COS key（私有桶），返回时动态生成 presigned GET
+	contractFileKey := req.ContractFileKey
 
 	now := time.Now()
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		// 更新认领状态为已完成，同时存 key 和 presigned URL
+		// 更新认领状态为已完成，同时存 key
 		if err := tx.Model(&claim).Updates(map[string]interface{}{
 			"status":            model.ClaimCompleted,
 			"contract_status":   "completed",
-			"contract_file_url": contractFileURL,
+			"contract_file_key": contractFileKey,
+			"contract_file_url": s.cos.PublicURL(contractFileKey), // 存裸 URL 做记录
 			"completed_at":      now,
 		}).Error; err != nil {
 			return err
@@ -346,7 +406,8 @@ func (s *Server) adminUploadContract(c *gin.Context) {
 		}
 		// 更新合同
 		return tx.Model(&model.DistributorContract{}).Where("distributor_drama_id IN (SELECT id FROM distributor_dramas WHERE application_id = ?)", claimID).Updates(map[string]interface{}{
-			"file_url": contractFileURL,
+			"file_key": contractFileKey,
+			"file_url": s.cos.PublicURL(contractFileKey),
 			"status":   "signed",
 		}).Error
 	})
@@ -355,7 +416,22 @@ func (s *Server) adminUploadContract(c *gin.Context) {
 		return
 	}
 
-	response.OK(c, gin.H{"id": claimID, "status": model.ClaimCompleted, "contract_file_url": contractFileURL})
+	// 返回 presigned GET 下载链接
+	presignedURL, _, _ := s.cos.PresignedGET(contractFileKey)
+	response.OK(c, gin.H{"id": claimID, "status": model.ClaimCompleted, "contract_file_url": presignedURL})
+}
+
+// contractPresignedURL 从 COS key 生成短时 presigned GET 下载链接。
+// 如果 key 为空则返回空串。
+func (s *Server) contractPresignedURL(key string) string {
+	if key == "" {
+		return ""
+	}
+	url, _, err := s.cos.PresignedGET(key)
+	if err != nil {
+		return ""
+	}
+	return url
 }
 
 // ============================================================

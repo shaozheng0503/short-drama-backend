@@ -1055,6 +1055,7 @@ type DistributorApplication struct {
 	AuthorizedAt          *time.Time `gorm:"column:authorized_at" json:"authorized_at"`
 	ContractStatus        string     `gorm:"column:contract_status;size:20;default:pending" json:"contract_status"` // pending/signed/completed
 	ContractFileURL       string     `gorm:"column:contract_file_url;size:512" json:"contract_file_url"`
+	ContractFileKey       string     `gorm:"column:contract_file_key;size:512" json:"contract_file_key"` // COS key，用于生成 presigned GET
 	CompletedAt           *time.Time `gorm:"column:completed_at" json:"completed_at"`
 	CreatedAt             time.Time  `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt             time.Time  `gorm:"column:updated_at" json:"updated_at"`
@@ -1091,6 +1092,7 @@ type DistributorContract struct {
 	ContractNo         string     `gorm:"column:contract_no;size:32;index" json:"contract_no"`
 	EsignFlowID        string     `gorm:"column:esign_flow_id;size:128" json:"esign_flow_id"`
 	FileURL            string     `gorm:"column:file_url;size:512" json:"file_url"`
+	FileKey            string     `gorm:"column:file_key;size:512" json:"file_key"` // COS key，用于生成 presigned GET
 	AmountCents        int64      `gorm:"column:amount_cents" json:"amount_cents"`
 	PaidCents          int64      `gorm:"column:paid_cents;default:0" json:"paid_cents"`
 	PaidAt             *time.Time `gorm:"column:paid_at" json:"paid_at"`

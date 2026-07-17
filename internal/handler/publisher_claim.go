@@ -257,7 +257,7 @@ func (s *Server) claimView(claim model.DistributorApplication) gin.H {
 		"authorization_confirmed": claim.AuthorizationConfirmed,
 		"review_status":           claim.Status,
 		"contract_status":         claim.ContractStatus,
-		"contract_file_url":       claim.ContractFileURL,
+		"contract_file_url":       s.contractPresignedURL(claim.ContractFileKey),
 		"reject_reason":           claim.RejectReason,
 		"completed_at":            claim.CompletedAt,
 		"created_at":              claim.CreatedAt,

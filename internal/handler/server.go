@@ -484,6 +484,7 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/distributors/:id/unban", s.adminUnbanDistributor)
 	// 认领审核
 	adminAuth.GET("/distributor-claims", s.adminListDistributorClaims)
+	adminAuth.GET("/distributor-claims/:id", s.adminGetDistributorClaim)
 	adminAuth.POST("/distributor-claims/:id/approve", s.requireAdminRole(model.AdminRoleAuditor), s.adminApproveClaim)
 	adminAuth.POST("/distributor-claims/:id/reject", s.requireAdminRole(model.AdminRoleAuditor), s.adminRejectClaim)
 	adminAuth.POST("/distributor-claims/:id/contract", s.requireAdminRole(model.AdminRoleAuditor), s.adminUploadContract)

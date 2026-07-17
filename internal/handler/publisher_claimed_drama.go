@@ -293,7 +293,7 @@ func (s *Server) publisherGetClaimedDrama(c *gin.Context) {
 	}
 	if contract != nil {
 		v["contract_status"] = contract.Status
-		v["contract_file_url"] = contract.FileURL
+		v["contract_file_url"] = s.contractPresignedURL(contract.FileKey)
 	} else {
 		v["contract_status"] = "pending"
 	}
@@ -346,7 +346,7 @@ func (s *Server) publisherClaimedDramaClaims(c *gin.Context) {
 			var ct model.DistributorContract
 			if err := s.db.First(&ct, *d.ContractID).Error; err == nil {
 				contractStatus = ct.Status
-				contractFileURL = ct.FileURL
+				contractFileURL = s.contractPresignedURL(ct.FileKey)
 			}
 		}
 		list = append(list, gin.H{
