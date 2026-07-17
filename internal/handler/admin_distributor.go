@@ -551,15 +551,66 @@ func (s *Server) adminListDistributorSettlements(c *gin.Context) {
 			"distributor_id":         st.DistributorID,
 			"distributor_name":       distMap[st.DistributorID],
 			"cycle_key":              st.CycleKey,
+			"period_range":           st.PeriodRange,
 			"status":                 st.Status,
 			"gross_cents":            st.GrossCents,
 			"net_cents":              st.NetCents,
 			"deducted_deposit_cents": st.DeductedDepositCents,
-			"withdrawable_cents":     st.WithdrawableCents,
+			"payable_cents":          st.PayableCents,
+			"transaction_no":         st.TransactionNo,
+			"payment_submitted_at":   st.PaymentSubmittedAt,
+			"receipt_confirmed_at":   st.ReceiptConfirmedAt,
+			"receipt_reject_reason":  st.ReceiptRejectReason,
 			"created_at":             st.CreatedAt,
 		})
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
+}
+
+// GET /admin/distributor-settlements/:id —— 结算单详情
+func (s *Server) adminGetDistributorSettlement(c *gin.Context) {
+	sid := parseUint(c.Param("id"))
+	var st model.DistributorSettlement
+	if err := s.db.First(&st, sid).Error; err != nil {
+		response.NotFound(c, "结算单不存在")
+		return
+	}
+
+	var dist model.Distributor
+	s.db.First(&dist, st.DistributorID)
+
+	response.OK(c, s.distributorSettlementDetailView(&st, &dist))
+}
+
+// distributorSettlementDetailView 构建结算单详情视图（管理端和发行商共用）
+func (s *Server) distributorSettlementDetailView(st *model.DistributorSettlement, dist *model.Distributor) gin.H {
+	v := gin.H{
+		"id":                      st.ID,
+		"settlement_no":           st.SettlementNo,
+		"distributor_id":          st.DistributorID,
+		"distributor_name":        distributorName(dist),
+		"cycle_key":               st.CycleKey,
+		"period_range":            st.PeriodRange,
+		"status":                  st.Status,
+		"gross_cents":             st.GrossCents,
+		"platform_cents":          st.PlatformCents,
+		"net_cents":               st.NetCents,
+		"deducted_deposit_cents":  st.DeductedDepositCents,
+		"payable_cents":           st.PayableCents,
+		"transaction_no":          st.TransactionNo,
+		"paid_at":                 st.PaidAt,
+		"payment_proof_url":       s.contractPresignedURL(st.PaymentProofFileKey),
+		"payment_remark":          st.PaymentRemark,
+		"payment_submitted_at":    st.PaymentSubmittedAt,
+		"receipt_confirmed_at":    st.ReceiptConfirmedAt,
+		"receipt_confirmed_by":    st.ReceiptConfirmedBy,
+		"receipt_reject_reason":   st.ReceiptRejectReason,
+		"remark":                  st.Remark,
+		"opened_at":               st.OpenedAt,
+		"closed_at":               st.ClosedAt,
+		"created_at":              st.CreatedAt,
+	}
+	return v
 }
 
 // POST /admin/distributor-settlements/generate —— 手动生成结算单
@@ -603,14 +654,16 @@ func (s *Server) adminGenerateDistributorSettlement(c *gin.Context) {
 	var d model.Distributor
 	s.db.First(&d, req.DistributorID)
 	deducted := int64(0)
-	if d.DepositFrozenCents > 0 && netCents > 0 {
+	if d.DepositFrozenCents > 0 && gross > 0 {
 		deducted = d.DepositFrozenCents
-		if deducted > netCents {
-			deducted = netCents
+		if deducted > gross {
+			deducted = gross
 		}
 	}
-	withdrawable := netCents - deducted
+	// payable_cents = gross - deducted_deposit（发行商应付平台）
+	payable := gross - deducted
 
+	now := time.Now()
 	st := model.DistributorSettlement{
 		SettlementNo:          fmt.Sprintf("ST-DIST%06d", time.Now().UnixMilli()%1000000),
 		DistributorID:         req.DistributorID,
@@ -621,9 +674,10 @@ func (s *Server) adminGenerateDistributorSettlement(c *gin.Context) {
 		PlatformCents:         platformCents,
 		NetCents:              netCents,
 		DeductedDepositCents:  deducted,
-		WithdrawableCents:     withdrawable,
-		Status:                "open",
-		OpenedAt:              &[]time.Time{time.Now()}[0],
+		WithdrawableCents:     payable, // 兼容旧字段
+		PayableCents:          payable,
+		Status:                model.DistSettlementPendingPayment,
+		OpenedAt:              &now,
 	}
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
@@ -651,17 +705,80 @@ func (s *Server) adminGenerateDistributorSettlement(c *gin.Context) {
 	}
 
 	response.OK(c, gin.H{
-		"settlement_no":         st.SettlementNo,
-		"gross_cents":           st.GrossCents,
-		"net_cents":             st.NetCents,
+		"settlement_no":          st.SettlementNo,
+		"gross_cents":            st.GrossCents,
+		"net_cents":              st.NetCents,
 		"deducted_deposit_cents": st.DeductedDepositCents,
-		"withdrawable_cents":    st.WithdrawableCents,
-		"status":                st.Status,
+		"payable_cents":          st.PayableCents,
+		"status":                 st.Status,
+	})
+}
+
+// POST /admin/distributor-settlements/:id/confirm-receipt —— 确认到账 / 退回
+func (s *Server) adminConfirmDistributorSettlement(c *gin.Context) {
+	sid := parseUint(c.Param("id"))
+	var req struct {
+		Action string `json:"action" binding:"required"` // confirm / reject
+		Remark string `json:"remark"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "action 必填（confirm/reject）")
+		return
+	}
+
+	now := time.Now()
+	adminID := middleware.CurrentID(c)
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var st model.DistributorSettlement
+		if err := tx.First(&st, sid).Error; err != nil {
+			return err
+		}
+		if st.Status != model.DistSettlementPaymentSubmitted {
+			return fmt.Errorf("仅已打款待确认状态可操作，当前状态: %s", st.Status)
+		}
+
+		switch req.Action {
+		case "confirm":
+			return tx.Model(&st).Updates(map[string]interface{}{
+				"status":               model.DistSettlementSettled,
+				"receipt_confirmed_at": now,
+				"receipt_confirmed_by": adminID,
+				"closed_at":            now,
+				"receipt_reject_reason": "",
+			}).Error
+		case "reject":
+			if req.Remark == "" {
+				return fmt.Errorf("退回时 remark 必填")
+			}
+			return tx.Model(&st).Updates(map[string]interface{}{
+				"status":                model.DistSettlementPendingPayment,
+				"receipt_reject_reason": req.Remark,
+			}).Error
+		default:
+			return fmt.Errorf("action 只能是 confirm / reject")
+		}
+	})
+	if err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "结算单不存在")
+		} else {
+			response.Conflict(c, err.Error())
+		}
+		return
+	}
+
+	// 查最新状态
+	var st model.DistributorSettlement
+	s.db.First(&st, sid)
+	response.OK(c, gin.H{
+		"id":    sid,
+		"status": st.Status,
 	})
 }
 
 // ============================================================
-// Admin 提现管理
+// Admin 提现管理（已废弃，保留只读）
 // ============================================================
 
 // GET /admin/distributor-withdrawals —— 提现列表

@@ -653,6 +653,13 @@ const (
 	SettlementStatusVoid     = "void"
 )
 
+// 发行商结算单状态（发行商向平台打款模型）
+const (
+	DistSettlementPendingPayment    = "pending_payment"     // 待发行商打款
+	DistSettlementPaymentSubmitted  = "payment_submitted"   // 已打款/待确认
+	DistSettlementSettled           = "settled"             // 已到账（终态）
+)
+
 // Settlement —— 创作者结算单（按月 × 合同 × 创作者 一条）。
 // 一部结算单对应多个订单贡献（detail 见 settlement_items 表），
 // 创作者自行开票并上传发票，平台审核通过后随提现一并打款。
@@ -1126,6 +1133,7 @@ type DistributorIncomeDaily struct {
 func (DistributorIncomeDaily) TableName() string { return "distributor_income_daily" }
 
 // DistributorSettlement —— 发行商结算单
+// DistributorSettlement —— 发行商结算单（发行商向平台打款模型）
 type DistributorSettlement struct {
 	ID            uint64     `gorm:"primaryKey;column:id" json:"id"`
 	SettlementNo  string     `gorm:"column:settlement_no;size:32;uniqueIndex" json:"settlement_no"`
@@ -1137,11 +1145,22 @@ type DistributorSettlement struct {
 	GrossCents           int64      `gorm:"column:gross_cents" json:"gross_cents"`
 	PlatformCents        int64      `gorm:"column:platform_cents" json:"platform_cents"`            // 平台 45%
 	NetCents             int64      `gorm:"column:net_cents" json:"net_cents"`                       // 机构 55%
-	DeductedDepositCents int64      `gorm:"column:deducted_deposit_cents;default:0" json:"deducted_deposit_cents"` // 0.15.0 抵扣的押金
-	WithdrawableCents    int64      `gorm:"column:withdrawable_cents;default:0" json:"withdrawable_cents"`         // 0.15.0 可出账金额 = net - deducted_deposit
-	Status        string     `gorm:"column:status;size:20;default:draft;index" json:"status"`
+	DeductedDepositCents int64      `gorm:"column:deducted_deposit_cents;default:0" json:"deducted_deposit_cents"` // 抵扣的押金
+	WithdrawableCents    int64      `gorm:"column:withdrawable_cents;default:0" json:"withdrawable_cents"`         // 兼容旧字段
+	PayableCents         int64      `gorm:"column:payable_cents;default:0" json:"payable_cents"`                   // 发行商应付平台金额 = gross - deducted_deposit
+	Status        string     `gorm:"column:status;size:20;default:pending_payment;index" json:"status"`
 	OpenedAt      *time.Time `gorm:"column:opened_at" json:"opened_at"`
 	ClosedAt      *time.Time `gorm:"column:closed_at" json:"closed_at"`
+	// 打款信息（发行商提交）
+	TransactionNo      string     `gorm:"column:transaction_no;size:128" json:"transaction_no"`           // 银行流水号
+	PaidAt             *time.Time `gorm:"column:paid_at" json:"paid_at"`                                  // 实际打款时间
+	PaymentProofFileKey string    `gorm:"column:payment_proof_file_key;size:512" json:"payment_proof_file_key"` // 打款凭证 COS key
+	PaymentRemark      string     `gorm:"column:payment_remark;size:255" json:"payment_remark"`           // 打款备注
+	PaymentSubmittedAt *time.Time `gorm:"column:payment_submitted_at" json:"payment_submitted_at"`        // 提交打款时间
+	// 到账确认（管理员操作）
+	ReceiptConfirmedAt *time.Time `gorm:"column:receipt_confirmed_at" json:"receipt_confirmed_at"`        // 确认到账时间
+	ReceiptConfirmedBy *uint64    `gorm:"column:receipt_confirmed_by" json:"receipt_confirmed_by"`        // 确认人
+	ReceiptRejectReason string    `gorm:"column:receipt_reject_reason;size:255" json:"receipt_reject_reason"` // 退回原因
 	Remark        string     `gorm:"column:remark;size:255" json:"remark"`
 	CreatedAt     time.Time  `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt     time.Time  `gorm:"column:updated_at" json:"updated_at"`

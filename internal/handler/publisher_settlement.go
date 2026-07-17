@@ -10,7 +10,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // GET /v1/publisher/settlements/summary —— 收益结算中心汇总
@@ -21,10 +20,19 @@ func (s *Server) publisherSettlementSummary(c *gin.Context) {
 		response.NotFound(c, "发行商不存在")
 		return
 	}
+
+	// 未结清应付合计 = 所有非 settled 状态结算单的 payable_cents 之和
+	var outstandingPayable int64
+	s.db.Model(&model.DistributorSettlement{}).
+		Where("distributor_id = ? AND status IN ?", id, []string{
+			model.DistSettlementPendingPayment, model.DistSettlementPaymentSubmitted,
+		}).
+		Select("COALESCE(SUM(payable_cents),0)").Scan(&outstandingPayable)
+
 	response.OK(c, gin.H{
-		"total_income_cents":      d.TotalIncomeCents,
-		"deducted_deposit_cents":  d.DepositDeductedCents,
-		"withdrawable_cents":      d.BalanceCents,
+		"total_income_cents":          d.TotalIncomeCents,
+		"deducted_deposit_cents":      d.DepositDeductedCents,
+		"outstanding_payable_cents":   outstandingPayable,
 	})
 }
 
@@ -44,13 +52,19 @@ func (s *Server) publisherListSettlements(c *gin.Context) {
 	list := make([]gin.H, 0, len(items))
 	for _, r := range items {
 		list = append(list, gin.H{
-			"id":                      r.ID,
-			"settlement_no":           r.SettlementNo,
-			"cycle_key":               r.CycleKey,
-			"status":                  r.Status,
-			"gross_cents":             r.GrossCents,
-			"deducted_deposit_cents":  r.DeductedDepositCents,
-			"withdrawable_cents":      r.WithdrawableCents,
+			"id":                     r.ID,
+			"settlement_no":          r.SettlementNo,
+			"cycle_key":              r.CycleKey,
+			"period_range":           r.PeriodRange,
+			"status":                 r.Status,
+			"gross_cents":            r.GrossCents,
+			"deducted_deposit_cents": r.DeductedDepositCents,
+			"payable_cents":          r.PayableCents,
+			"transaction_no":         r.TransactionNo,
+			"payment_submitted_at":   r.PaymentSubmittedAt,
+			"receipt_confirmed_at":   r.ReceiptConfirmedAt,
+			"receipt_reject_reason":  r.ReceiptRejectReason,
+			"created_at":             r.CreatedAt,
 		})
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
@@ -66,218 +80,112 @@ func (s *Server) publisherGetSettlement(c *gin.Context) {
 		return
 	}
 
-	// 剧集收益汇总 — 从 period_range 提取起止日期
+	var dist model.Distributor
+	s.db.First(&dist, id)
+
+	// 剧集收益汇总
 	type dramaIncomeRow struct {
 		DramaID     uint64
-		DramaTitle  string
 		IncomeCents int64
 	}
-	// period_range 格式: "2026-07-16 ~ 2026-07-31"
 	startDate := ""
 	endDate := ""
 	if len(st.PeriodRange) >= 21 {
 		startDate = st.PeriodRange[:10]
 		endDate = st.PeriodRange[len(st.PeriodRange)-10:]
-	} else if st.PeriodRange != "" {
-		// fallback: 尝试用 cycle_key 月份
-		startDate = st.CycleKey[:7] + "-01"
-		endDate = st.CycleKey[:7] + "-31"
 	}
 
 	var dramaRows []dramaIncomeRow
 	q := s.db.Table("distributor_income_daily").
-		Select("drama_id, '' as drama_title, COALESCE(SUM(income_cents),0) as income_cents").
+		Select("drama_id, COALESCE(SUM(income_cents),0) as income_cents").
 		Where("distributor_id = ?", id)
 	if startDate != "" && endDate != "" {
 		q = q.Where("stat_date >= ? AND stat_date <= ?", startDate, endDate)
 	}
 	q.Group("drama_id").Scan(&dramaRows)
-	// 查剧名
-	for i, r := range dramaRows {
-		var title string
-		s.db.Table("dramas").Select("title").Where("id = ?", r.DramaID).Scan(&title)
-		dramaRows[i].DramaTitle = title
-	}
+
 	dramaSummary := make([]gin.H, 0, len(dramaRows))
 	for _, r := range dramaRows {
+		var title string
+		s.db.Table("dramas").Select("title").Where("id = ?", r.DramaID).Scan(&title)
 		dramaSummary = append(dramaSummary, gin.H{
 			"drama_id":     r.DramaID,
-			"drama_title":  r.DramaTitle,
+			"drama_title":  title,
 			"income_cents": r.IncomeCents,
 		})
 	}
 
-	// 提现记录
-	var withdrawals []model.DistributorWithdrawal
-	s.db.Where("settlement_id = ?", st.ID).Find(&withdrawals)
-	wdViews := make([]gin.H, 0, len(withdrawals))
-	for _, w := range withdrawals {
-		wdViews = append(wdViews, gin.H{
-			"id":           w.ID,
-			"withdrawal_no": w.WithdrawalNo,
-			"amount_cents": w.AmountCents,
-			"status":       w.Status,
-			"created_at":   w.CreatedAt,
-			"paid_at":      w.PaidAt,
-		})
-	}
-
-	response.OK(c, gin.H{
-		"id":                     st.ID,
-		"settlement_no":          st.SettlementNo,
-		"cycle_key":              st.CycleKey,
-		"period_range":           st.PeriodRange,
-		"status":                 st.Status,
-		"gross_cents":            st.GrossCents,
-		"platform_cents":         st.PlatformCents,
-		"net_cents":              st.NetCents,
-		"deducted_deposit_cents": st.DeductedDepositCents,
-		"withdrawable_cents":     st.WithdrawableCents,
-		"drama_summary":          dramaSummary,
-		"withdrawals":            wdViews,
-		"created_at":             st.CreatedAt,
-	})
+	v := s.distributorSettlementDetailView(&st, &dist)
+	v["drama_summary"] = dramaSummary
+	response.OK(c, v)
 }
 
-// GET /v1/publisher/settlements/:id/withdrawal-preview —— 提现预览
-func (s *Server) publisherWithdrawalPreview(c *gin.Context) {
+// POST /v1/publisher/settlements/:id/remittance —— 发行商提交已打款信息
+func (s *Server) publisherSubmitRemittance(c *gin.Context) {
 	id := middleware.CurrentID(c)
 	sid := parseUint(c.Param("id"))
-	var st model.DistributorSettlement
-	if err := s.db.Where("id = ? AND distributor_id = ?", sid, id).First(&st).Error; err != nil {
-		response.NotFound(c, "结算单不存在")
-		return
+
+	var req struct {
+		TransactionNo  string `json:"transaction_no" binding:"required"`
+		PaidAt          string `json:"paid_at" binding:"required"`
+		ProofFileKey   string `json:"proof_file_key"`
+		Remark         string `json:"remark"`
 	}
-
-	// 查发行商银行信息
-	var d model.Distributor
-	s.db.Select("bank_name, bank_card_no_masked, org_name, name, verify_status").First(&d, id)
-
-	// 查是否已有 pending 提现
-	var existingCount int64
-	s.db.Model(&model.DistributorWithdrawal{}).Where("settlement_id = ? AND status = ?", st.ID, "pending").Count(&existingCount)
-
-	creatorName := distributorName(&d)
-
-	response.OK(c, gin.H{
-		"settlement_id":      st.ID,
-		"settlement_no":      st.SettlementNo,
-		"cycle_key":          st.CycleKey,
-		"withdrawable_cents": st.WithdrawableCents,
-		"bank_account": gin.H{
-			"bank_name":       d.BankName,
-			"bank_no_masked":  d.BankCardNoMasked,
-			"creator_name":    creatorName,
-		},
-		"invoice_required":  d.VerifyStatus == model.DistributorVerifyVerified, // 企业认证需发票
-		"already_pending":   existingCount > 0,
-	})
-}
-
-// ============================================================
-// 提现
-// ============================================================
-
-type publisherWithdrawalRequest struct {
-	SettlementID   uint64 `json:"settlement_id" binding:"required"`
-	InvoiceFileURL string `json:"invoice_file_url"`
-	InvoiceType    string `json:"invoice_type"`
-}
-
-// POST /v1/publisher/withdrawals —— 提交提现申请
-func (s *Server) publisherCreateWithdrawal(c *gin.Context) {
-	id := middleware.CurrentID(c)
-
-	// 业务规则：未认证用户不可发起提现
-	if !s.isDistributorVerified(id) {
-		response.Forbidden(c, "未认证用户不可发起提现，请先完成企业认证")
-		return
-	}
-
-	var req publisherWithdrawalRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.InvalidParam(c, "settlement_id 必填")
+		response.InvalidParam(c, "transaction_no 和 paid_at 必填")
 		return
 	}
 
-	var st model.DistributorSettlement
-	if err := s.db.Where("id = ? AND distributor_id = ?", req.SettlementID, id).First(&st).Error; err != nil {
-		response.NotFound(c, "结算单不存在")
-		return
-	}
-	if st.Status != "open" && st.Status != "invoiced" {
-		response.Conflict(c, "结算单状态不可提现")
-		return
-	}
-	if st.WithdrawableCents <= 0 {
-		response.Conflict(c, "可提现金额为 0")
+	paidAt, err := time.Parse(time.RFC3339, req.PaidAt)
+	if err != nil {
+		response.InvalidParam(c, "paid_at 格式错误（需 RFC3339，如 2026-07-16T15:00:00+08:00）")
 		return
 	}
 
-	// 检查是否已有 pending
-	var existingCount int64
-	s.db.Model(&model.DistributorWithdrawal{}).Where("settlement_id = ? AND status = ?", st.ID, "pending").Count(&existingCount)
-	if existingCount > 0 {
-		response.Conflict(c, "该结算单已有待处理的提现申请")
-		return
-	}
-
-	var d model.Distributor
-	s.db.First(&d, id)
-
-	// 创建提现 + 扣余额
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		var dist model.Distributor
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, id).Error; err != nil {
-			return err
+	now := time.Now()
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		var st model.DistributorSettlement
+		if err := tx.Where("id = ? AND distributor_id = ?", sid, id).First(&st).Error; err != nil {
+			return fmt.Errorf("结算单不存在")
 		}
-		if dist.BalanceCents < st.WithdrawableCents {
-			return fmt.Errorf("可提现余额不足")
+		if st.Status != model.DistSettlementPendingPayment {
+			return fmt.Errorf("仅待打款状态可提交，当前状态: %s", st.Status)
 		}
-		dist.BalanceCents -= st.WithdrawableCents
-		dist.FrozenCents += st.WithdrawableCents
-		if err := tx.Save(&dist).Error; err != nil {
-			return err
-		}
-
-		wd := model.DistributorWithdrawal{
-			WithdrawalNo:       fmt.Sprintf("WD%06d", time.Now().UnixMilli()%1000000),
-			DistributorID:      id,
-			SettlementID:       st.ID,
-			AmountCents:        st.WithdrawableCents,
-			BankNameSnapshot:   dist.BankName,
-			BankCardNoSnapshot: dist.BankCardNoMasked,
-			Status:             "pending",
-		}
-
-		// 发票（企业必传）
-		if d.VerifyStatus == model.DistributorVerifyVerified && req.InvoiceFileURL != "" {
-			inv := model.DistributorInvoice{
-				InvoiceNo:    fmt.Sprintf("INV%06d", time.Now().UnixMilli()%1000000),
-				SettlementID: st.ID,
-				DistributorID: id,
-				InvoiceType:  req.InvoiceType,
-				AmountCents:  st.WithdrawableCents,
-				FileURL:      req.InvoiceFileURL,
-				Status:       "pending",
-			}
-			if err := tx.Create(&inv).Error; err != nil {
-				return err
-			}
-			wd.InvoiceID = &inv.ID
-		}
-
-		return tx.Create(&wd).Error
+		return tx.Model(&st).Updates(map[string]interface{}{
+			"status":                  model.DistSettlementPaymentSubmitted,
+			"transaction_no":          req.TransactionNo,
+			"paid_at":                 paidAt,
+			"payment_proof_file_key":  req.ProofFileKey,
+			"payment_remark":          req.Remark,
+			"payment_submitted_at":    now,
+			"receipt_reject_reason":   "",
+		}).Error
 	})
 	if err != nil {
 		response.Conflict(c, err.Error())
 		return
 	}
 
-	// 更新结算单状态
-	s.db.Model(&st).Update("status", "invoiced")
+	var st model.DistributorSettlement
+	s.db.First(&st, sid)
+	response.OK(c, gin.H{
+		"id":     sid,
+		"status": st.Status,
+	})
+}
 
-	response.OK(c, gin.H{"status": "pending", "message": "提现申请已提交"})
+// ============================================================
+// 提现（已废弃，保留只读接口）
+// ============================================================
+
+// GET /v1/publisher/settlements/:id/withdrawal-preview —— 提现预览（废弃）
+func (s *Server) publisherWithdrawalPreview(c *gin.Context) {
+	response.Conflict(c, "提现功能已下线，请使用结算单打款流程")
+}
+
+// POST /v1/publisher/withdrawals —— 提交提现申请（废弃）
+func (s *Server) publisherCreateWithdrawal(c *gin.Context) {
+	response.Conflict(c, "提现功能已下线，请使用结算单打款流程")
 }
 
 // GET /v1/publisher/withdrawals —— 提现记录列表

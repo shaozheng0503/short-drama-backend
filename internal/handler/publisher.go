@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"ai-drama-platform/internal/middleware"
@@ -77,6 +78,50 @@ func (s *Server) publisherUpload(c *gin.Context) {
 	response.OK(c, gin.H{
 		"upload_url": url,
 		"file_url":   fileURL,
+		"key":        key,
+		"headers":    hdrs,
+		"expires":    expiresAt,
+	})
+}
+
+// POST /v1/publisher/uploads/remittance —— 打款凭证上传签名
+// 私有 ACL，下载走 presigned GET
+func (s *Server) publisherRemittanceUploadSign(c *gin.Context) {
+	if !s.cos.Configured() {
+		response.Fail(c, response.CodeThirdPartyError, "COS 未配置")
+		return
+	}
+	var req struct {
+		Ext string `json:"ext"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	ext := strings.ToLower(strings.TrimPrefix(req.Ext, "."))
+	if ext == "" {
+		ext = "png"
+	}
+	allowedExts := map[string]bool{"png": true, "jpg": true, "jpeg": true, "pdf": true}
+	if !allowedExts[ext] {
+		response.InvalidParam(c, "ext 不允许，仅支持 png/jpg/jpeg/pdf")
+		return
+	}
+
+	id := middleware.CurrentID(c)
+	prefix := "settlement-remittance/" + time.Now().Format("2006/01/02")
+	prefix += "/dist_" + itoa(id)
+	key := prefix + "/" + randomToken(12) + "." + ext
+
+	url, expiresAt, requiredHeaders, err := s.cos.PresignedPUTWithACL(key, "private")
+	if err != nil {
+		response.ServerError(c, "签名失败")
+		return
+	}
+	hdrs := gin.H{}
+	for k, v := range requiredHeaders {
+		hdrs[k] = v
+	}
+	response.OK(c, gin.H{
+		"upload_url": url,
 		"key":        key,
 		"headers":    hdrs,
 		"expires":    expiresAt,

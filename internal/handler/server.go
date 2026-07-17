@@ -320,6 +320,7 @@ func (s *Server) Router() *gin.Engine {
 	pubAuth.GET("/profile/verification", s.distributorVerificationStatus)
 	pubAuth.POST("/profile/verification", s.distributorUpdateEnterpriseVerification)
 	pubAuth.POST("/upload", s.publisherUpload)
+	pubAuth.POST("/uploads/remittance", s.publisherRemittanceUploadSign)
 	pubAuth.GET("/dashboard", s.publisherDashboard)
 	// 剧集广场
 	pubAuth.GET("/dramas", s.publisherListDramas)
@@ -344,10 +345,11 @@ func (s *Server) Router() *gin.Engine {
 	pubAuth.GET("/settlements/summary", s.publisherSettlementSummary)
 	pubAuth.GET("/settlements", s.publisherListSettlements)
 	pubAuth.GET("/settlements/:id", s.publisherGetSettlement)
+	pubAuth.POST("/settlements/:id/remittance", s.publisherSubmitRemittance)
+	// 提现（已废弃，保留只读）
 	pubAuth.GET("/settlements/:id/withdrawal-preview", s.publisherWithdrawalPreview)
-	// 提现
 	pubAuth.GET("/withdrawals", s.publisherListWithdrawals)
-	pubAuth.POST("/withdrawals", s.publisherCreateWithdrawal)
+	pubAuth.POST("/withdrawals", s.publisherCreateWithdrawal) // 废弃，返回 409
 	pubAuth.GET("/withdrawals/:id", s.publisherGetWithdrawal)
 
 	// === Admin ===
@@ -492,8 +494,10 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/finance/distributor-income/import", s.requireAdminRole(model.AdminRoleFinance), s.adminImportDistributorIncome)
 	// 结算管理
 	adminAuth.GET("/distributor-settlements", s.adminListDistributorSettlements)
+	adminAuth.GET("/distributor-settlements/:id", s.adminGetDistributorSettlement)
 	adminAuth.POST("/distributor-settlements/generate", s.requireAdminRole(model.AdminRoleFinance), s.adminGenerateDistributorSettlement)
-	// 提现管理
+	adminAuth.POST("/distributor-settlements/:id/confirm-receipt", s.requireAdminRole(model.AdminRoleFinance), s.adminConfirmDistributorSettlement)
+	// 提现管理（已废弃，保留只读）
 	adminAuth.GET("/distributor-withdrawals", s.adminListDistributorWithdrawals)
 	adminAuth.POST("/distributor-withdrawals/:id/review", s.requireAdminRole(model.AdminRoleFinance), s.adminReviewDistributorWithdrawal)
 	adminAuth.POST("/distributor-withdrawals/:id/mark-paid", s.requireAdminRole(model.AdminRoleFinance), s.adminMarkPaidDistributorWithdrawal)
