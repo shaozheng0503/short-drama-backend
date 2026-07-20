@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -19,20 +20,18 @@ import (
 
 // AlipayProvider 支付宝支付接入（公钥模式：应用私钥签名 + 支付宝公钥验签）。
 //
-//   - Prepay 按 Scene 选产品：app → alipay.trade.app.pay（返回 order_string，客户端 SDK 唤起）；
-//     wap → alipay.trade.wap.pay（返回 pay_url，H5 跳转）。两者都在本地完成签名，不调网络。
-//   - VerifyAndParse 用 DecodeNotification 一步验签 + 解析异步通知，
-//     trade_status 为 TRADE_SUCCESS / TRADE_FINISHED 视为已支付。
+//   - 支持双 AppID：app 端用 AlipayAppID（已签约 App 支付），wap 端用 AlipayWapAppID（已签约手机网站支付）。
+//     密钥共用同一对。AlipayWapAppID 为空时 wap 也复用 AlipayAppID。
+//   - Prepay 按 Scene 选产品+选 client：app → alipay.trade.app.pay（order_string）；wap → alipay.trade.wap.pay（pay_url）。
+//   - VerifyAndParse 用 DecodeNotification 验签+解析，两个 client 公钥相同都能验。
+//   - QueryOrder/Refund/CloseOrder 先用 app client，失败再试 wap client（订单归属不同 AppID）。
 type AlipayProvider struct {
-	cfg    config.Config
-	client *alipay.Client
+	cfg       config.Config
+	appClient *alipay.Client // App 支付 client
+	wapClient *alipay.Client // wap(H5)支付 client，为 nil 时复用 appClient
 }
 
-// NewAlipayProvider 初始化支付宝客户端。production = !sandbox：
-// 沙箱走 openapi.alipaydev.com，生产走 openapi.alipay.com（SDK 内部按 flag 切网关）。
-//
-// 私钥 / 公钥优先用文件路径（*_PATH），避免把 PEM 文本写进 .env/commit/聊天，泄漏面更小；
-// 没填路径时回退读环境变量里的字符串。
+// NewAlipayProvider 初始化支付宝客户端。
 func NewAlipayProvider(cfg config.Config) (*AlipayProvider, error) {
 	privateKey, err := readAlipayMaterial(cfg.AlipayPrivateKeyPath, cfg.AlipayPrivateKey, "ALIPAY_PRIVATE_KEY")
 	if err != nil {
@@ -43,18 +42,45 @@ func NewAlipayProvider(cfg config.Config) (*AlipayProvider, error) {
 		return nil, err
 	}
 
-	client, err := alipay.New(cfg.AlipayAppID, privateKey, !cfg.AlipaySandbox)
+	appClient, err := newAlipayClient(cfg.AlipayAppID, privateKey, publicKey, cfg.AlipaySandbox)
 	if err != nil {
-		return nil, fmt.Errorf("alipay 客户端初始化: %w", err)
+		return nil, fmt.Errorf("alipay app client 初始化: %w", err)
 	}
-	// smartwalle 默认用 http.DefaultClient（无超时）：网关查单/退款若 hang 会无限占住 goroutine。
-	// 覆盖成带超时的 client（Prepay 是本地签名不走网络，受影响的是 QueryOrder/Refund）。
+
+	p := &AlipayProvider{cfg: cfg, appClient: appClient}
+
+	// wap 独立 AppID：创建第二个 client（密钥相同）
+	if cfg.AlipayWapAppID != "" && cfg.AlipayWapAppID != cfg.AlipayAppID {
+		wapClient, err := newAlipayClient(cfg.AlipayWapAppID, privateKey, publicKey, cfg.AlipaySandbox)
+		if err != nil {
+			return nil, fmt.Errorf("alipay wap client 初始化: %w", err)
+		}
+		p.wapClient = wapClient
+		log.Printf("[payment] 支付宝双 AppID: app=%s wap=%s", cfg.AlipayAppID, cfg.AlipayWapAppID)
+	}
+
+	return p, nil
+}
+
+// newAlipayClient 创建带超时 + 公钥验签的 alipay client
+func newAlipayClient(appID, privateKey, publicKey string, sandbox bool) (*alipay.Client, error) {
+	client, err := alipay.New(appID, privateKey, !sandbox)
+	if err != nil {
+		return nil, err
+	}
 	client.Client = &http.Client{Timeout: 15 * time.Second}
-	// 公钥模式：载入支付宝公钥用于回调验签。
 	if err := client.LoadAliPayPublicKey(publicKey); err != nil {
 		return nil, fmt.Errorf("加载支付宝公钥: %w", err)
 	}
-	return &AlipayProvider{cfg: cfg, client: client}, nil
+	return client, nil
+}
+
+// wapClientOrFallback 返回 wap client，未配置时回退到 app client
+func (p *AlipayProvider) wapClientOrFallback() *alipay.Client {
+	if p.wapClient != nil {
+		return p.wapClient
+	}
+	return p.appClient
 }
 
 // readAlipayMaterial 优先用文件路径；没有路径就回退到内联字符串；都没有就报错。
@@ -97,7 +123,7 @@ func (p *AlipayProvider) Prepay(input PrepayInput) (PrepayParams, error) {
 		if !input.ExpireAt.IsZero() {
 			req.TimeExpire = input.ExpireAt.Format("2006-01-02 15:04:05")
 		}
-		u, err := p.client.TradeWapPay(req)
+		u, err := p.wapClientOrFallback().TradeWapPay(req)
 		if err != nil {
 			return nil, fmt.Errorf("alipay wap prepay: %w", err)
 		}
@@ -117,7 +143,7 @@ func (p *AlipayProvider) Prepay(input PrepayInput) (PrepayParams, error) {
 		if !input.ExpireAt.IsZero() {
 			req.TimeExpire = input.ExpireAt.Format("2006-01-02 15:04:05")
 		}
-		orderStr, err := p.client.TradeAppPay(req)
+		orderStr, err := p.appClient.TradeAppPay(req)
 		if err != nil {
 			return nil, fmt.Errorf("alipay app prepay: %w", err)
 		}
@@ -132,8 +158,23 @@ func (p *AlipayProvider) Prepay(input PrepayInput) (PrepayParams, error) {
 
 // CloseOrder 关闭支付宝侧未支付订单（alipay.trade.close），作废其支付链接。
 // 订单不存在 / 已关闭等按幂等处理：不返回错误，让本地关单流程继续。
+// 订单可能属于 app 或 wap AppID，先试 app client，失败再试 wap client。
 func (p *AlipayProvider) CloseOrder(orderNo string) error {
-	rsp, err := p.client.TradeClose(context.Background(), alipay.TradeClose{OutTradeNo: orderNo})
+	err := p.closeOrderWith(p.appClient, orderNo)
+	if err == nil {
+		return nil
+	}
+	if p.wapClient != nil {
+		err2 := p.closeOrderWith(p.wapClient, orderNo)
+		if err2 == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+func (p *AlipayProvider) closeOrderWith(client *alipay.Client, orderNo string) error {
+	rsp, err := client.TradeClose(context.Background(), alipay.TradeClose{OutTradeNo: orderNo})
 	if err != nil {
 		return fmt.Errorf("alipay trade close: %w", err)
 	}
@@ -154,8 +195,8 @@ func (p *AlipayProvider) VerifyAndParse(_ map[string]string, body []byte) (*Webh
 	if err != nil {
 		return nil, err
 	}
-	// DecodeNotification 内部完成验签 + 解析;验签失败统一抛 ErrVerifyFailed。
-	noti, err := p.client.DecodeNotification(context.Background(), values)
+	// DecodeNotification 内部完成验签 + 解析;两个 client 公钥相同都能验。
+	noti, err := p.appClient.DecodeNotification(context.Background(), values)
 	if err != nil {
 		return nil, ErrVerifyFailed
 	}
@@ -174,7 +215,22 @@ func (p *AlipayProvider) VerifyAndParse(_ map[string]string, body []byte) (*Webh
 // 订单根本未创建/已被清理时,SDK 返回 ACQ.TRADE_NOT_EXIST(Error.Code != "10000"),
 // 这里映射为 ErrOrderNotFound 由上层判断;其余错误透传。
 func (p *AlipayProvider) QueryOrder(orderNo string) (*OrderState, error) {
-	rsp, err := p.client.TradeQuery(context.Background(), alipay.TradeQuery{OutTradeNo: orderNo})
+	// 订单可能属于 app 或 wap AppID，先试 app client，失败再试 wap client。
+	state, err := p.queryOrderWith(p.appClient, orderNo)
+	if err == nil {
+		return state, nil
+	}
+	if p.wapClient != nil {
+		state2, err2 := p.queryOrderWith(p.wapClient, orderNo)
+		if err2 == nil {
+			return state2, nil
+		}
+	}
+	return nil, err
+}
+
+func (p *AlipayProvider) queryOrderWith(client *alipay.Client, orderNo string) (*OrderState, error) {
+	rsp, err := client.TradeQuery(context.Background(), alipay.TradeQuery{OutTradeNo: orderNo})
 	if err != nil {
 		return nil, fmt.Errorf("alipay trade query: %w", err)
 	}
@@ -227,7 +283,22 @@ func (p *AlipayProvider) Refund(input RefundInput) (*RefundResult, error) {
 		RefundReason: input.Reason,
 		OutRequestNo: input.RefundNo,
 	}
-	rsp, err := p.client.TradeRefund(context.Background(), req)
+	// 订单可能属于 app 或 wap AppID，先试 app client，失败再试 wap client。
+	result, err := p.refundWith(p.appClient, req, input)
+	if err == nil {
+		return result, nil
+	}
+	if p.wapClient != nil {
+		result2, err2 := p.refundWith(p.wapClient, req, input)
+		if err2 == nil {
+			return result2, nil
+		}
+	}
+	return result, err // 返回第一次的错误（result 可能为 nil，但 err 非 nil 时上层只看 err）
+}
+
+func (p *AlipayProvider) refundWith(client *alipay.Client, req alipay.TradeRefund, input RefundInput) (*RefundResult, error) {
+	rsp, err := client.TradeRefund(context.Background(), req)
 	if err != nil {
 		return nil, fmt.Errorf("alipay trade refund: %w", err)
 	}

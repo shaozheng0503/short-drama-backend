@@ -129,6 +129,7 @@ type Config struct {
 	WechatNotifyURL        string // 异步通知地址 https://<域名>/v1/webhooks/wechat/pay
 
 	AlipayAppID            string
+	AlipayWapAppID         string // wap(H5手机网站支付)独立 AppID，为空时复用 AlipayAppID
 	AlipayPrivateKey       string // 兼容老写法：私钥 PEM 文本直接写在 .env
 	AlipayPrivateKeyPath   string // 推荐：私钥 PEM 文件路径（避免密钥进 .env/commit/聊天，泄漏面更小）
 	AlipayPublicKey        string
@@ -248,6 +249,7 @@ func Load() Config {
 		WechatNotifyURL:         getEnv("WECHAT_NOTIFY_URL", ""),
 
 		AlipayAppID:          getEnv("ALIPAY_APP_ID", ""),
+		AlipayWapAppID:       getEnv("ALIPAY_WAP_APP_ID", ""),
 		AlipayPrivateKey:     getEnv("ALIPAY_PRIVATE_KEY", ""),
 		AlipayPrivateKeyPath: getEnv("ALIPAY_PRIVATE_KEY_PATH", ""),
 		AlipayPublicKey:      getEnv("ALIPAY_PUBLIC_KEY", ""),
