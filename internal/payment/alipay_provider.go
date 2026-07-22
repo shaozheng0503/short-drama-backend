@@ -113,19 +113,21 @@ func (p *AlipayProvider) Prepay(input PrepayInput) (PrepayParams, error) {
 	amount := centsToYuan(input.AmountCents)
 
 	switch strings.ToLower(input.Scene) {
-	case "wap", "h5":
-		var req = alipay.TradeWapPay{}
+	case "wap", "h5", "web":
+		// 电脑网站支付（alipay.trade.page.pay），已签约「电脑网站支付」产品。
+		// 手机浏览器和 PC 浏览器都能用，返回 pay_url 跳转。
+		var req = alipay.TradePagePay{}
 		req.Subject = subject
 		req.OutTradeNo = input.OrderNo
 		req.TotalAmount = amount
-		req.ProductCode = "QUICK_WAP_WAY"
+		req.ProductCode = "FAST_INSTANT_TRADE_PAY"
 		req.NotifyURL = p.cfg.AlipayNotifyURL
 		if !input.ExpireAt.IsZero() {
 			req.TimeExpire = input.ExpireAt.Format("2006-01-02 15:04:05")
 		}
-		u, err := p.wapClientOrFallback().TradeWapPay(req)
+		u, err := p.wapClientOrFallback().TradePagePay(req)
 		if err != nil {
-			return nil, fmt.Errorf("alipay wap prepay: %w", err)
+			return nil, fmt.Errorf("alipay page prepay: %w", err)
 		}
 		return PrepayParams{
 			"method":   "alipay",
