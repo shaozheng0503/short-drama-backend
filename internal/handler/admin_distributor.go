@@ -228,25 +228,26 @@ func (s *Server) adminGetDistributorClaim(c *gin.Context) {
 	}
 
 	v := gin.H{
-		"id":                   claim.ID,
-		"application_no":       claim.ApplicationNo,
-		"distributor_id":       claim.DistributorID,
-		"distributor_name":     distributorName(&dist),
-		"drama_id":             claim.DramaID,
-		"drama_title":          drama.Title,
-		"drama_cover_url":      drama.CoverURL,
-		"episode_count":        drama.TotalEpisodes,
-		"platforms":            parsePlatforms(claim.Platforms),
-		"deposit_amount_cents": claim.DepositAmountCents,
-		"deposit_status":       claim.DepositStatus,
-		"status":               claim.Status,
-		"contract_status":      claim.ContractStatus,
-		"contract_file_url":    s.contractPresignedURL(claim.ContractFileKey),
-		"reject_reason":        claim.RejectReason,
-		"reviewed_at":          claim.ReviewedAt,
-		"authorized_at":        claim.AuthorizedAt,
-		"completed_at":         claim.CompletedAt,
-		"created_at":           claim.CreatedAt,
+		"id":                      claim.ID,
+		"application_no":          claim.ApplicationNo,
+		"distributor_id":          claim.DistributorID,
+		"distributor_name":        distributorName(&dist),
+		"drama_id":                claim.DramaID,
+		"drama_title":             drama.Title,
+		"drama_cover_url":         drama.CoverURL,
+		"episode_count":           drama.TotalEpisodes,
+		"platforms":               parsePlatforms(claim.Platforms),
+		"deposit_amount_cents":    claim.DepositAmountCents,
+		"deposit_status":          claim.DepositStatus,
+		"status":                  claim.Status,
+		"contract_status":         claim.ContractStatus,
+		"contract_file_url":       s.contractPresignedURL(claim.ContractFileKey),
+		"reject_reason":           claim.RejectReason,
+		"authorization_confirmed": claim.AuthorizationConfirmed,
+		"reviewed_at":             claim.ReviewedAt,
+		"authorized_at":           claim.AuthorizedAt,
+		"completed_at":            claim.CompletedAt,
+		"created_at":              claim.CreatedAt,
 	}
 	if contract != nil {
 		v["contract_no"] = contract.ContractNo
@@ -272,8 +273,9 @@ func (s *Server) adminApproveClaim(c *gin.Context) {
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		// 更新认领状态
 		if err := tx.Model(&claim).Updates(map[string]interface{}{
-			"status":      model.ClaimContractPending,
-			"reviewed_at": now,
+			"status":          model.ClaimContractPending,
+			"contract_status": model.ClaimContractPending_,
+			"reviewed_at":     now,
 		}).Error; err != nil {
 			return err
 		}
@@ -351,9 +353,11 @@ func (s *Server) adminRejectClaim(c *gin.Context) {
 			s.recordDepositTx(tx, claim.DistributorID, model.DepositTxUnfreeze, claim.DepositAmountCents, dist.DepositAvailableCents, "claim", claim.ApplicationNo, "认领驳回释放押金")
 		}
 		return tx.Model(&claim).Updates(map[string]interface{}{
-			"status":         model.ClaimRejected,
-			"reject_reason":  req.Reason,
-			"reviewed_at":    now,
+			"status":          model.ClaimRejected,
+			"deposit_status":  model.ClaimDepositReleased,
+			"contract_status": model.ClaimContractNone,
+			"reject_reason":   req.Reason,
+			"reviewed_at":     now,
 		}).Error
 	})
 	if err != nil {

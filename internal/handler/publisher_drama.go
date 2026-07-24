@@ -251,7 +251,7 @@ func (s *Server) getOccupiedPlatforms(dramaID uint64) map[string]bool {
 			occupied[p] = true
 		}
 	}
-	// 审核中的认领（distributor_applications: deposit_pending/auth_pending/review_pending/contract_pending）
+	// 审核中的认领（distributor_applications: deposit_pending/authorization_pending/review_pending/contract_pending）
 	activeClaimStatuses := []string{
 		model.ClaimDepositPending, model.ClaimAuthPending,
 		model.ClaimReviewPending, model.ClaimContractPending,

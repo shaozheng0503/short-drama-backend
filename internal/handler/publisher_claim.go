@@ -121,6 +121,7 @@ func (s *Server) publisherCreateClaim(c *gin.Context) {
 		DepositAmountCents: depositAmount,
 		DepositStatus:      model.ClaimDepositUnpaid,
 		Status:             model.ClaimDepositPending,
+		ContractStatus:     model.ClaimContractNone,
 	}
 	if err := s.db.Create(&claim).Error; err != nil {
 		response.ServerError(c, "创建认领申请失败")
@@ -235,6 +236,7 @@ func (s *Server) publisherSubmitClaim(c *gin.Context) {
 	now := time.Now()
 	s.db.Model(&claim).Updates(map[string]interface{}{
 		"authorization_confirmed": true,
+		"authorized_at":           now,
 		"status":                  model.ClaimReviewPending,
 		"updated_at":              now,
 	})

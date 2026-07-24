@@ -103,6 +103,9 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 	if err := migrateCreateStateTransitions(db); err != nil {
 		return nil, err
 	}
+	if err := migrateClaimStatusEnums(db); err != nil {
+		return nil, err
+	}
 	if cfg.SeedMockData {
 		result, err := seed.Run(db, cfg)
 		if err != nil {
@@ -277,6 +280,28 @@ func migrateCreateStateTransitions(db *gorm.DB) error {
 		return err
 	}
 	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_state_transitions_created_at ON state_transitions (created_at)`).Error; err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrateClaimStatusEnums 统一认领流程状态枚举（2026-07-24）。
+// 1. auth_pending → authorization_pending（Issue 5：命名统一）
+// 2. 驳回认领 deposit_status: paid → released（Issue 2：驳回后押金状态）
+// 3. 未进入合同阶段 contract_status: pending → none（Issue 4：避免误导）
+// 幂等：每条 UPDATE 都带 WHERE 条件，重复执行安全。
+func migrateClaimStatusEnums(db *gorm.DB) error {
+	// 1. auth_pending → authorization_pending
+	if err := db.Exec(`UPDATE distributor_applications SET status = 'authorization_pending' WHERE status = 'auth_pending'`).Error; err != nil {
+		return err
+	}
+	// 2. 驳回认领：deposit_status paid → released
+	if err := db.Exec(`UPDATE distributor_applications SET deposit_status = 'released' WHERE status = 'rejected' AND deposit_status = 'paid'`).Error; err != nil {
+		return err
+	}
+	// 3. 未进入合同阶段：contract_status pending → none
+	//    仅对 deposit_pending / authorization_pending / review_pending / rejected 状态的认领
+	if err := db.Exec(`UPDATE distributor_applications SET contract_status = 'none' WHERE status IN ('deposit_pending', 'authorization_pending', 'review_pending', 'rejected') AND contract_status = 'pending'`).Error; err != nil {
 		return err
 	}
 	return nil
