@@ -286,11 +286,16 @@ func migrateCreateStateTransitions(db *gorm.DB) error {
 }
 
 // migrateClaimStatusEnums 统一认领流程状态枚举（2026-07-24）。
-// 1. auth_pending → authorization_pending（Issue 5：命名统一）
-// 2. 驳回认领 deposit_status: paid → released（Issue 2：驳回后押金状态）
-// 3. 未进入合同阶段 contract_status: pending → none（Issue 4：避免误导）
+// 1. status 列扩容 VARCHAR(20) → VARCHAR(32)（authorization_pending 21 字符超限）
+// 2. auth_pending → authorization_pending（Issue 5：命名统一）
+// 3. 驳回认领 deposit_status: paid → released（Issue 2：驳回后押金状态）
+// 4. 未进入合同阶段 contract_status: pending → none（Issue 4：避免误导）
 // 幂等：每条 UPDATE 都带 WHERE 条件，重复执行安全。
 func migrateClaimStatusEnums(db *gorm.DB) error {
+	// 0. 扩容 status 列（authorization_pending = 21 字符 > VARCHAR(20)）
+	if err := db.Exec(`ALTER TABLE distributor_applications ALTER COLUMN status TYPE VARCHAR(32)`).Error; err != nil {
+		return err
+	}
 	// 1. auth_pending → authorization_pending
 	if err := db.Exec(`UPDATE distributor_applications SET status = 'authorization_pending' WHERE status = 'auth_pending'`).Error; err != nil {
 		return err

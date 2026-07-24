@@ -1055,9 +1055,9 @@ type DistributorApplication struct {
 	DramaID               uint64     `gorm:"column:drama_id;index" json:"drama_id"`
 	Platforms             string     `gorm:"column:platforms;type:text" json:"platforms"` // JSON 数组 ["douyin","kuaishou"]
 	DepositAmountCents    int64      `gorm:"column:deposit_amount_cents" json:"deposit_amount_cents"`
-	DepositStatus         string     `gorm:"column:deposit_status;size:20;default:unpaid" json:"deposit_status"` // unpaid/paid
+	DepositStatus         string     `gorm:"column:deposit_status;size:20;default:unpaid" json:"deposit_status"` // unpaid/paid/released
 	AuthorizationConfirmed bool      `gorm:"column:authorization_confirmed;default:false" json:"authorization_confirmed"`
-	Status                string     `gorm:"column:status;size:20;default:deposit_pending;index" json:"status"`
+	Status                string     `gorm:"column:status;size:32;default:deposit_pending;index" json:"status"`
 	RejectReason          string     `gorm:"column:reject_reason;size:255" json:"reject_reason"`
 	ReviewedBy            *uint64    `gorm:"column:reviewed_by" json:"reviewed_by"`
 	ReviewedAt            *time.Time `gorm:"column:reviewed_at" json:"reviewed_at"`
