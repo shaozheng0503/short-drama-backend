@@ -163,6 +163,7 @@ func (s *Server) Router() *gin.Engine {
 	common.POST("/uploads/image-sign", s.commonImageUploadSign)
 	common.GET("/aigc-tools", s.getAIGCTools)
 	common.GET("/languages", s.listLanguages)
+	common.GET("/app/latest", s.getAppLatest) // App 最新版本信息（公开，无需登录）
 
 	// === APP ===
 	app := v1.Group("/app")

@@ -85,6 +85,13 @@ type Config struct {
 	// 幂等：已存在的不会重复写。生产严禁开启。
 	SeedMockData bool
 
+	// App 下载分发（CDN 直链，不经过后端服务器）
+	AppDownloadURL    string // APK 下载地址，如 https://cdn.langzhi.top/langzhi-drama-v1.0.0.apk
+	AppVersion        string // 最新版本号，如 1.0.0
+	AppVersionCode    int    // 版本号（数字），如 10000
+	AppUpdateLog      string // 更新日志
+	AppForceUpdate    bool   // 是否强制更新
+
 	// 腾讯云 COS（图片上传：封面 / 头像）
 	// CDNDomain 留空时，URL 拼为 https://{bucket}.cos.{region}.myqcloud.com
 	COSBucket    string
@@ -216,6 +223,12 @@ func Load() Config {
 
 		PaymentDevMode: getEnvBool("PAYMENT_DEV_MODE", true),
 		SeedMockData:   getEnvBool("SEED_MOCK_DATA", false),
+
+		AppDownloadURL: getEnv("APP_DOWNLOAD_URL", ""),
+		AppVersion:     getEnv("APP_VERSION", ""),
+		AppVersionCode: getEnvInt("APP_VERSION_CODE", 0),
+		AppUpdateLog:   getEnv("APP_UPDATE_LOG", ""),
+		AppForceUpdate: getEnvBool("APP_FORCE_UPDATE", false),
 
 		COSBucket:    getEnv("COS_BUCKET", ""),
 		COSRegion:    getEnv("COS_REGION", "ap-guangzhou"),

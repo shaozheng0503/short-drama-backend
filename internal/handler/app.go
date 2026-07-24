@@ -20,6 +20,19 @@ type appLoginRequest struct {
 	Code  string `json:"code" binding:"required"`
 }
 
+// GET /v1/common/app/latest —— App 最新版本信息（公开）
+// 返回 download_url/version/version_code/update_log/force_update
+// 官网和 App 内更新检查都调这个接口
+func (s *Server) getAppLatest(c *gin.Context) {
+	response.OK(c, gin.H{
+		"download_url":  s.cfg.AppDownloadURL,
+		"version":       s.cfg.AppVersion,
+		"version_code":  s.cfg.AppVersionCode,
+		"update_log":    s.cfg.AppUpdateLog,
+		"force_update":  s.cfg.AppForceUpdate,
+	})
+}
+
 func (s *Server) appLogin(c *gin.Context) {
 	var req appLoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
