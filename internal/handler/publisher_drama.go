@@ -211,6 +211,8 @@ func (s *Server) publisherGetDrama(c *gin.Context) {
 		"deposit_rule": gin.H{
 			"base_cents":      s.calcDepositAmount(drama, []string{model.PlatformDouyin}),
 			"platform_rate":   "每增加一个平台 +15%",
+			"duration_minutes": s.dramaTotalMinutes(drama.ID),
+			"tier_rule":       "≤25分钟 400元，≥26分钟 500元，每增一个平台 +15%",
 			"deposit_examples": depositExamples,
 		},
 		"claimable": distributable,
@@ -266,7 +268,7 @@ func (s *Server) getOccupiedPlatforms(dramaID uint64) map[string]bool {
 
 // getAvailablePlatformsFromOccupied 返回未被占用的平台
 func getAvailablePlatformsFromOccupied(occupied map[string]bool) []string {
-	all := []string{model.PlatformDouyin, model.PlatformKuaishou, model.PlatformWechatVideo, model.PlatformBilibili}
+	all := []string{model.PlatformDouyin, model.PlatformKuaishou, model.PlatformWechatVideo}
 	available := []string{}
 	for _, p := range all {
 		if !occupied[p] {

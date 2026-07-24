@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -147,12 +148,27 @@ func (s *Server) calcAppendDepositAmount(drama model.Drama, newPlatformCount int
 	return base * int64(rateBP) * int64(newPlatformCount) / 10000
 }
 
-// depositBaseCents 返回基础押金（分）
+// depositBaseCents 返回基础押金（分），按剧集总时长分档：
+// ≤25 分钟：400 元；26-35 分钟：500 元；>35 分钟：500 元
 func (s *Server) depositBaseCents(drama model.Drama) int64 {
-	if drama.TotalEpisodes >= 50 {
-		return 50000 // 500 元
+	minutes := s.dramaTotalMinutes(drama.ID)
+	if minutes <= 25 {
+		return 40000 // 400 元
 	}
-	return 40000 // 400 元
+	return 50000 // 500 元（26 分钟及以上）
+}
+
+// dramaTotalMinutes 查剧集所有集数时长总和（分钟），用于保证金分档
+func (s *Server) dramaTotalMinutes(dramaID uint64) int {
+	var totalSeconds sql.NullInt64
+	s.db.Model(&model.Episode{}).
+		Where("drama_id = ? AND status = ?", dramaID, "published").
+		Select("COALESCE(SUM(duration_seconds), 0)").
+		Scan(&totalSeconds)
+	if !totalSeconds.Valid {
+		return 0
+	}
+	return int(totalSeconds.Int64 / 60)
 }
 
 // recordDepositTx 记录押金流水

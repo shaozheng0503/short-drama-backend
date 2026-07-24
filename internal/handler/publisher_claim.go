@@ -61,7 +61,7 @@ func (s *Server) publisherCreateClaim(c *gin.Context) {
 	// 校验平台有效性
 	for _, p := range req.Platforms {
 		switch p {
-		case model.PlatformDouyin, model.PlatformKuaishou, model.PlatformWechatVideo, model.PlatformBilibili:
+		case model.PlatformDouyin, model.PlatformKuaishou, model.PlatformWechatVideo:
 		default:
 			response.InvalidParam(c, "无效的发行平台: "+p)
 			return
