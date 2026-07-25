@@ -1020,16 +1020,27 @@ func (s *Server) adminMarkPaidDistributorWithdrawal(c *gin.Context) {
 		response.NotFound(c, "提现记录不存在")
 		return
 	}
-	if w.Status != model.WithdrawalStatusApproved {
-		response.Conflict(c, "仅打款中状态可标记已打款")
-		return
-	}
+	// 事务外仅做存在性校验，状态校验移入事务内加锁后执行（与创作者提现 markPaid 对称）
 
 	now := time.Now()
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 行锁提现单，防止并发重复打款（双重扣减 FrozenCents）
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&w, id).Error; err != nil {
+			return err
+		}
+		// 事务内重新校验状态：并发场景下另一个请求可能已经把它改成 paid
+		if w.Status != model.WithdrawalStatusApproved {
+			return fmt.Errorf("提现已被处理（当前状态: %s），仅打款中状态可标记已打款", w.Status)
+		}
+		// 行锁 distributor
 		var dist model.Distributor
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, w.DistributorID).Error; err != nil {
 			return err
+		}
+		// 余额校验：防 FrozenCents 不足导致负数
+		if dist.FrozenCents < w.AmountCents {
+			return fmt.Errorf("发行商冻结余额不足（需要 %.2f 元，冻结 %.2f 元），账目异常，请先对账",
+				float64(w.AmountCents)/100, float64(dist.FrozenCents)/100)
 		}
 		dist.FrozenCents -= w.AmountCents
 		if err := tx.Save(&dist).Error; err != nil {
@@ -1050,7 +1061,7 @@ func (s *Server) adminMarkPaidDistributorWithdrawal(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
-		response.ServerError(c, "标记已打款失败")
+		response.Conflict(c, err.Error())
 		return
 	}
 

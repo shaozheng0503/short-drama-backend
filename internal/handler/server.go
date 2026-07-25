@@ -90,6 +90,7 @@ func (s *Server) StartBackground(ctx context.Context) {
 				return
 			case now := <-ticker.C:
 				s.closeExpiredOrders(now)
+				s.closeExpiredRecharges(now)
 			}
 		}
 	}()
@@ -120,6 +121,34 @@ func (s *Server) closeExpiredOrders(now time.Time) {
 				"closed_count":      result.ClosedCount,
 				"oldest_expired_at": result.OldestExpiredAt,
 				"sample_order_nos":  result.SampleOrderNos,
+			},
+		})
+	}
+}
+
+func (s *Server) closeExpiredRecharges(now time.Time) {
+	result, err := s.billing.CloseExpiredRecharges(now)
+	if err != nil {
+		log.Printf("[bg] close expired recharges err=%v", err)
+		s.alerts.SendAsync(alert.Event{
+			Level:   "error",
+			Type:    "close_expired_recharges_failed",
+			Message: "关闭过期充值单失败",
+			Fields: map[string]interface{}{
+				"error": err.Error(),
+			},
+		})
+	} else if result.ClosedCount > 0 {
+		log.Printf("[bg] closed %d expired recharges oldest_expired_at=%v samples=%v",
+			result.ClosedCount, result.OldestExpiredAt, result.SampleRechargeNos)
+		s.alerts.SendAsync(alert.Event{
+			Level:   "warn",
+			Type:    "expired_recharges_closed",
+			Message: "过期充值单已关闭",
+			Fields: map[string]interface{}{
+				"closed_count":        result.ClosedCount,
+				"oldest_expired_at":   result.OldestExpiredAt,
+				"sample_recharge_nos": result.SampleRechargeNos,
 			},
 		})
 	}

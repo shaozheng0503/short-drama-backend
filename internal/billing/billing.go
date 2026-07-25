@@ -631,6 +631,63 @@ func (s *Service) CloseExpiredOrders(now time.Time) (CloseExpiredOrdersResult, e
 	return result, err
 }
 
+// CloseExpiredRechargesResult 充值单过期清理结果。
+type CloseExpiredRechargesResult struct {
+	ClosedCount       int64
+	OldestExpiredAt   *time.Time
+	SampleRechargeNos []string
+}
+
+// CloseExpiredRecharges 把过期 pending 充值单转 closed（定时任务用）。
+// 与 CloseExpiredOrders 对称：过期充值单如果不清理，
+// 1) 渠道侧支付链接一直有效，发行商可能通过旧链接付款（虽然 webhook 会拒绝，但体验差且渠道侧资源泄漏）；
+// 2) 脏数据累积，充值单列表里永远有 pending 的僵尸记录；
+// 3) SyncRechargeStatus 对账时会误判（渠道侧已关单但本地还 pending）。
+func (s *Service) CloseExpiredRecharges(now time.Time) (CloseExpiredRechargesResult, error) {
+	var result CloseExpiredRechargesResult
+	var closedRefs []orderRef
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var recharges []model.DistributorRecharge
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "recharge_no", "payment_method", "expired_at").
+			Where("status = ? AND expired_at IS NOT NULL AND expired_at < ?", "pending", now).
+			Order("expired_at asc").
+			Find(&recharges).Error; err != nil {
+			return err
+		}
+		if len(recharges) == 0 {
+			return nil
+		}
+
+		ids := make([]uint64, 0, len(recharges))
+		for i, rc := range recharges {
+			ids = append(ids, rc.ID)
+			closedRefs = append(closedRefs, orderRef{OrderNo: rc.RechargeNo, Method: rc.PaymentMethod})
+			if i == 0 {
+				result.OldestExpiredAt = rc.ExpiredAt
+			}
+			if len(result.SampleRechargeNos) < 5 {
+				result.SampleRechargeNos = append(result.SampleRechargeNos, rc.RechargeNo)
+			}
+		}
+
+		res := tx.Model(&model.DistributorRecharge{}).
+			Where("id IN ?", ids).
+			Update("status", "closed")
+		if res.Error != nil {
+			return res.Error
+		}
+		result.ClosedCount = res.RowsAffected
+		return nil
+	})
+	if err != nil {
+		return result, err
+	}
+	// 事务已提交：联动作废过期充值单的渠道支付链接（与订单侧一致）。
+	s.closeChannelOrders(closedRefs)
+	return result, err
+}
+
 // EnsureOrderUnlocked 用于 POST /v1/app/episodes/:id/unlock：
 //   - 订单必须存在、属于该用户、status=paid、episode_id 匹配
 //   - 解锁记录可能由 webhook 已经写入，重复调用幂等
