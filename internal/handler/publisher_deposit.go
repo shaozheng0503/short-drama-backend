@@ -78,7 +78,9 @@ func (s *Server) publisherRecharge(c *gin.Context) {
 				return err
 			}
 			// 流水
-			s.recordDepositTx(tx, id, model.DepositTxRecharge, req.AmountCents, d.DepositAvailableCents, "recharge", rc.RechargeNo, "押金充值")
+			if err := s.recordDepositTx(tx, id, model.DepositTxRecharge, req.AmountCents, d.DepositAvailableCents, "recharge", rc.RechargeNo, "押金充值"); err != nil {
+				return err
+			}
 			return nil
 		})
 		if err != nil {

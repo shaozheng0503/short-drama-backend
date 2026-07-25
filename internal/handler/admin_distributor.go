@@ -299,9 +299,11 @@ func (s *Server) adminApproveClaim(c *gin.Context) {
 			if err := tx.Save(&d).Error; err != nil {
 				return err
 			}
-			s.recordDepositTx(tx, claim.DistributorID, model.DepositTxFreeze,
+			if err := s.recordDepositTx(tx, claim.DistributorID, model.DepositTxFreeze,
 				-claim.DepositAmountCents, d.DepositAvailableCents,
-				"claim", claim.ApplicationNo, "认领审核兜底冻结押金")
+				"claim", claim.ApplicationNo, "认领审核兜底冻结押金"); err != nil {
+				return err
+			}
 		}
 		// 更新认领状态
 		if err := tx.Model(&claim).Updates(map[string]interface{}{
@@ -364,15 +366,19 @@ func (s *Server) adminRejectClaim(c *gin.Context) {
 		response.NotFound(c, "认领申请不存在")
 		return
 	}
-	if claim.Status != model.ClaimReviewPending {
-		response.Conflict(c, "仅待审核状态可驳回")
-		return
-	}
+	// 事务外仅做存在性校验，状态校验移入事务内加锁后执行
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 行锁 claim，防止并发重复解冻
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&claim, claimID).Error; err != nil {
+			return err
+		}
+		if claim.Status != model.ClaimReviewPending {
+			return fmt.Errorf("仅待审核状态可驳回（当前: %s）", claim.Status)
+		}
 		now := time.Now()
 		// 如果已付押金，释放回可用
-		if claim.DepositStatus == model.ClaimDepositPaid {
+		if claim.DepositStatus == model.ClaimDepositPaid && claim.DepositAmountCents > 0 {
 			var dist model.Distributor
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, claim.DistributorID).Error; err != nil {
 				return err
@@ -382,7 +388,9 @@ func (s *Server) adminRejectClaim(c *gin.Context) {
 			if err := tx.Save(&dist).Error; err != nil {
 				return err
 			}
-			s.recordDepositTx(tx, claim.DistributorID, model.DepositTxUnfreeze, claim.DepositAmountCents, dist.DepositAvailableCents, "claim", claim.ApplicationNo, "认领驳回释放押金")
+			if err := s.recordDepositTx(tx, claim.DistributorID, model.DepositTxUnfreeze, claim.DepositAmountCents, dist.DepositAvailableCents, "claim", claim.ApplicationNo, "认领驳回释放押金"); err != nil {
+				return err
+			}
 		}
 		return tx.Model(&claim).Updates(map[string]interface{}{
 			"status":          model.ClaimRejected,
@@ -529,12 +537,16 @@ func (s *Server) adminImportDistributorIncome(c *gin.Context) {
 			failedReasons = append(failedReasons, fmt.Sprintf("row %d: %v", i+1, err))
 			continue
 		}
-		// 累加发行商收益
-		s.db.Model(&model.Distributor{}).Where("id = ?", row.DistributorID).
+		// 累加发行商收益（原子更新 + 错误检查）
+		if err := s.db.Model(&model.Distributor{}).Where("id = ?", row.DistributorID).
 			UpdateColumns(map[string]interface{}{
 				"total_income_cents": gorm.Expr("total_income_cents + ?", incomeCents),
 				"balance_cents":      gorm.Expr("balance_cents + ?", incomeCents),
-			})
+			}).Error; err != nil {
+			failedCount++
+			failedReasons = append(failedReasons, fmt.Sprintf("row %d: 累加收益失败: %v", i+1, err))
+			continue
+		}
 		successCount++
 	}
 
@@ -686,19 +698,6 @@ func (s *Server) adminGenerateDistributorSettlement(c *gin.Context) {
 	platformCents := gross * 45 / 100
 	netCents := gross * 55 / 100
 
-	// 押金抵扣：优先从冻结押金中抵扣
-	var d model.Distributor
-	s.db.First(&d, req.DistributorID)
-	deducted := int64(0)
-	if d.DepositFrozenCents > 0 && gross > 0 {
-		deducted = d.DepositFrozenCents
-		if deducted > gross {
-			deducted = gross
-		}
-	}
-	// payable_cents = gross - deducted_deposit（发行商应付平台）
-	payable := gross - deducted
-
 	now := time.Now()
 	st := model.DistributorSettlement{
 		SettlementNo:          fmt.Sprintf("ST-DIST%06d", time.Now().UnixMilli()%1000000),
@@ -709,9 +708,9 @@ func (s *Server) adminGenerateDistributorSettlement(c *gin.Context) {
 		GrossCents:            gross,
 		PlatformCents:         platformCents,
 		NetCents:              netCents,
-		DeductedDepositCents:  deducted,
-		WithdrawableCents:     payable, // 兼容旧字段
-		PayableCents:          payable,
+		DeductedDepositCents:  0, // 事务内根据实时冻结余额重算
+		WithdrawableCents:     0,
+		PayableCents:          0,
 		Status:                model.DistSettlementPendingPayment,
 		OpenedAt:              &now,
 	}
@@ -720,20 +719,35 @@ func (s *Server) adminGenerateDistributorSettlement(c *gin.Context) {
 		if err := tx.Create(&st).Error; err != nil {
 			return err
 		}
-		// 押金抵扣
-		if deducted > 0 {
-			var dist model.Distributor
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, req.DistributorID).Error; err != nil {
-				return err
+		// 押金抵扣：在行锁内重新读取冻结余额，防止基于陈旧数据导致冻结余额变负
+		var dist model.Distributor
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, req.DistributorID).Error; err != nil {
+			return err
+		}
+		deducted := int64(0)
+		if dist.DepositFrozenCents > 0 && gross > 0 {
+			deducted = dist.DepositFrozenCents
+			if deducted > gross {
+				deducted = gross
 			}
+		}
+		if deducted > 0 {
 			dist.DepositFrozenCents -= deducted
 			dist.DepositDeductedCents += deducted
 			if err := tx.Save(&dist).Error; err != nil {
 				return err
 			}
-			s.recordDepositTx(tx, req.DistributorID, model.DepositTxDeduct, -deducted, dist.DepositAvailableCents, "settlement", st.SettlementNo, "收益抵扣押金")
+			if err := s.recordDepositTx(tx, req.DistributorID, model.DepositTxDeduct, -deducted, dist.DepositAvailableCents, "settlement", st.SettlementNo, "收益抵扣押金"); err != nil {
+				return err
+			}
 		}
-		return nil
+		// 回填结算单的抵扣与应付金额
+		payable := gross - deducted
+		return tx.Model(&st).Updates(map[string]interface{}{
+			"deducted_deposit_cents": deducted,
+			"withdrawable_cents":     payable,
+			"payable_cents":          payable,
+		}).Error
 	})
 	if err != nil {
 		response.ServerError(c, "生成结算单失败")
@@ -766,8 +780,9 @@ func (s *Server) adminConfirmDistributorSettlement(c *gin.Context) {
 	adminID := middleware.CurrentID(c)
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 行锁结算单
 		var st model.DistributorSettlement
-		if err := tx.First(&st, sid).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&st, sid).Error; err != nil {
 			return err
 		}
 		if st.Status != model.DistSettlementPaymentSubmitted {
@@ -786,6 +801,21 @@ func (s *Server) adminConfirmDistributorSettlement(c *gin.Context) {
 		case "reject":
 			if req.Remark == "" {
 				return fmt.Errorf("退回时 remark 必填")
+			}
+			// 回滚押金抵扣：reject 退回时，把已抵扣的押金从 deducted 退回 frozen
+			if st.DeductedDepositCents > 0 {
+				var dist model.Distributor
+				if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, st.DistributorID).Error; err != nil {
+					return err
+				}
+				dist.DepositDeductedCents -= st.DeductedDepositCents
+				dist.DepositFrozenCents += st.DeductedDepositCents
+				if err := tx.Save(&dist).Error; err != nil {
+					return err
+				}
+				if err := s.recordDepositTx(tx, st.DistributorID, model.DepositTxUnfreeze, st.DeductedDepositCents, dist.DepositAvailableCents, "settlement", st.SettlementNo, "结算单退回回滚押金抵扣"); err != nil {
+					return err
+				}
 			}
 			return tx.Model(&st).Updates(map[string]interface{}{
 				"status":                model.DistSettlementPendingPayment,
@@ -886,7 +916,7 @@ func (s *Server) adminReviewDistributorWithdrawal(c *gin.Context) {
 		response.NotFound(c, "提现记录不存在")
 		return
 	}
-	if w.Status != "pending" {
+	if w.Status != model.WithdrawalStatusPending {
 		response.Conflict(c, "仅待处理状态可审核")
 		return
 	}
@@ -895,16 +925,50 @@ func (s *Server) adminReviewDistributorWithdrawal(c *gin.Context) {
 	now := time.Now()
 
 	if req.Action == "approve" {
-		s.db.Model(&w).Updates(map[string]interface{}{
-			"status":      "approved",
-			"reviewed_by": reviewerID,
-			"reviewed_at": now,
-			"remark":      req.Remark,
+		// approve 也走事务并检查错误，保持与 reject 一致
+		err := s.db.Transaction(func(tx *gorm.DB) error {
+			// 行锁提现单，防止并发审核
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&w, id).Error; err != nil {
+				return err
+			}
+			if w.Status != model.WithdrawalStatusPending {
+				return fmt.Errorf("提现已被处理（当前状态: %s）", w.Status)
+			}
+			// 余额 → 冻结（提现冻结），与 markPaid 时的 FrozenCents -= 对称
+			var dist model.Distributor
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, w.DistributorID).Error; err != nil {
+				return err
+			}
+			if dist.BalanceCents < w.AmountCents {
+				return fmt.Errorf("发行商余额不足，无法审核通过")
+			}
+			dist.BalanceCents -= w.AmountCents
+			dist.FrozenCents += w.AmountCents
+			if err := tx.Save(&dist).Error; err != nil {
+				return err
+			}
+			return tx.Model(&w).Updates(map[string]interface{}{
+				"status":      model.WithdrawalStatusApproved,
+				"reviewed_by": reviewerID,
+				"reviewed_at": now,
+				"remark":      req.Remark,
+			}).Error
 		})
-		response.OK(c, gin.H{"id": id, "status": "approved"})
+		if err != nil {
+			response.Conflict(c, err.Error())
+			return
+		}
+		response.OK(c, gin.H{"id": id, "status": model.WithdrawalStatusApproved})
 	} else if req.Action == "reject" {
 		// 驳回：退回余额
 		err := s.db.Transaction(func(tx *gorm.DB) error {
+			// 行锁提现单，防止并发审核
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&w, id).Error; err != nil {
+				return err
+			}
+			if w.Status != model.WithdrawalStatusPending {
+				return fmt.Errorf("提现已被处理（当前状态: %s）", w.Status)
+			}
 			var dist model.Distributor
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, w.DistributorID).Error; err != nil {
 				return err
@@ -915,7 +979,7 @@ func (s *Server) adminReviewDistributorWithdrawal(c *gin.Context) {
 				return err
 			}
 			return tx.Model(&w).Updates(map[string]interface{}{
-				"status":      "rejected",
+				"status":      model.WithdrawalStatusRejected,
 				"reviewed_by": reviewerID,
 				"reviewed_at": now,
 				"remark":      req.Remark,
@@ -943,7 +1007,7 @@ func (s *Server) adminMarkPaidDistributorWithdrawal(c *gin.Context) {
 		response.NotFound(c, "提现记录不存在")
 		return
 	}
-	if w.Status != "approved" {
+	if w.Status != model.WithdrawalStatusApproved {
 		response.Conflict(c, "仅打款中状态可标记已打款")
 		return
 	}
@@ -958,19 +1022,24 @@ func (s *Server) adminMarkPaidDistributorWithdrawal(c *gin.Context) {
 		if err := tx.Save(&dist).Error; err != nil {
 			return err
 		}
-		return tx.Model(&w).Updates(map[string]interface{}{
-			"status":         "paid",
+		if err := tx.Model(&w).Updates(map[string]interface{}{
+			"status":         model.WithdrawalStatusPaid,
 			"paid_at":        now,
 			"transaction_no": req.TransactionNo,
-		}).Error
+		}).Error; err != nil {
+			return err
+		}
+		// 结算单状态移入事务，用正确常量 settled（而非非法裸字符串 "paid"）
+		if w.SettlementID > 0 {
+			return tx.Model(&model.DistributorSettlement{}).Where("id = ?", w.SettlementID).
+				Update("status", model.DistSettlementSettled).Error
+		}
+		return nil
 	})
 	if err != nil {
 		response.ServerError(c, "标记已打款失败")
 		return
 	}
 
-	// 更新结算单状态
-	s.db.Model(&model.DistributorSettlement{}).Where("id = ?", w.SettlementID).Update("status", "paid")
-
-	response.OK(c, gin.H{"id": id, "status": "paid"})
+	response.OK(c, gin.H{"id": id, "status": model.WithdrawalStatusPaid})
 }

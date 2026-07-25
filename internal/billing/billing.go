@@ -924,7 +924,7 @@ func (s *Service) MarkRechargePaid(rechargeNo, platformTradeNo, paymentMethod st
 		}
 
 		// 3. 写流水
-		tx.Create(&model.DistributorDepositTransaction{
+		if err := tx.Create(&model.DistributorDepositTransaction{
 			DistributorID:      rc.DistributorID,
 			Type:               model.DepositTxRecharge,
 			AmountCents:        rc.AmountCents,
@@ -932,7 +932,9 @@ func (s *Service) MarkRechargePaid(rechargeNo, platformTradeNo, paymentMethod st
 			RelatedType:        "recharge",
 			RelatedBusinessNo:  rc.RechargeNo,
 			Remark:             "押金充值（" + paymentMethod + "）",
-		})
+		}).Error; err != nil {
+			return err
+		}
 		return nil
 	})
 }

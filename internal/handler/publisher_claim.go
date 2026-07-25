@@ -147,13 +147,11 @@ func (s *Server) publisherGetClaim(c *gin.Context) {
 func (s *Server) publisherPayDeposit(c *gin.Context) {
 	id := middleware.CurrentID(c)
 	claimID := parseUint(c.Param("id"))
+
+	// 事务外仅做存在性校验，状态校验移入事务内加锁后执行
 	var claim model.DistributorApplication
 	if err := s.db.Where("id = ? AND distributor_id = ?", claimID, id).First(&claim).Error; err != nil {
 		response.NotFound(c, "认领申请不存在")
-		return
-	}
-	if claim.Status != model.ClaimDepositPending {
-		response.Conflict(c, "当前状态不可支付押金")
 		return
 	}
 
@@ -165,26 +163,25 @@ func (s *Server) publisherPayDeposit(c *gin.Context) {
 		req.PaymentMethod = "wechat"
 	}
 
-	// 校验余额是否足够
-	var d model.Distributor
-	if err := s.db.First(&d, id).Error; err != nil {
-		response.ServerError(c, "查询发行商失败")
-		return
-	}
-	if d.DepositAvailableCents < claim.DepositAmountCents {
-		response.Conflict(c, fmt.Sprintf("押金余额不足，需要 %.2f 元，当前可用 %.2f 元", float64(claim.DepositAmountCents)/100, float64(d.DepositAvailableCents)/100))
-		return
-	}
-
-	// 事务：冻结押金 + 更新认领状态
+	// 事务：行锁 claim + 行锁 distributor → 状态校验 → 余额校验 → 冻结 → 流水 → 状态更新
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 行锁 claim，防止并发重复冻结
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND distributor_id = ?", claimID, id).First(&claim).Error; err != nil {
+			return err
+		}
+		if claim.Status != model.ClaimDepositPending {
+			return fmt.Errorf("当前状态不可支付押金（%s）", claim.Status)
+		}
+		if claim.DepositAmountCents <= 0 {
+			return fmt.Errorf("押金金额异常，请联系管理员")
+		}
 		// 行锁 distributor
 		var dist model.Distributor
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, id).Error; err != nil {
 			return err
 		}
 		if dist.DepositAvailableCents < claim.DepositAmountCents {
-			return fmt.Errorf("押金余额不足")
+			return fmt.Errorf("押金余额不足，需要 %.2f 元，当前可用 %.2f 元", float64(claim.DepositAmountCents)/100, float64(dist.DepositAvailableCents)/100)
 		}
 		dist.DepositAvailableCents -= claim.DepositAmountCents
 		dist.DepositFrozenCents += claim.DepositAmountCents
@@ -192,7 +189,9 @@ func (s *Server) publisherPayDeposit(c *gin.Context) {
 			return err
 		}
 		// 记录流水
-		s.recordDepositTx(tx, id, model.DepositTxFreeze, -claim.DepositAmountCents, dist.DepositAvailableCents, "claim", claim.ApplicationNo, "认领剧集冻结押金")
+		if err := s.recordDepositTx(tx, id, model.DepositTxFreeze, -claim.DepositAmountCents, dist.DepositAvailableCents, "claim", claim.ApplicationNo, "认领剧集冻结押金"); err != nil {
+			return err
+		}
 		// 更新认领状态
 		now := time.Now()
 		return tx.Model(&claim).Updates(map[string]interface{}{

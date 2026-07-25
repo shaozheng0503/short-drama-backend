@@ -171,8 +171,8 @@ func (s *Server) dramaTotalMinutes(dramaID uint64) int {
 	return int(totalSeconds.Int64 / 60)
 }
 
-// recordDepositTx 记录押金流水
-func (s *Server) recordDepositTx(tx *gorm.DB, distributorID uint64, txType string, amount int64, balanceAfter int64, relatedType string, relatedNo string, remark string) {
+// recordDepositTx 记录押金流水。返回错误以便事务回滚。
+func (s *Server) recordDepositTx(tx *gorm.DB, distributorID uint64, txType string, amount int64, balanceAfter int64, relatedType string, relatedNo string, remark string) error {
 	dt := model.DistributorDepositTransaction{
 		DistributorID:     distributorID,
 		Type:              txType,
@@ -182,7 +182,7 @@ func (s *Server) recordDepositTx(tx *gorm.DB, distributorID uint64, txType strin
 		RelatedBusinessNo: relatedNo,
 		Remark:            remark,
 	}
-	tx.Create(&dt)
+	return tx.Create(&dt).Error
 }
 
 // parsePlatforms 解析 JSON 平台数组
