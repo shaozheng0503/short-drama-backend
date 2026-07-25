@@ -295,41 +295,58 @@ func (s *Server) adminGenerateSettlements(c *gin.Context) {
 			OpenedAt:      &openedAt,
 			Remark:        req.Remark,
 		}
-		if err := s.db.Create(&st).Error; err != nil {
+		if err := s.db.Transaction(func(tx *gorm.DB) error {
+			// 事务内重新查重 + Create，防止并发生成或 cron 并发产生重复结算单
+			var existCount int64
+			tx.Model(&model.Settlement{}).
+				Where("creator_id = ? AND period = ? AND contract_no ?", creatorID, req.Period, contractNo).
+				Count(&existCount)
+			if existCount > 0 {
+				return nil // 已存在，跳过
+			}
+			if err := tx.Create(&st).Error; err != nil {
+				if isUniqueViolation(err) {
+					// settlement_no 唯一索引兜底：并发创建被拦截，跳过
+					return nil
+				}
+				return err
+			}
+			// 生成 settlement_items：把该 creator 该月的所有 creator_stats_daily 关联到结算单
+			var stats []model.CreatorStatsDaily
+			tx.Where("creator_id = ? AND stat_date >= ? AND stat_date < ?", creatorID, startStr, endStr).
+				Find(&stats)
+			for _, stt := range stats {
+				// creator_stats_daily.drama_id 有可能是 0（汇总行），跳过
+				if stt.DramaID == 0 {
+					continue
+				}
+				// 查 order_no：取该 (creator, drama, stat_date) 时间段内最早的 paid order
+				var orderNo string
+				var orderID uint64
+				dayStart, _ := time.Parse("2006-01-02", stt.StatDate)
+				dayEnd := dayStart.AddDate(0, 0, 1)
+				tx.Table("orders").Select("id, order_no").
+					Where("drama_id = ? AND paid_at >= ? AND paid_at < ? AND status IN ?",
+						stt.DramaID, dayStart, dayEnd,
+						[]string{model.OrderStatusPaid, model.OrderStatusPartialRefunded}).
+					Order("paid_at asc").Limit(1).Row().Scan(&orderID, &orderNo)
+				item := model.SettlementItem{
+					SettlementID: st.ID,
+					OrderID:      orderID,
+					DramaID:      stt.DramaID,
+					Source:       "self",
+					AmountCents:  stt.IncomeCents,
+					OrderNo:      orderNo,
+					PaidAt:       nil,
+				}
+				tx.Create(&item)
+			}
+			createdIDs = append(createdIDs, st.ID)
+			return nil
+		}); err != nil {
 			response.ServerError(c, "生成结算单失败："+err.Error())
 			return
 		}
-		// 生成 settlement_items：把该 creator 该月的所有 creator_stats_daily 关联到结算单
-		var stats []model.CreatorStatsDaily
-		s.db.Where("creator_id = ? AND stat_date >= ? AND stat_date < ?", creatorID, startStr, endStr).
-			Find(&stats)
-		for _, stt := range stats {
-			// creator_stats_daily.drama_id 有可能是 0（汇总行），跳过
-			if stt.DramaID == 0 {
-				continue
-			}
-			// 查 order_no：取该 (creator, drama, stat_date) 时间段内最早的 paid order
-			var orderNo string
-			var orderID uint64
-			dayStart, _ := time.Parse("2006-01-02", stt.StatDate)
-			dayEnd := dayStart.AddDate(0, 0, 1)
-			s.db.Table("orders").Select("id, order_no").
-				Where("drama_id = ? AND paid_at >= ? AND paid_at < ? AND status IN ?",
-					stt.DramaID, dayStart, dayEnd,
-					[]string{model.OrderStatusPaid, model.OrderStatusPartialRefunded}).
-				Order("paid_at asc").Limit(1).Row().Scan(&orderID, &orderNo)
-			item := model.SettlementItem{
-				SettlementID: st.ID,
-				OrderID:      orderID,
-				DramaID:      stt.DramaID,
-				Source:       "self",
-				AmountCents:  stt.IncomeCents,
-				OrderNo:      orderNo,
-				PaidAt:       nil,
-			}
-			s.db.Create(&item)
-		}
-		createdIDs = append(createdIDs, st.ID)
 	}
 	response.OK(c, gin.H{
 		"period":            req.Period,

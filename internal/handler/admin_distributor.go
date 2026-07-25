@@ -67,22 +67,38 @@ func (s *Server) adminGetDistributor(c *gin.Context) {
 // POST /admin/distributors/:id/verification/approve —— 认证通过
 func (s *Server) adminApproveDistributorVerification(c *gin.Context) {
 	id := parseUint(c.Param("id"))
+	// 事务外仅做存在性校验
 	var d model.Distributor
 	if err := s.db.First(&d, id).Error; err != nil {
 		response.NotFound(c, "发行商不存在")
 		return
 	}
-	if d.VerifyStatus != model.DistributorVerifyPending {
-		response.Conflict(c, "仅待审核的发行商可审核通过")
+
+	now := time.Now()
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 行锁 distributor，防止并发重复审核（与 adminApproveClaim 对称）
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&d, id).Error; err != nil {
+			return err
+		}
+		// 事务内重新校验状态
+		if d.VerifyStatus != model.DistributorVerifyPending {
+			return fmt.Errorf("仅待审核的发行商可审核通过（当前: %s）", d.VerifyStatus)
+		}
+		return tx.Model(&d).Updates(map[string]interface{}{
+			"verify_status":        model.DistributorVerifyVerified,
+			"verify_checked_at":    now,
+			"verify_reject_reason": "",
+			"verify_reject_fields": "",
+		}).Error
+	})
+	if err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "发行商不存在")
+		} else {
+			response.Conflict(c, err.Error())
+		}
 		return
 	}
-	now := time.Now()
-	s.db.Model(&d).Updates(map[string]interface{}{
-		"verify_status":    model.DistributorVerifyVerified,
-		"verify_checked_at": now,
-		"verify_reject_reason": "",
-		"verify_reject_fields": "",
-	})
 	response.OK(c, gin.H{"id": id, "verify_status": model.DistributorVerifyVerified})
 }
 
@@ -96,35 +112,67 @@ func (s *Server) adminRejectDistributorVerification(c *gin.Context) {
 		response.InvalidParam(c, "reason 必填")
 		return
 	}
+	// 事务外仅做存在性校验
 	var d model.Distributor
 	if err := s.db.First(&d, id).Error; err != nil {
 		response.NotFound(c, "发行商不存在")
 		return
 	}
-	if d.VerifyStatus != model.DistributorVerifyPending {
-		response.Conflict(c, "仅待审核的发行商可驳回")
+
+	now := time.Now()
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 行锁 distributor，防止并发重复驳回/审核（与 adminApproveDistributorVerification 对称）
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&d, id).Error; err != nil {
+			return err
+		}
+		// 事务内重新校验状态
+		if d.VerifyStatus != model.DistributorVerifyPending {
+			return fmt.Errorf("仅待审核的发行商可驳回（当前: %s）", d.VerifyStatus)
+		}
+		return tx.Model(&d).Updates(map[string]interface{}{
+			"verify_status":        model.DistributorVerifyRejected,
+			"verify_reject_reason": req.Reason,
+			"verify_checked_at":    now,
+		}).Error
+	})
+	if err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "发行商不存在")
+		} else {
+			response.Conflict(c, err.Error())
+		}
 		return
 	}
-	now := time.Now()
-	s.db.Model(&d).Updates(map[string]interface{}{
-		"verify_status":      model.DistributorVerifyRejected,
-		"verify_reject_reason": req.Reason,
-		"verify_checked_at":  now,
-	})
 	response.OK(c, gin.H{"id": id, "verify_status": model.DistributorVerifyRejected})
 }
 
 // POST /admin/distributors/:id/ban —— 封禁
 func (s *Server) adminBanDistributor(c *gin.Context) {
 	id := parseUint(c.Param("id"))
-	s.db.Model(&model.Distributor{}).Where("id = ?", id).Update("status", model.StatusBanned)
+	res := s.db.Model(&model.Distributor{}).Where("id = ?", id).Update("status", model.StatusBanned)
+	if res.Error != nil {
+		response.ServerError(c, "封禁失败")
+		return
+	}
+	if res.RowsAffected == 0 {
+		response.NotFound(c, "发行商不存在")
+		return
+	}
 	response.OK(c, gin.H{"id": id, "status": model.StatusBanned})
 }
 
 // POST /admin/distributors/:id/unban —— 解封
 func (s *Server) adminUnbanDistributor(c *gin.Context) {
 	id := parseUint(c.Param("id"))
-	s.db.Model(&model.Distributor{}).Where("id = ?", id).Update("status", model.StatusActive)
+	res := s.db.Model(&model.Distributor{}).Where("id = ?", id).Update("status", model.StatusActive)
+	if res.Error != nil {
+		response.ServerError(c, "解封失败")
+		return
+	}
+	if res.RowsAffected == 0 {
+		response.NotFound(c, "发行商不存在")
+		return
+	}
 	response.OK(c, gin.H{"id": id, "status": model.StatusActive})
 }
 

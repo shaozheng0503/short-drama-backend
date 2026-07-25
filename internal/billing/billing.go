@@ -719,12 +719,13 @@ func (s *Service) EnsureOrderUnlocked(userID, episodeID uint64, orderNo string) 
 
 // RefundOrder 发起退款。
 //
-//  1. 校验:订单存在、状态是 paid 或 partial_refunded、本次退款 + 已退累计 <= 订单金额。
-//  2. 幂等:同 refundNo 重入直接返回当前订单(不再调渠道,避免重复退款)。
-//  3. 调 Provider.Refund(支付宝同步、微信异步,Provider 内部已抹平)。
-//  4. 事务内:更新订单(累计退款 + 状态 + 退款元数据),按比例回退创作者余额 + 当日聚合;
+//  1. 事务内行锁订单（与 MarkOrderPaid 对称），防止并发双重退款导致渠道侧资损。
+//  2. 校验:订单存在、状态是 paid 或 partial_refunded、本次退款 + 已退累计 <= 订单金额。
+//  3. 幂等:同 refundNo 重入直接返回当前订单(不再调渠道,避免重复退款)。
+//  4. 调 Provider.Refund(支付宝同步、微信异步,Provider 内部已抹平)。
+//  5. 事务内:更新订单(累计退款 + 状态 + 退款元数据),按比例回退创作者余额 + 当日聚合;
 //     全额退款则把 status 置 refunded、部分退款置 partial_refunded。
-//  5. 解锁记录保持不动:产品不在意"退款后还能不能看",运营可单独删除。
+//  6. 解锁记录保持不动:产品不在意"退款后还能不能看",运营可单独删除。
 //
 // 注意:多次部分退款时,refund_no/platform_refund_no/refund_reason/refunded_at 只记录最近一次;
 // 累计金额走 refund_amount_cents。完整退款流水若后续需要审计,再加 refund_history 表。
@@ -736,71 +737,58 @@ func (s *Service) RefundOrder(orderNo, refundNo string, amountCents int64, reaso
 		return nil, ErrRefundAmountInvalid
 	}
 
-	// 先在事务外取一次订单做基本校验 + 幂等判断,避免无谓地把渠道调用塞进事务内。
 	var order model.Order
-	if err := s.db.Where("order_no = ?", orderNo).First(&order).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrOrderNotFound
-		}
-		return nil, err
-	}
-	if order.Status != model.OrderStatusPaid && order.Status != model.OrderStatusPartialRefunded {
-		return nil, ErrRefundNotAllowed
-	}
-	// 幂等:相同 refundNo 直接返回当前订单,不再调渠道。
-	if order.RefundNo == refundNo {
-		return &order, nil
-	}
-	if order.RefundAmountCents+amountCents > order.AmountCents {
-		return nil, ErrRefundAmountInvalid
-	}
-
-	// 调渠道(可能是网络长操作,放在事务外)。
-	provider, err := s.payments.Get(order.PaymentMethod)
-	if err != nil {
-		return nil, err
-	}
-	result, err := provider.Refund(payment.RefundInput{
-		OrderNo:         order.OrderNo,
-		PlatformTradeNo: order.PlatformTradeNo,
-		RefundNo:        refundNo,
-		AmountCents:     amountCents,
-		Reason:          reason,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if !result.Success {
-		return nil, payment.ErrRefundFailed
-	}
-
-	refundedAt := result.RefundedAt
-	if refundedAt.IsZero() {
-		refundedAt = time.Now()
-	}
-
-	// 事务内:更新订单 + 回退创作者收益(按比例)。
-	err = s.db.Transaction(func(tx *gorm.DB) error {
-		var o model.Order
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 行锁订单，防止并发双重退款（与 MarkOrderPaid 对称）。
+		// 渠道退款调用在行锁保护内，确保并发退款请求串行化，
+		// 第二个请求拿到锁后读到已更新的 RefundNo/状态，被幂等或金额校验拒绝。
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("order_no = ?", orderNo).First(&o).Error; err != nil {
+			Where("order_no = ?", orderNo).First(&order).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrOrderNotFound
+			}
 			return err
 		}
-		// 双重校验:并发场景下另一笔退款可能已落库。
-		if o.Status != model.OrderStatusPaid && o.Status != model.OrderStatusPartialRefunded {
+		// 状态校验
+		if order.Status != model.OrderStatusPaid && order.Status != model.OrderStatusPartialRefunded {
 			return ErrRefundNotAllowed
 		}
-		if o.RefundNo == refundNo {
-			order = o
+		// 幂等:相同 refundNo 直接返回,不再调渠道。
+		if order.RefundNo == refundNo {
 			return nil
 		}
-		if o.RefundAmountCents+amountCents > o.AmountCents {
+		// 金额校验（基于锁定后的最新数据）
+		if order.RefundAmountCents+amountCents > order.AmountCents {
 			return ErrRefundAmountInvalid
 		}
 
-		newRefundTotal := o.RefundAmountCents + amountCents
+		// 调渠道退款（在行锁保护内，确保并发退款串行化）。
+		provider, err := s.payments.Get(order.PaymentMethod)
+		if err != nil {
+			return err
+		}
+		result, err := provider.Refund(payment.RefundInput{
+			OrderNo:         order.OrderNo,
+			PlatformTradeNo: order.PlatformTradeNo,
+			RefundNo:        refundNo,
+			AmountCents:     amountCents,
+			Reason:          reason,
+		})
+		if err != nil {
+			return err
+		}
+		if !result.Success {
+			return payment.ErrRefundFailed
+		}
+
+		refundedAt := result.RefundedAt
+		if refundedAt.IsZero() {
+			refundedAt = time.Now()
+		}
+
+		newRefundTotal := order.RefundAmountCents + amountCents
 		newStatus := model.OrderStatusPartialRefunded
-		if newRefundTotal >= o.AmountCents {
+		if newRefundTotal >= order.AmountCents {
 			newStatus = model.OrderStatusRefunded
 		}
 		updates := map[string]interface{}{
@@ -811,18 +799,17 @@ func (s *Service) RefundOrder(orderNo, refundNo string, amountCents int64, reaso
 			"refund_no":           refundNo,
 			"platform_refund_no":  result.PlatformRefundNo,
 		}
-		if err := tx.Model(&o).Updates(updates).Error; err != nil {
+		if err := tx.Model(&order).Updates(updates).Error; err != nil {
 			return err
 		}
 
 		// 回退分账:按本次退款额占订单金额的比例从 creator 余额扣回。
 		// 兜底:扣回后余额不允许为负(由 DB CHECK 兜底也行,这里先在应用层做防御)。
 		var drama model.Drama
-		if err := tx.First(&drama, o.DramaID).Error; err != nil {
+		if err := tx.First(&drama, order.DramaID).Error; err != nil {
 			return err
 		}
 		if drama.CreatorID == nil {
-			order = o
 			order.Status = newStatus
 			order.RefundAmountCents = newRefundTotal
 			order.RefundedAt = &refundedAt
@@ -852,13 +839,12 @@ func (s *Service) RefundOrder(orderNo, refundNo string, amountCents int64, reaso
 			statDate := refundedAt.Format("2006-01-02")
 			if err := tx.Model(&model.CreatorStatsDaily{}).
 				Where("creator_id = ? AND drama_id = ? AND stat_date = ?",
-					*drama.CreatorID, o.DramaID, statDate).
+					*drama.CreatorID, order.DramaID, statDate).
 				Update("income_cents", gorm.Expr("GREATEST(income_cents - ?, 0)", clawback)).Error; err != nil {
 				return err
 			}
 		}
 
-		order = o
 		order.Status = newStatus
 		order.RefundAmountCents = newRefundTotal
 		order.RefundedAt = &refundedAt

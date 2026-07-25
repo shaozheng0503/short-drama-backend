@@ -371,6 +371,7 @@ func (s *Server) adminApproveCreatorVerification(c *gin.Context) {
 		response.InvalidParam(c, "id 不合法")
 		return
 	}
+	// 事务外仅做存在性校验
 	var cr model.Creator
 	if err := s.db.First(&cr, id).Error; err != nil {
 		if isNotFound(err) {
@@ -380,19 +381,30 @@ func (s *Server) adminApproveCreatorVerification(c *gin.Context) {
 		response.ServerError(c, "查询失败")
 		return
 	}
-	if cr.VerifyStatus == model.CreatorVerifyVerified {
-		response.Conflict(c, "创作者已通过实名认证")
-		return
-	}
-	if check := checkCreatorVerificationApprovable(cr); !check.OK {
-		respondWithdrawProfileBlock(c, check, false)
-		return
-	}
-	if err := s.db.Model(&cr).Updates(map[string]interface{}{
-		"verify_status":        model.CreatorVerifyVerified,
-		"verify_reject_reason": "",
-	}).Error; err != nil {
-		response.ServerError(c, "审核通过失败")
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 行锁 creator，防止并发重复审核（与 adminApproveClaim 对称）
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&cr, id).Error; err != nil {
+			return err
+		}
+		// 事务内重新校验状态
+		if cr.VerifyStatus == model.CreatorVerifyVerified {
+			return fmt.Errorf("创作者已通过实名认证")
+		}
+		if check := checkCreatorVerificationApprovable(cr); !check.OK {
+			return fmt.Errorf("%s", check.Hint)
+		}
+		return tx.Model(&cr).Updates(map[string]interface{}{
+			"verify_status":        model.CreatorVerifyVerified,
+			"verify_reject_reason": "",
+		}).Error
+	})
+	if err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "创作者不存在")
+		} else {
+			response.Conflict(c, err.Error())
+		}
 		return
 	}
 	s.db.First(&cr, id)
@@ -415,6 +427,7 @@ func (s *Server) adminRejectCreatorVerification(c *gin.Context) {
 		response.InvalidParam(c, "reason 必填")
 		return
 	}
+	// 事务外仅做存在性校验
 	var cr model.Creator
 	if err := s.db.First(&cr, id).Error; err != nil {
 		if isNotFound(err) {
@@ -424,18 +437,31 @@ func (s *Server) adminRejectCreatorVerification(c *gin.Context) {
 		response.ServerError(c, "查询失败")
 		return
 	}
+
 	rejectFields := make([]string, 0, len(req.Fields))
 	for _, f := range req.Fields {
 		if f = strings.TrimSpace(f); f != "" {
 			rejectFields = append(rejectFields, f)
 		}
 	}
-	if err := s.db.Model(&cr).Updates(map[string]interface{}{
-		"verify_status":        model.CreatorVerifyRejected,
-		"verify_reject_reason": strings.TrimSpace(req.Reason),
-		"verify_reject_fields": strings.Join(rejectFields, ","),
-	}).Error; err != nil {
-		response.ServerError(c, "审核驳回失败")
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 行锁 creator，防止并发重复驳回/审核（与 adminApproveCreatorVerification 对称）
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&cr, id).Error; err != nil {
+			return err
+		}
+		return tx.Model(&cr).Updates(map[string]interface{}{
+			"verify_status":        model.CreatorVerifyRejected,
+			"verify_reject_reason": strings.TrimSpace(req.Reason),
+			"verify_reject_fields": strings.Join(rejectFields, ","),
+		}).Error
+	})
+	if err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "创作者不存在")
+		} else {
+			response.ServerError(c, "审核驳回失败")
+		}
 		return
 	}
 	s.db.First(&cr, id)
@@ -1445,9 +1471,9 @@ func (s *Server) adminSyncRecharge(c *gin.Context) {
 	})
 }
 
-// generateRefundNo 退款单号:REF-{orderNo}-{Unix 秒}-{4 位随机}。
+// generateRefundNo 退款单号:REF-{orderNo}-{Unix 秒}-{6 位随机}。
 // 仅作幂等键,不进 DB 唯一约束(同一笔多次部分退款会有多个 refund_no);
 // 客户端可自行传入以做强幂等。
 func generateRefundNo(orderNo string) string {
-	return fmt.Sprintf("REF-%s-%d-%04d", orderNo, time.Now().Unix(), rand.Intn(10000))
+	return fmt.Sprintf("REF-%s-%d-%06d", orderNo, time.Now().Unix(), rand.Intn(1000000))
 }

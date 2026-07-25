@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"ai-drama-platform/internal/model"
+
+	"gorm.io/gorm"
 )
 
 // 2026-07-06 改：结算周期由「月度」改为「半月度」（吴建棉 7/3 群确认）。
@@ -152,18 +154,32 @@ func (s *Server) runSettlementForCycle(cycleKey, startStr, endStr string) (int, 
 			OpenedAt:      &openedAt,
 			Remark:        "auto-cron-half-month",
 		}
-		if err := s.db.Create(&st).Error; err != nil {
+		if err := s.db.Transaction(func(tx *gorm.DB) error {
+			// 事务内重新查重 + Create，防止并发 cron 或手动生成产生重复结算单
+			var existCount int64
+			tx.Model(&model.Settlement{}).Where("creator_id = ? AND cycle_key = ? AND contract_no = ?",
+				a.CreatorID, cycleKey, contractNo).Count(&existCount)
+			if existCount > 0 {
+				return nil // 已存在，跳过
+			}
+			if err := tx.Create(&st).Error; err != nil {
+				if isUniqueViolation(err) {
+					// settlement_no 唯一索引兜底：并发创建被拦截，跳过
+					return nil
+				}
+				return err
+			}
+			created++
+			// 2026-07-06 加 P1-5：时间线（系统事件）
+			s.recordTransition("settlement", st.ID, "", model.SettlementStatusOpen, "system", nil, "系统算账生成结算单（半月度）", map[string]interface{}{
+				"cycle_key":    cycleKey,
+				"period_range": periodRange,
+				"net_cents":    st.NetCents,
+			})
+			return nil
+		}); err != nil {
 			return created, err
 		}
-		created++
-		// 2026-07-06 加 P1-5：时间线（系统事件）
-		var actorPtr *uint64 // system 无具体 actor
-		_ = actorPtr
-		s.recordTransition("settlement", st.ID, "", model.SettlementStatusOpen, "system", nil, "系统算账生成结算单（半月度）", map[string]interface{}{
-			"cycle_key":    cycleKey,
-			"period_range": periodRange,
-			"net_cents":    st.NetCents,
-		})
 	}
 	return created, nil
 }
