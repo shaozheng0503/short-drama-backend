@@ -1,0 +1,145 @@
+openapi: 3.0.3
+info:
+  title: 短剧平台 - 充值对账 API（0.15.2 变更）
+  description: |
+    本文档覆盖 2026-07-25 押金充值流程对账相关接口变更。
+    可直接导入 Apifox 覆盖对应接口。
+
+    ## 变更摘要
+    1. 新增 POST /admin/distributor-recharges/:recharge_no/sync 充值单主动查单接口
+       （与订单查单 POST /admin/orders/:order_no/sync 对称）
+    2. 充值 webhook 回调处理增强：金额不一致/过期/渠道不一致等场景新增告警
+    3. MarkRechargePaid 新增渠道一致性校验（ErrRechargeMethodMismatch）
+  version: 0.15.2
+  contact:
+    name: Drama Platform API
+
+servers:
+  - url: https://api.langzhi.top/v1
+    description: 生产环境
+  - url: https://api-dev.langzhi.top/v1
+    description: 沙箱环境
+
+components:
+  schemas:
+    RechargeSyncRequest:
+      type: object
+      description: 充值单主动查单请求（无 body，recharge_no 在 path）
+      properties: {}
+
+    RechargeSyncResponse:
+      type: object
+      description: 充值单对账结果
+      properties:
+        recharge_no:
+          type: string
+          description: 充值单号
+          example: RC20260725143012012345678
+        status:
+          type: string
+          description: 充值单状态（对账后最新）
+          enum:
+            - pending   # 待支付（渠道侧仍未支付）
+            - paid      # 已支付（对账成功，已加余额）
+            - closed    # 已关闭（渠道侧已关单，需重新发起充值）
+        amount_cents:
+          type: integer
+          format: int64
+          description: 充值金额（分）
+          example: 40000
+        payment_method:
+          type: string
+          description: 支付渠道
+          enum: [alipay, wechat]
+        platform_trade_no:
+          type: string
+          description: 渠道侧交易号
+          nullable: true
+        paid_at:
+          type: string
+          format: date-time
+          description: 支付时间
+          nullable: true
+
+    RechargeSyncErrors:
+      type: object
+      description: 对账失败错误响应
+      properties:
+        code:
+          type: integer
+          description: HTTP 状态码
+        message:
+          type: string
+          description: 错误描述
+          enum:
+            - 充值单不存在
+            - 充值支付方式不支持查单
+            - 支付渠道不可用,请检查密钥配置
+            - 充值单已过期,不能标记已支付
+            - 渠道侧金额与充值单金额不一致,请人工核对
+            - 渠道侧渠道与充值单不一致,请人工核对
+            - 查单失败:...
+
+paths:
+  /admin/distributor-recharges/{recharge_no}/sync:
+    post:
+      tags:
+        - Admin - 发行商充值
+      summary: 充值单主动查单（对账兜底）
+      description: |
+        兜底接口：充值 webhook 长时间未到或丢失时，财务主动调渠道查单回写本地。
+        与 `POST /admin/orders/{order_no}/sync` 对称。
+
+        **使用场景**：发行商反馈"已付押金但余额没增加"，通常是充值 webhook 丢失。
+        财务拿到 recharge_no 后调本接口，系统向渠道侧查询真实支付状态并回写本地：
+        - 渠道侧 paid + 本地 pending → 走 MarkRechargePaid（加余额 + 写流水）
+        - 渠道侧 closed + 本地 pending → 标记 closed（发行商需重新发起充值）
+        - 其它一致情况 → no-op
+
+        **权限**：仅 AdminRoleFinance（财务角色）可调用。
+      operationId: adminSyncRecharge
+      parameters:
+        - name: recharge_no
+          in: path
+          required: true
+          description: 充值单号（RC 开头）
+          schema:
+            type: string
+          example: RC20260725143012012345678
+      responses:
+        '200':
+          description: 对账完成（无论状态是否变更，均返回最新充值单状态）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    $ref: '#/components/schemas/RechargeSyncResponse'
+        '400':
+          description: 参数错误（recharge_no 为空 / 支付方式不支持查单）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RechargeSyncErrors'
+        '404':
+          description: 充值单不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RechargeSyncErrors'
+        '409':
+          description: 对账冲突（充值单已过期 / 金额不一致 / 渠道不一致）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RechargeSyncErrors'
+        '500':
+          description: 查单失败（渠道不可用 / 渠道侧错误）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RechargeSyncErrors'
