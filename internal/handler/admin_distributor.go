@@ -268,9 +268,41 @@ func (s *Server) adminApproveClaim(c *gin.Context) {
 		response.Conflict(c, "仅待审核状态可审核通过")
 		return
 	}
+	// 押金状态校验：审核通过前必须确认押金已冻结（deposit_status=paid）。
+	// 防止手动跳过 publisherPayDeposit 步骤导致押金未扣。
+	if claim.DepositStatus != model.ClaimDepositPaid {
+		response.Conflict(c, fmt.Sprintf("押金未冻结（当前状态: %s），无法审核通过。请确保发行商已完成押金支付流程", claim.DepositStatus))
+		return
+	}
+	// 兜底校验：检查是否已有这笔认领的冻结流水记录。
+	// 如果 deposit_status=paid 但实际没有冻结流水，事务内自动补充冻结。
+	var freezeTxCount int64
+	s.db.Model(&model.DistributorDepositTransaction{}).
+		Where("distributor_id = ? AND type = ? AND related_business_no = ?",
+			claim.DistributorID, model.DepositTxFreeze, claim.ApplicationNo).
+		Count(&freezeTxCount)
 
 	now := time.Now()
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 兜底冻结：如果 deposit_status=paid 但实际没有冻结流水，自动补充冻结
+		if freezeTxCount == 0 && claim.DepositAmountCents > 0 {
+			var d model.Distributor
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&d, claim.DistributorID).Error; err != nil {
+				return err
+			}
+			if d.DepositAvailableCents < claim.DepositAmountCents {
+				return fmt.Errorf("发行商可用押金余额不足（需要 %.2f 元，可用 %.2f 元），无法补充冻结",
+					float64(claim.DepositAmountCents)/100, float64(d.DepositAvailableCents)/100)
+			}
+			d.DepositAvailableCents -= claim.DepositAmountCents
+			d.DepositFrozenCents += claim.DepositAmountCents
+			if err := tx.Save(&d).Error; err != nil {
+				return err
+			}
+			s.recordDepositTx(tx, claim.DistributorID, model.DepositTxFreeze,
+				-claim.DepositAmountCents, d.DepositAvailableCents,
+				"claim", claim.ApplicationNo, "认领审核兜底冻结押金")
+		}
 		// 更新认领状态
 		if err := tx.Model(&claim).Updates(map[string]interface{}{
 			"status":          model.ClaimContractPending,
@@ -310,7 +342,7 @@ func (s *Server) adminApproveClaim(c *gin.Context) {
 		return tx.Model(&dd).Update("contract_id", ct.ID).Error
 	})
 	if err != nil {
-		response.ServerError(c, "审核通过失败")
+		response.Conflict(c, err.Error())
 		return
 	}
 
