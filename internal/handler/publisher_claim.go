@@ -114,7 +114,7 @@ func (s *Server) publisherCreateClaim(c *gin.Context) {
 
 	// 创建认领申请
 	claim := model.DistributorApplication{
-		ApplicationNo:      fmt.Sprintf("CL%06d", time.Now().UnixMilli()%1000000),
+		ApplicationNo:      generateBusinessNo("CL"),
 		DistributorID:      id,
 		DramaID:            req.DramaID,
 		Platforms:          platformsToJSON(req.Platforms),

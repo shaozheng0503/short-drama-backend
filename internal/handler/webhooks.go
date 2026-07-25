@@ -84,12 +84,71 @@ func (s *Server) handlePayWebhook(c *gin.Context, method string) {
 		switch {
 		case errors.Is(err, billing.ErrOrderNotFound):
 			// 可能是押金充值单（RC 开头），尝试 MarkRechargePaid
-			if err2 := s.billing.MarkRechargePaid(event.OrderNo, event.PlatformTradeNo, method, event.AmountCents, paidAt); err2 != nil {
-				log.Printf("[webhook] %s order/recharge=%s not found or failed: order_err=%v recharge_err=%v", method, event.OrderNo, err, err2)
-				response.WebhookRetry(c, "订单/充值单不存在")
-			} else {
+			err2 := s.billing.MarkRechargePaid(event.OrderNo, event.PlatformTradeNo, method, event.AmountCents, paidAt)
+			if err2 == nil {
 				log.Printf("[webhook] %s recharge=%s marked paid", method, event.OrderNo)
 				ackPayWebhook(c, method, gin.H{"ack": true})
+				return
+			}
+			// 充值回调精细化处理，与订单分支对称
+			switch {
+			case errors.Is(err2, billing.ErrRechargeNotFound):
+				log.Printf("[webhook] %s order/recharge=%s not found: order_err=%v recharge_err=%v", method, event.OrderNo, err, err2)
+				response.WebhookRetry(c, "订单/充值单不存在")
+			case errors.Is(err2, billing.ErrRechargeExpired):
+				log.Printf("[webhook] %s recharge=%s expired, refused to mark paid", method, event.OrderNo)
+				s.alerts.SendAsync(alert.Event{
+					Level:   "error",
+					Type:    "payment_webhook_late",
+					Message: "充值回调到达时充值单已过期，已拒绝并 ack；需人工核对是否退款",
+					Fields: map[string]interface{}{
+						"method":            method,
+						"recharge_no":       event.OrderNo,
+						"platform_trade_no": event.PlatformTradeNo,
+						"amount_cents":      event.AmountCents,
+					},
+				})
+				// ack 200：渠道无需重试，但 ops 必须人工跟进退款
+				ackPayWebhook(c, method, gin.H{"ack": true, "ignored": "recharge_expired"})
+			case errors.Is(err2, billing.ErrRechargeAmountMismatch):
+				log.Printf("[webhook] %s recharge=%s amount mismatch", method, event.OrderNo)
+				s.alerts.SendAsync(alert.Event{
+					Level:   "error",
+					Type:    "payment_webhook_failed",
+					Message: "充值回调金额不一致",
+					Fields: map[string]interface{}{
+						"method":      method,
+						"recharge_no": event.OrderNo,
+						"error":       err2.Error(),
+					},
+				})
+				response.WebhookRetry(c, "充值金额与充值单金额不一致")
+			case errors.Is(err2, billing.ErrRechargeMethodMismatch):
+				log.Printf("[webhook] %s recharge=%s method mismatch", method, event.OrderNo)
+				s.alerts.SendAsync(alert.Event{
+					Level:   "error",
+					Type:    "payment_webhook_failed",
+					Message: "充值回调渠道不一致",
+					Fields: map[string]interface{}{
+						"method":      method,
+						"recharge_no": event.OrderNo,
+						"error":       err2.Error(),
+					},
+				})
+				response.WebhookRetry(c, "充值渠道与充值单不一致")
+			default:
+				log.Printf("[webhook] %s recharge=%s mark paid err=%v", method, event.OrderNo, err2)
+				s.alerts.SendAsync(alert.Event{
+					Level:   "error",
+					Type:    "payment_webhook_failed",
+					Message: "充值回调处理失败",
+					Fields: map[string]interface{}{
+						"method":      method,
+						"recharge_no": event.OrderNo,
+						"error":       err2.Error(),
+					},
+				})
+				response.WebhookRetry(c, "充值处理失败")
 			}
 		case errors.Is(err, billing.ErrOrderNotPaid):
 			log.Printf("[webhook] %s order=%s invalid status", method, event.OrderNo)

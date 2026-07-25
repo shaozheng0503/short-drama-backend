@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -67,7 +66,7 @@ func (s *Server) publisherRecharge(c *gin.Context) {
 			}
 			// 充值单
 			rc := model.DistributorRecharge{
-				RechargeNo:    fmt.Sprintf("RC%06d", time.Now().UnixMilli()%1000000),
+				RechargeNo:    generateBusinessNo("RC"),
 				DistributorID: id,
 				AmountCents:   req.AmountCents,
 				PaymentMethod: req.PaymentMethod,
@@ -93,7 +92,7 @@ func (s *Server) publisherRecharge(c *gin.Context) {
 
 	// 生产模式：创建充值单，调支付 provider 拿 prepay 参数
 	rc := model.DistributorRecharge{
-		RechargeNo:    fmt.Sprintf("RC%06d", time.Now().UnixMilli()%1000000),
+		RechargeNo:    generateBusinessNo("RC"),
 		DistributorID: id,
 		AmountCents:   req.AmountCents,
 		PaymentMethod: req.PaymentMethod,

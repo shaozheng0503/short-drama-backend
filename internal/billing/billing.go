@@ -884,6 +884,12 @@ var ErrRechargeNotFound = errors.New("充值单不存在")
 // ErrRechargeAmountMismatch 充值回调金额不一致
 var ErrRechargeAmountMismatch = errors.New("充值回调金额与充值单金额不一致")
 
+// ErrRechargeExpired 充值单已过期，不能再标记已支付
+var ErrRechargeExpired = errors.New("充值单已过期，不能再标记已支付")
+
+// ErrRechargeMethodMismatch 充值回调渠道与充值单不一致
+var ErrRechargeMethodMismatch = errors.New("充值回调渠道与充值单不一致")
+
 // MarkRechargePaid 押金充值到账：更新充值单状态 → 加余额 → 写流水。
 // 重复回调（充值单已 paid）幂等返回 nil。
 func (s *Service) MarkRechargePaid(rechargeNo, platformTradeNo, paymentMethod string, amountCents int64, paidAt time.Time) error {
@@ -899,6 +905,16 @@ func (s *Service) MarkRechargePaid(rechargeNo, platformTradeNo, paymentMethod st
 		}
 		if rc.Status == "paid" {
 			return nil // 幂等
+		}
+		// 防御性兜底：过期充值单拒绝标记已支付，与订单策略一致
+		if rc.ExpiredAt != nil && rc.ExpiredAt.Before(paidAt) {
+			return ErrRechargeExpired
+		}
+		// 渠道一致性校验：回调渠道必须与充值单创建时指定的渠道一致，
+		// 防 A 渠道付款被记到 B 渠道充值单（与订单侧 ErrPaymentMethodMismatch 对称）。
+		// 历史数据 PaymentMethod 可能为空，空值跳过校验保持向后兼容。
+		if rc.PaymentMethod != "" && rc.PaymentMethod != paymentMethod {
+			return ErrRechargeMethodMismatch
 		}
 		if amountCents != rc.AmountCents {
 			return ErrRechargeAmountMismatch

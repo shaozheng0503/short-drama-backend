@@ -332,7 +332,7 @@ func (s *Server) adminApproveClaim(c *gin.Context) {
 			DistributorID:      claim.DistributorID,
 			DramaID:            claim.DramaID,
 			DistributorDramaID: dd.ID,
-			ContractNo:         fmt.Sprintf("CT-DIST%06d", dd.ID),
+			ContractNo:         generateBusinessNo("CT-DIST"),
 			AmountCents:        0, // 合同金额线下确定
 			PaymentStatus:      model.ContractPayUnpaid,
 			Status:             "pending",
@@ -502,7 +502,7 @@ func (s *Server) adminImportDistributorIncome(c *gin.Context) {
 		return
 	}
 
-	batchNo := fmt.Sprintf("BATCH%06d", time.Now().UnixMilli()%1000000)
+	batchNo := generateBusinessNo("BATCH")
 	successCount := 0
 	failedCount := 0
 	var failedReasons []string
@@ -672,10 +672,19 @@ func (s *Server) adminGenerateDistributorSettlement(c *gin.Context) {
 		response.InvalidParam(c, "distributor_id, cycle_key, period_range 必填")
 		return
 	}
+	// 输入校验：防止切片越界 panic
+	if len(req.CycleKey) < 7 {
+		response.InvalidParam(c, "cycle_key 格式不正确（至少 7 字符，如 2026-07-H1）")
+		return
+	}
+	if len(req.PeriodRange) < 21 { // "2026-07-01 ~ 2026-07-15" 最少 23 字符，但用 21 兜底
+		response.InvalidParam(c, "period_range 格式不正确（应为 YYYY-MM-DD ~ YYYY-MM-DD）")
+		return
+	}
 
-	// 检查是否已存在
+	// 检查是否已存在（应用层快检，DB 唯一索引兜底）
 	var existingCount int64
-	s.db.Model(&model.DistributorSettlement{}).Where("distributor_id = ? AND cycle_key = ?", req.DistributorID, req.CycleKey).Count(&existingCount)
+	s.db.Model(&model.DistributorSettlement{}).Where("distributor_id = ? AND cycle_key = ? AND cycle_key <> ''", req.DistributorID, req.CycleKey).Count(&existingCount)
 	if existingCount > 0 {
 		response.Conflict(c, "该周期结算单已存在")
 		return
@@ -700,7 +709,7 @@ func (s *Server) adminGenerateDistributorSettlement(c *gin.Context) {
 
 	now := time.Now()
 	st := model.DistributorSettlement{
-		SettlementNo:          fmt.Sprintf("ST-DIST%06d", time.Now().UnixMilli()%1000000),
+		SettlementNo:          generateBusinessNo("ST-DIST"),
 		DistributorID:         req.DistributorID,
 		Period:                req.CycleKey[:7],
 		CycleKey:              req.CycleKey,
@@ -750,6 +759,10 @@ func (s *Server) adminGenerateDistributorSettlement(c *gin.Context) {
 		}).Error
 	})
 	if err != nil {
+		if isUniqueViolation(err) {
+			response.Conflict(c, "该周期结算单已存在（并发创建被拦截）")
+			return
+		}
 		response.ServerError(c, "生成结算单失败")
 		return
 	}

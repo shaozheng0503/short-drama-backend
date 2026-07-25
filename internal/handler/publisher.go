@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -196,6 +197,13 @@ func parsePlatforms(jsonStr string) []string {
 func platformsToJSON(platforms []string) string {
 	b, _ := json.Marshal(platforms)
 	return string(b)
+}
+
+// generateBusinessNo 生成业务单号（时间戳+微秒+随机数，防碰撞）。
+// 替代旧的 fmt.Sprintf("XX%06d", time.Now().UnixMilli()%1000000) 弱生成器。
+func generateBusinessNo(prefix string) string {
+	now := time.Now()
+	return fmt.Sprintf("%s%s%04d%05d", prefix, now.Format("20060102150405"), now.Nanosecond()/1000%10000, rand.Intn(100000))
 }
 
 // distributorName 获取发行商显示名

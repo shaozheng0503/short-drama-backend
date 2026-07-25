@@ -106,6 +106,9 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 	if err := migrateClaimStatusEnums(db); err != nil {
 		return nil, err
 	}
+	if err := migrateDistributorSettlementUniqueCycle(db); err != nil {
+		return nil, err
+	}
 	if cfg.SeedMockData {
 		result, err := seed.Run(db, cfg)
 		if err != nil {
@@ -310,6 +313,15 @@ func migrateClaimStatusEnums(db *gorm.DB) error {
 		return err
 	}
 	return nil
+}
+
+// migrateDistributorSettlementUniqueCycle 为发行商结算单创建部分唯一索引。
+// 仅 cycle_key 非空时 (distributor_id, cycle_key) 唯一，防止并发重复生成结算单。
+// 旧数据 cycle_key='' 不受约束（兼容历史月度数据）。
+func migrateDistributorSettlementUniqueCycle(db *gorm.DB) error {
+	return db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_dist_settlement_cycle
+ON distributor_settlements (distributor_id, cycle_key)
+WHERE cycle_key <> ''`).Error
 }
 
 func ensureInitialAdmin(db *gorm.DB, cfg config.Config) error {
