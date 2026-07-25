@@ -414,7 +414,11 @@ func (s *Server) adminRejectClaim(c *gin.Context) {
 		}).Error
 	})
 	if err != nil {
-		response.ServerError(c, "驳回失败")
+		if isNotFound(err) {
+			response.NotFound(c, "认领申请不存在")
+		} else {
+			response.Conflict(c, err.Error())
+		}
 		return
 	}
 
