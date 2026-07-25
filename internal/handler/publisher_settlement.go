@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // GET /v1/publisher/settlements/summary —— 收益结算中心汇总
@@ -144,10 +145,13 @@ func (s *Server) publisherSubmitRemittance(c *gin.Context) {
 
 	now := time.Now()
 	err = s.db.Transaction(func(tx *gorm.DB) error {
+		// 行锁结算单，防止发行商并发重复提交打款信息（与 adminConfirmDistributorSettlement 对称）
 		var st model.DistributorSettlement
-		if err := tx.Where("id = ? AND distributor_id = ?", sid, id).First(&st).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND distributor_id = ?", sid, id).First(&st).Error; err != nil {
 			return fmt.Errorf("结算单不存在")
 		}
+		// 事务内重新校验状态：并发场景下另一个请求可能已把它改成 payment_submitted
 		if st.Status != model.DistSettlementPendingPayment {
 			return fmt.Errorf("仅待打款状态可提交，当前状态: %s", st.Status)
 		}

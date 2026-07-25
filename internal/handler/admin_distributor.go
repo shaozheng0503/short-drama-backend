@@ -264,26 +264,30 @@ func (s *Server) adminApproveClaim(c *gin.Context) {
 		response.NotFound(c, "认领申请不存在")
 		return
 	}
-	if claim.Status != model.ClaimReviewPending {
-		response.Conflict(c, "仅待审核状态可审核通过")
-		return
-	}
-	// 押金状态校验：审核通过前必须确认押金已冻结（deposit_status=paid）。
-	// 防止手动跳过 publisherPayDeposit 步骤导致押金未扣。
-	if claim.DepositStatus != model.ClaimDepositPaid {
-		response.Conflict(c, fmt.Sprintf("押金未冻结（当前状态: %s），无法审核通过。请确保发行商已完成押金支付流程", claim.DepositStatus))
-		return
-	}
-	// 兜底校验：检查是否已有这笔认领的冻结流水记录。
-	// 如果 deposit_status=paid 但实际没有冻结流水，事务内自动补充冻结。
-	var freezeTxCount int64
-	s.db.Model(&model.DistributorDepositTransaction{}).
-		Where("distributor_id = ? AND type = ? AND related_business_no = ?",
-			claim.DistributorID, model.DepositTxFreeze, claim.ApplicationNo).
-		Count(&freezeTxCount)
+	// 事务外仅做存在性校验，状态 + 押金校验移入事务内加锁后执行（防止并发重复审核）
 
 	now := time.Now()
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 行锁 claim，防止并发重复审核（与 adminRejectClaim / adminUploadContract 对称）
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&claim, claimID).Error; err != nil {
+			return err
+		}
+		// 事务内重新校验状态：并发场景下另一个请求可能已经把它改成 contract_pending
+		if claim.Status != model.ClaimReviewPending {
+			return fmt.Errorf("仅待审核状态可审核通过（当前: %s）", claim.Status)
+		}
+		// 押金状态校验：审核通过前必须确认押金已冻结（deposit_status=paid）。
+		// 防止手动跳过 publisherPayDeposit 步骤导致押金未扣。
+		if claim.DepositStatus != model.ClaimDepositPaid {
+			return fmt.Errorf("押金未冻结（当前状态: %s），无法审核通过。请确保发行商已完成押金支付流程", claim.DepositStatus)
+		}
+		// 兜底校验：检查是否已有这笔认领的冻结流水记录。
+		// 如果 deposit_status=paid 但实际没有冻结流水，事务内自动补充冻结。
+		var freezeTxCount int64
+		tx.Model(&model.DistributorDepositTransaction{}).
+			Where("distributor_id = ? AND type = ? AND related_business_no = ?",
+				claim.DistributorID, model.DepositTxFreeze, claim.ApplicationNo).
+			Count(&freezeTxCount)
 		// 兜底冻结：如果 deposit_status=paid 但实际没有冻结流水，自动补充冻结
 		if freezeTxCount == 0 && claim.DepositAmountCents > 0 {
 			var d model.Distributor
@@ -344,7 +348,11 @@ func (s *Server) adminApproveClaim(c *gin.Context) {
 		return tx.Model(&dd).Update("contract_id", ct.ID).Error
 	})
 	if err != nil {
-		response.Conflict(c, err.Error())
+		if isNotFound(err) {
+			response.NotFound(c, "认领申请不存在")
+		} else {
+			response.Conflict(c, err.Error())
+		}
 		return
 	}
 
@@ -382,6 +390,11 @@ func (s *Server) adminRejectClaim(c *gin.Context) {
 			var dist model.Distributor
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, claim.DistributorID).Error; err != nil {
 				return err
+			}
+			// 冻结余额下限校验：防止数据异常导致负数
+			if dist.DepositFrozenCents < claim.DepositAmountCents {
+				return fmt.Errorf("发行商冻结押金余额异常（需要 %.2f 元，冻结 %.2f 元），无法解冻，请先对账",
+					float64(claim.DepositAmountCents)/100, float64(dist.DepositFrozenCents)/100)
 			}
 			dist.DepositFrozenCents -= claim.DepositAmountCents
 			dist.DepositAvailableCents += claim.DepositAmountCents
@@ -424,16 +437,21 @@ func (s *Server) adminUploadContract(c *gin.Context) {
 		response.NotFound(c, "认领申请不存在")
 		return
 	}
-	if claim.Status != model.ClaimContractPending {
-		response.Conflict(c, "仅待签署合同状态可上传合同")
-		return
-	}
+	// 事务外仅做存在性校验，状态校验移入事务内加锁后执行（防止并发重复上传合同）
 
 	// 存 COS key（私有桶），返回时动态生成 presigned GET
 	contractFileKey := req.ContractFileKey
 
 	now := time.Now()
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 行锁 claim，防止并发重复上传合同（与 adminApproveClaim 对称）
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&claim, claimID).Error; err != nil {
+			return err
+		}
+		// 事务内重新校验状态：并发场景下另一个请求可能已经把它改成 completed
+		if claim.Status != model.ClaimContractPending {
+			return fmt.Errorf("仅待签署合同状态可上传合同（当前: %s）", claim.Status)
+		}
 		// 更新认领状态为已完成，同时存 key
 		if err := tx.Model(&claim).Updates(map[string]interface{}{
 			"status":            model.ClaimCompleted,
@@ -456,7 +474,11 @@ func (s *Server) adminUploadContract(c *gin.Context) {
 		}).Error
 	})
 	if err != nil {
-		response.ServerError(c, "上传合同失败")
+		if isNotFound(err) {
+			response.NotFound(c, "认领申请不存在")
+		} else {
+			response.Conflict(c, err.Error())
+		}
 		return
 	}
 
@@ -820,6 +842,11 @@ func (s *Server) adminConfirmDistributorSettlement(c *gin.Context) {
 				var dist model.Distributor
 				if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, st.DistributorID).Error; err != nil {
 					return err
+				}
+				// 已抵扣余额下限校验：防止数据异常导致负数
+				if dist.DepositDeductedCents < st.DeductedDepositCents {
+					return fmt.Errorf("发行商已抵扣押金余额异常（需要 %.2f 元，已抵扣 %.2f 元），无法回滚，请先对账",
+						float64(st.DeductedDepositCents)/100, float64(dist.DepositDeductedCents)/100)
 				}
 				dist.DepositDeductedCents -= st.DeductedDepositCents
 				dist.DepositFrozenCents += st.DeductedDepositCents

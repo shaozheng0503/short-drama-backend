@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // 0.14.0 删除 Admin 发票列表/详情/审核接口（发票跟提现绑定，通过提现记录查看）
@@ -371,8 +372,9 @@ func (s *Server) adminCloseSettlement(c *gin.Context) {
 	}
 	now := time.Now()
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 行锁结算单，防止并发关账（与 adminConfirmDistributorSettlement 对称）
 		var st model.Settlement
-		if err := tx.First(&st, id).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&st, id).Error; err != nil {
 			return err
 		}
 		if st.Status == model.SettlementStatusPaid {
@@ -380,6 +382,20 @@ func (s *Server) adminCloseSettlement(c *gin.Context) {
 		}
 		if st.Status == model.SettlementStatusVoid {
 			return fmt.Errorf("结算单已 void，不能关账")
+		}
+		// void 安全检查：如果结算单已进入 invoiced 阶段（创作者已发起提现，
+		// 余额已从 balance 扣到 frozen），直接 void 会导致冻结余额永久无法释放。
+		// 必须先驳回关联提现（退回冻结→余额）再 void。
+		if req.Action == "void" && st.Status == model.SettlementStatusInvoiced {
+			var activeWithdrawalCount int64
+			tx.Model(&model.Withdrawal{}).
+				Where("invoice_id IN (?) AND status IN ?",
+					tx.Model(&model.Invoice{}).Select("id").Where("settlement_id = ?", id),
+					[]string{model.WithdrawalStatusPending, model.WithdrawalStatusApproved},
+				).Count(&activeWithdrawalCount)
+			if activeWithdrawalCount > 0 {
+				return fmt.Errorf("结算单已关联 %d 笔活跃提现（pending/approved），void 前请先驳回关联提现以退回冻结余额", activeWithdrawalCount)
+			}
 		}
 		updates := map[string]interface{}{
 			"status":     newStatus,
