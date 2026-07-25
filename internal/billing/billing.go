@@ -954,3 +954,58 @@ func (s *Service) MarkRechargePaid(rechargeNo, platformTradeNo, paymentMethod st
 		return nil
 	})
 }
+
+// SyncRechargeStatus 主动查渠道侧充值单状态,回写本地。用于充值 webhook 丢失/延迟时的兜底,
+// 与 SyncOrderStatus 对称:发行商付了钱但 webhook 没到,导致押金余额不增加、无法认领。
+//
+//   - 渠道侧 paid + 本地 pending  → 走 MarkRechargePaid(完整链路:加余额 + 写流水)
+//   - 渠道侧 closed + 本地 pending → 标记 closed(发行商需重新发起充值)
+//   - 其它一致情况 → no-op
+func (s *Service) SyncRechargeStatus(rechargeNo string) (*model.DistributorRecharge, error) {
+	var rc model.DistributorRecharge
+	if err := s.db.Where("recharge_no = ?", rechargeNo).First(&rc).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrRechargeNotFound
+		}
+		return nil, err
+	}
+	provider, err := s.payments.Get(rc.PaymentMethod)
+	if err != nil {
+		return nil, err
+	}
+	state, err := provider.QueryOrder(rechargeNo)
+	if err != nil {
+		return nil, err
+	}
+
+	switch state.Status {
+	case payment.StatusPaid:
+		if rc.Status == "pending" {
+			paidAt := time.Now()
+			if state.PaidAt != nil {
+				paidAt = *state.PaidAt
+			}
+			amount := state.AmountCents
+			if amount == 0 {
+				amount = rc.AmountCents // 渠道侧未返回金额时用本地金额做对账
+			}
+			if err := s.MarkRechargePaid(rechargeNo, state.PlatformTradeNo, rc.PaymentMethod, amount, paidAt); err != nil {
+				return nil, err
+			}
+		}
+	case payment.StatusClosed:
+		if rc.Status == "pending" {
+			if err := s.db.Model(&model.DistributorRecharge{}).
+				Where("recharge_no = ? AND status = ?", rechargeNo, "pending").
+				Update("status", "closed").Error; err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// 重新读一次返回最新状态。
+	if err := s.db.Where("recharge_no = ?", rechargeNo).First(&rc).Error; err != nil {
+		return nil, err
+	}
+	return &rc, nil
+}

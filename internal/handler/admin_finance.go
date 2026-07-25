@@ -1406,6 +1406,45 @@ func (s *Server) adminSyncOrder(c *gin.Context) {
 	})
 }
 
+// adminSyncRecharge POST /v1/admin/distributor-recharges/:recharge_no/sync
+// 兜底:充值 webhook 长时间未到或丢失时,主动调渠道查单回写本地,与 adminSyncOrder 对称。
+// 场景:发行商付了押金但余额没增加(webhook 丢失),手动触发对账。
+func (s *Server) adminSyncRecharge(c *gin.Context) {
+	rechargeNo := c.Param("recharge_no")
+	if rechargeNo == "" {
+		response.InvalidParam(c, "recharge_no 必填")
+		return
+	}
+	rc, err := s.billing.SyncRechargeStatus(rechargeNo)
+	if err != nil {
+		switch {
+		case errors.Is(err, billing.ErrRechargeNotFound):
+			response.NotFound(c, "充值单不存在")
+		case errors.Is(err, payment.ErrUnsupportedMethod):
+			response.InvalidParam(c, "充值支付方式不支持查单")
+		case errors.Is(err, payment.ErrProviderUnavailable):
+			response.ServerError(c, "支付渠道不可用,请检查密钥配置")
+		case errors.Is(err, billing.ErrRechargeExpired):
+			response.Conflict(c, "充值单已过期,不能标记已支付")
+		case errors.Is(err, billing.ErrRechargeAmountMismatch):
+			response.Conflict(c, "渠道侧金额与充值单金额不一致,请人工核对")
+		case errors.Is(err, billing.ErrRechargeMethodMismatch):
+			response.Conflict(c, "渠道侧渠道与充值单不一致,请人工核对")
+		default:
+			response.ServerError(c, "查单失败:"+err.Error())
+		}
+		return
+	}
+	response.OK(c, gin.H{
+		"recharge_no":       rc.RechargeNo,
+		"status":            rc.Status,
+		"amount_cents":      rc.AmountCents,
+		"payment_method":    rc.PaymentMethod,
+		"platform_trade_no": rc.PlatformTradeNo,
+		"paid_at":           rc.PaidAt,
+	})
+}
+
 // generateRefundNo 退款单号:REF-{orderNo}-{Unix 秒}-{4 位随机}。
 // 仅作幂等键,不进 DB 唯一约束(同一笔多次部分退款会有多个 refund_no);
 // 客户端可自行传入以做强幂等。

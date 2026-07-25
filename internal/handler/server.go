@@ -424,6 +424,8 @@ func (s *Server) Router() *gin.Engine {
 	// 退款 / 主动查单:仅财务角色;路径与现有 orders 同前缀,便于按订单聚合权限。
 	adminAuth.POST("/orders/:order_no/refund", s.requireAdminRole(model.AdminRoleFinance), s.adminRefundOrder)
 	adminAuth.POST("/orders/:order_no/sync", s.requireAdminRole(model.AdminRoleFinance), s.adminSyncOrder)
+	// 充值单主动查单:与订单查单对称,webhook 丢失时兜底回写充值状态。
+	adminAuth.POST("/distributor-recharges/:recharge_no/sync", s.requireAdminRole(model.AdminRoleFinance), s.adminSyncRecharge)
 
 	adminAuth.GET("/withdrawals", s.adminListWithdrawals)
 	adminAuth.GET("/withdrawals/:id", s.adminGetWithdrawal) // 财务提现详情（含完整银行卡号）
