@@ -450,6 +450,10 @@ func (s *Server) adminRejectCreatorVerification(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&cr, id).Error; err != nil {
 			return err
 		}
+		// 事务内重新校验状态：仅待审核（pending）的创作者可驳回
+		if cr.VerifyStatus != model.CreatorVerifyPending {
+			return fmt.Errorf("仅待审核的创作者可驳回（当前: %s）", cr.VerifyStatus)
+		}
 		return tx.Model(&cr).Updates(map[string]interface{}{
 			"verify_status":        model.CreatorVerifyRejected,
 			"verify_reject_reason": strings.TrimSpace(req.Reason),
@@ -460,7 +464,7 @@ func (s *Server) adminRejectCreatorVerification(c *gin.Context) {
 		if isNotFound(err) {
 			response.NotFound(c, "创作者不存在")
 		} else {
-			response.ServerError(c, "审核驳回失败")
+			response.Conflict(c, err.Error())
 		}
 		return
 	}
