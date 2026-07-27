@@ -279,7 +279,7 @@ func (s *Server) adminGenerateSettlements(c *gin.Context) {
 		creatorID := p["creator_id"].(uint64)
 		contractNo := p["contract_no"].(string)
 		grossCents := p["gross_cents"].(int64)
-		platformCents := p["platform_cents"].(int64)
+		platformCents := p["tax_cents"].(int64)
 		netCents := p["net_cents"].(int64)
 		bizNo := "ST" + now.Format("200601") + "-" + strconv.FormatUint(uint64(now.UnixNano()%10000), 10)
 		openedAt := now
