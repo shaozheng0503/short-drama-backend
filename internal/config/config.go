@@ -100,6 +100,9 @@ type Config struct {
 	COSSecretID  string
 	COSSecretKey string
 	COSCDNDomain string
+	// COS 全球加速：true 时上传/下载域名替换为 {bucket}.cos.accelerate.myqcloud.com，
+	// 通过腾讯云全球加速网络提升远距离传输速度。需先在 COS 控制台开启「全球加速」。
+	COSAccelerate bool
 
 	// COS Referer 白名单：cmd/setup-cos-referer 调用 PutBucketReferer 时用。
 	// 默认空 → cmd/setup-cos-referer 拒绝运行（防止误清空规则）。逗号分隔，支持通配符。
@@ -117,6 +120,9 @@ type Config struct {
 	VODCDNDomain    string
 	VODSignExpire   time.Duration // 客户端上传签名有效期，默认 1h
 	COSSignExpire   time.Duration // COS PUT 预签名有效期，默认 15min
+	// VOD 客户端上传加速：true 时签名带 proceeds=1 参数，SDK 上传走全球加速网络。
+	// 需先在 VOD 控制台 → 全球加速 → 开启「客户端上传加速」。
+	VODUploadAccelerate bool
 
 	// VOD Key 防盗链：appPlayEpisode 拼临时 token URL，挡 URL 泄露被白嫖。
 	// 开通条件：腾讯 VOD 控制台 → 分发播放 → Key 防盗链「启用」+ 拿到 KEY。
@@ -230,12 +236,13 @@ func Load() Config {
 		AppUpdateLog:   getEnv("APP_UPDATE_LOG", ""),
 		AppForceUpdate: getEnvBool("APP_FORCE_UPDATE", false),
 
-		COSBucket:    getEnv("COS_BUCKET", ""),
-		COSRegion:    getEnv("COS_REGION", "ap-guangzhou"),
-		COSAppID:     getEnv("COS_APP_ID", ""),
-		COSSecretID:  getEnv("COS_SECRET_ID", ""),
-		COSSecretKey: getEnv("COS_SECRET_KEY", ""),
-		COSCDNDomain: getEnv("COS_CDN_DOMAIN", ""),
+		COSBucket:     getEnv("COS_BUCKET", ""),
+		COSRegion:     getEnv("COS_REGION", "ap-guangzhou"),
+		COSAppID:      getEnv("COS_APP_ID", ""),
+		COSSecretID:   getEnv("COS_SECRET_ID", ""),
+		COSSecretKey:  getEnv("COS_SECRET_KEY", ""),
+		COSCDNDomain:  getEnv("COS_CDN_DOMAIN", ""),
+		COSAccelerate: getEnvBool("COS_ACCELERATE", false),
 
 		COSRefererWhitelist: getEnv("COS_REFERER_WHITELIST", ""),
 		COSSignExpire: time.Duration(getEnvInt("COS_SIGN_EXPIRE_SECONDS", 900)) * time.Second,
@@ -248,8 +255,9 @@ func Load() Config {
 		VODCallbackKey: getEnv("VOD_CALLBACK_KEY", ""),
 		VODCDNDomain:   getEnv("VOD_CDN_DOMAIN", ""),
 		VODSignExpire:  time.Duration(getEnvInt("VOD_SIGN_EXPIRE_SECONDS", 3600)) * time.Second,
+		VODUploadAccelerate: getEnvBool("VOD_UPLOAD_ACCELERATE", false),
 
-		VODPlaySignEnabled: getEnvBool("VOD_PLAY_SIGN_ENABLED", false),
+		VODPlaySignEnabled:   getEnvBool("VOD_PLAY_SIGN_ENABLED", false),
 		VODPlaySignKey:     getEnv("VOD_PLAY_SIGN_KEY", ""),
 		VODPlaySignExpire:  time.Duration(getEnvInt("VOD_PLAY_SIGN_EXPIRE_SECONDS", 3600)) * time.Second,
 		VODPlaySignExper:   getEnvInt("VOD_PLAY_SIGN_EXPER", 0),

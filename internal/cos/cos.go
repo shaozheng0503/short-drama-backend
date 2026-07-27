@@ -41,8 +41,13 @@ func (s *Signer) Configured() bool {
 	return c.COSBucket != "" && c.COSRegion != "" && c.COSSecretID != "" && c.COSSecretKey != ""
 }
 
-// Host 返回 cos 默认 host（不含 scheme），生产可绑 CDN 域名再覆盖。
+// Host 返回 cos 域名（不含 scheme）。
+// 开启全球加速时返回 {bucket}.cos.accelerate.myqcloud.com，否则返回 {bucket}.cos.{region}.myqcloud.com。
+// 生产可绑 CDN 域名再覆盖 PublicURL。
 func (s *Signer) Host() string {
+	if s.cfg.COSAccelerate {
+		return fmt.Sprintf("%s.cos.accelerate.myqcloud.com", s.cfg.COSBucket)
+	}
 	return fmt.Sprintf("%s.cos.%s.myqcloud.com", s.cfg.COSBucket, s.cfg.COSRegion)
 }
 
@@ -171,7 +176,7 @@ func (s *Signer) PresignedGET(key string) (signedURL string, expiresAt time.Time
 
 // presignedGetSDK 使用官方 cos-go-sdk-v5 生成 presigned GET URL
 func (s *Signer) presignedGetSDK(key string) (string, error) {
-	bucketURL := fmt.Sprintf("https://%s.cos.%s.myqcloud.com", s.cfg.COSBucket, s.cfg.COSRegion)
+	bucketURL := "https://" + s.Host()
 	u, err := url.Parse(bucketURL)
 	if err != nil {
 		return "", err

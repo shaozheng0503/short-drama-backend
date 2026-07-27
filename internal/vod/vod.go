@@ -59,6 +59,8 @@ type SignResult struct {
 	Region        string    `json:"region"`
 	ProcedureName string    `json:"procedure_name,omitempty"`
 	ExpiresAt     time.Time `json:"expires_at"`
+	// Accelerate=true 时前端 SDK 上传走全球加速网络。
+	Accelerate bool `json:"accelerate,omitempty"`
 }
 
 // ClientUploadSignature 生成客户端上传签名。
@@ -85,6 +87,11 @@ func (s *Signer) ClientUploadSignature() (*SignResult, error) {
 	if s.cfg.VODSubAppID != 0 {
 		q.Set("vodSubAppId", itoa(int64(s.cfg.VODSubAppID)))
 	}
+	// 客户端上传加速：签名带 proceeds=1，VOD SDK 上传时走全球加速网络，
+	// 提升远距离 / 弱网环境下的上传速度。需先在 VOD 控制台开启该功能。
+	if s.cfg.VODUploadAccelerate {
+		q.Set("proceeds", "1")
+	}
 	raw := sortedEncode(q)
 
 	mac := hmac.New(sha1.New, []byte(s.cfg.VODSecretKey))
@@ -101,6 +108,7 @@ func (s *Signer) ClientUploadSignature() (*SignResult, error) {
 		Region:        s.cfg.VODRegion,
 		ProcedureName: s.cfg.VODProcedure,
 		ExpiresAt:     expiresAt,
+		Accelerate:    s.cfg.VODUploadAccelerate,
 	}, nil
 }
 
