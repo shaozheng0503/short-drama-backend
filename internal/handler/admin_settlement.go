@@ -296,14 +296,16 @@ func (s *Server) adminGenerateSettlements(c *gin.Context) {
 			Remark:        req.Remark,
 		}
 		if err := s.db.Transaction(func(tx *gorm.DB) error {
-			// 事务内重新查重 + Create，防止并发生成或 cron 并发产生重复结算单
-			var existCount int64
-			tx.Model(&model.Settlement{}).
-				Where("creator_id = ? AND period = ? AND contract_no ?", creatorID, req.Period, contractNo).
-				Count(&existCount)
-			if existCount > 0 {
-				return nil // 已存在，跳过
-			}
+		// 事务内重新查重 + Create，防止并发生成或 cron 并发产生重复结算单
+		var existCount int64
+		if err := tx.Model(&model.Settlement{}).
+			Where("creator_id = ? AND period = ? AND contract_no = ?", creatorID, req.Period, contractNo).
+			Count(&existCount).Error; err != nil {
+			return err
+		}
+		if existCount > 0 {
+			return nil // 已存在，跳过
+		}
 			if err := tx.Create(&st).Error; err != nil {
 				if isUniqueViolation(err) {
 					// settlement_no 唯一索引兜底：并发创建被拦截，跳过
