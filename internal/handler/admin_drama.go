@@ -714,8 +714,13 @@ func orDefaultStr(s, def string) string {
 	return s
 }
 
-// adminDeleteDrama —— 仅 draft 状态允许删除，避免误删已上架/曾发布过的剧。
-// 同事务里级联 episodes + drama_tags；订单/解锁等用户已产生的数据不动（理论上 draft 不可能有这些）。
+// adminDeleteDrama —— 管理员可删除任意状态的短剧。
+// 2026-07-28 会议决策：给管理员更高的删除权限，不再限制仅草稿状态可删除。
+// 同事务里级联清理所有关联数据：内容（episodes/covers/characters/tags）、
+// 用户数据（comments/play_histories/user_actions/episode_unlocks/orders）、
+// 发行商数据（distributor_applications/distributor_dramas/distributor_income_daily）、
+// 创作者统计（creator_stats_daily）、渠道收益（channel_income_daily）。
+// 注意：orders 删除前需先删 episode_unlocks（有 order_id 外键引用）。
 func (s *Server) adminDeleteDrama(c *gin.Context) {
 	id := parseUint(c.Param("id"))
 	if id == 0 {
@@ -731,25 +736,80 @@ func (s *Server) adminDeleteDrama(c *gin.Context) {
 		response.ServerError(c, "查询短剧失败")
 		return
 	}
-	if drama.Status != model.DramaStatusDraft {
-		response.Conflict(c, "仅草稿状态可删除，请先下架并改回草稿")
-		return
-	}
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// === 1. 用户数据 ===
+		// 评论（含楼中楼 reply → 先删子评论再删顶层）
+		if err := tx.Where("drama_id = ?", id).Delete(&model.Comment{}).Error; err != nil {
+			return err
+		}
+		// 播放历史
+		if err := tx.Where("drama_id = ?", id).Delete(&model.PlayHistory{}).Error; err != nil {
+			return err
+		}
+		// 用户行为（收藏/点赞/分享）
+		if err := tx.Where("drama_id = ?", id).Delete(&model.UserAction{}).Error; err != nil {
+			return err
+		}
+		// 解锁记录（先于 orders 删除，因 episode_unlocks 有 order_id 引用）
+		if err := tx.Where("drama_id = ?", id).Delete(&model.EpisodeUnlock{}).Error; err != nil {
+			return err
+		}
+		// 订单
+		if err := tx.Where("drama_id = ?", id).Delete(&model.Order{}).Error; err != nil {
+			return err
+		}
+
+		// === 2. 发行商数据 ===
+		// 发行商收益日报
+		if err := tx.Where("drama_id = ?", id).Delete(&model.DistributorIncomeDaily{}).Error; err != nil {
+			return err
+		}
+		// 发行商已发行记录
+		if err := tx.Where("drama_id = ?", id).Delete(&model.DistributorDrama{}).Error; err != nil {
+			return err
+		}
+		// 发行商认领申请
+		if err := tx.Where("drama_id = ?", id).Delete(&model.DistributorApplication{}).Error; err != nil {
+			return err
+		}
+
+		// === 3. 收益统计 ===
+		// 创作者日报
+		if err := tx.Where("drama_id = ?", id).Delete(&model.CreatorStatsDaily{}).Error; err != nil {
+			return err
+		}
+		// 渠道收益日报
+		if err := tx.Where("drama_id = ?", id).Delete(&model.ChannelIncomeDaily{}).Error; err != nil {
+			return err
+		}
+
+		// === 4. 内容数据 ===
+		// 剧集
 		if err := tx.Where("drama_id = ?", id).Delete(&model.Episode{}).Error; err != nil {
 			return err
 		}
+		// 封面多图
+		if err := tx.Where("drama_id = ?", id).Delete(&model.DramaCover{}).Error; err != nil {
+			return err
+		}
+		// 角色信息
+		if err := tx.Where("drama_id = ?", id).Delete(&model.DramaCharacter{}).Error; err != nil {
+			return err
+		}
+		// 标签
 		if err := tx.Where("drama_id = ?", id).Delete(&model.DramaTag{}).Error; err != nil {
 			return err
 		}
+
+		// === 5. 剧目本身 ===
 		return tx.Delete(&model.Drama{}, id).Error
 	})
 	if err != nil {
 		response.ServerError(c, "删除短剧失败")
 		return
 	}
-	response.OK(c, gin.H{"deleted": true, "id": id})
+	response.OK(c, gin.H{"deleted": true, "id": id, "former_status": drama.Status})
 }
 
 func (s *Server) collectCategoryNames(dramas []model.Drama) map[uint64]string {
