@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -65,6 +66,66 @@ func (s *Server) devMockPayOrder(c *gin.Context) {
 		"paid_at":           paidAt,
 		"platform_trade_no": tradeNo,
 		"mock":              true,
+	})
+}
+
+// devMockRefundOrder 一键模拟退款成功，仅在 PAYMENT_DEV_MODE=true 时挂载。
+// 前端联调路径：POST /v1/dev/orders/:order_no/refund
+// 走的是和真实退款同一条 billing.DevRefundOrder 链路（行锁+状态/金额/幂等校验+分账回退），
+// 唯一区别是跳过渠道侧退款调用。解决沙箱配了真实支付宝凭证时退款走真渠道被拒的可测性缺口。
+func (s *Server) devMockRefundOrder(c *gin.Context) {
+	orderNo := c.Param("order_no")
+	if orderNo == "" {
+		response.InvalidParam(c, "order_no 必填")
+		return
+	}
+	var order model.Order
+	if err := s.db.Where("order_no = ?", orderNo).First(&order).Error; err != nil {
+		response.NotFound(c, "订单不存在")
+		return
+	}
+
+	var body struct {
+		AmountCents int64  `json:"amount_cents" binding:"required,gt=0"`
+		Reason      string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.InvalidParam(c, "amount_cents 必填且必须大于 0")
+		return
+	}
+	if body.AmountCents > order.AmountCents {
+		response.InvalidParam(c, "退款金额不能超过订单金额")
+		return
+	}
+
+	refundNo := fmt.Sprintf("DEV-RF-%s-%d", orderNo, time.Now().UnixNano())
+	log.Printf("[payment-dev] mock-refund endpoint order_no=%s refund_no=%s amount=%d",
+		orderNo, refundNo, body.AmountCents)
+
+	refunded, err := s.billing.DevRefundOrder(orderNo, refundNo, body.AmountCents, body.Reason)
+	if err != nil {
+		switch {
+		case errors.Is(err, billing.ErrOrderNotFound):
+			response.NotFound(c, "订单不存在")
+		case errors.Is(err, billing.ErrRefundNotAllowed):
+			response.Conflict(c, "订单状态不允许退款")
+		case errors.Is(err, billing.ErrRefundAmountInvalid):
+			response.InvalidParam(c, "退款金额无效")
+		case errors.Is(err, billing.ErrRefundNoRequired):
+			response.InvalidParam(c, "refund_no 必填")
+		default:
+			response.ServerError(c, "mock 退款失败")
+		}
+		return
+	}
+
+	response.OK(c, gin.H{
+		"order_no":           orderNo,
+		"status":             refunded.Status,
+		"refund_amount_cents": refunded.RefundAmountCents,
+		"refund_no":           refunded.RefundNo,
+		"platform_refund_no": refunded.PlatformRefundNo,
+		"mock":               true,
 	})
 }
 

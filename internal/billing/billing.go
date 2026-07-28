@@ -859,6 +859,108 @@ func (s *Service) RefundOrder(orderNo, refundNo string, amountCents int64, reaso
 	return &order, nil
 }
 
+// DevRefundOrder 沙箱退款 mock 端点专用：与 RefundOrder 逻辑完全对称（行锁 + 状态/金额/幂等校验 + 分账回退），
+// 唯一区别是跳过渠道侧退款调用，直接当作退款成功。用于 PAYMENT_DEV_MODE=true 时退款链路可测性：
+// 沙箱配了真实支付宝凭证时，prepay 走真实渠道但订单可能通过 /v1/dev/orders/:no/pay mock 支付，
+// 退款走真实 AlipayProvider 会被拒（DEV-MOCK 流水号不存在），此方法绕过渠道侧完成退款状态机测试。
+func (s *Service) DevRefundOrder(orderNo, refundNo string, amountCents int64, reason string) (*model.Order, error) {
+	if refundNo == "" {
+		return nil, ErrRefundNoRequired
+	}
+	if amountCents <= 0 {
+		return nil, ErrRefundAmountInvalid
+	}
+
+	var order model.Order
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("order_no = ?", orderNo).First(&order).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrOrderNotFound
+			}
+			return err
+		}
+		if order.Status != model.OrderStatusPaid && order.Status != model.OrderStatusPartialRefunded {
+			return ErrRefundNotAllowed
+		}
+		if order.RefundNo == refundNo {
+			return nil
+		}
+		if order.RefundAmountCents+amountCents > order.AmountCents {
+			return ErrRefundAmountInvalid
+		}
+
+		// 跳过渠道退款调用，直接 mock 退款成功（与 DevProvider.Refund 对称）。
+		refundedAt := time.Now()
+		platformRefundNo := "DEV-REFUND-" + refundNo
+
+		newRefundTotal := order.RefundAmountCents + amountCents
+		newStatus := model.OrderStatusPartialRefunded
+		if newRefundTotal >= order.AmountCents {
+			newStatus = model.OrderStatusRefunded
+		}
+		updates := map[string]interface{}{
+			"status":              newStatus,
+			"refund_amount_cents": newRefundTotal,
+			"refunded_at":         refundedAt,
+			"refund_reason":       reason,
+			"refund_no":           refundNo,
+			"platform_refund_no":  platformRefundNo,
+		}
+		if err := tx.Model(&order).Updates(updates).Error; err != nil {
+			return err
+		}
+
+		var drama model.Drama
+		if err := tx.First(&drama, order.DramaID).Error; err != nil {
+			return err
+		}
+		if drama.CreatorID == nil {
+			order.Status = newStatus
+			order.RefundAmountCents = newRefundTotal
+			order.RefundedAt = &refundedAt
+			order.RefundReason = reason
+			order.RefundNo = refundNo
+			order.PlatformRefundNo = platformRefundNo
+			return nil
+		}
+		clawback := int64(float64(amountCents) * s.cfg.CreatorShareRate)
+		if clawback > 0 {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				First(&model.Creator{}, *drama.CreatorID).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&model.Creator{}).
+				Where("id = ?", *drama.CreatorID).
+				Updates(map[string]interface{}{
+					"total_income_cents": gorm.Expr("GREATEST(total_income_cents - ?, 0)", clawback),
+					"balance_cents":      gorm.Expr("GREATEST(balance_cents - ?, 0)", clawback),
+				}).Error; err != nil {
+				return err
+			}
+			statDate := refundedAt.Format("2006-01-02")
+			if err := tx.Model(&model.CreatorStatsDaily{}).
+				Where("creator_id = ? AND drama_id = ? AND stat_date = ?",
+					*drama.CreatorID, order.DramaID, statDate).
+				Update("income_cents", gorm.Expr("GREATEST(income_cents - ?, 0)", clawback)).Error; err != nil {
+				return err
+			}
+		}
+
+		order.Status = newStatus
+		order.RefundAmountCents = newRefundTotal
+		order.RefundedAt = &refundedAt
+		order.RefundReason = reason
+		order.RefundNo = refundNo
+		order.PlatformRefundNo = platformRefundNo
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &order, nil
+}
+
 // SyncOrderStatus 主动查渠道侧订单状态,回写本地。用于 webhook 丢失/延迟时的兜底。
 //
 //   - 渠道侧 paid + 本地 pending  → 走 MarkOrderPaid(完整链路:解锁 + 分账)

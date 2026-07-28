@@ -544,6 +544,7 @@ func (s *Server) Router() *gin.Engine {
 	if s.cfg.PaymentDevMode {
 		dev := v1.Group("/dev")
 		dev.POST("/orders/:order_no/pay", s.devMockPayOrder)
+		dev.POST("/orders/:order_no/refund", s.devMockRefundOrder)
 		dev.POST("/recharges/:recharge_no/pay", s.devMockPayRecharge)
 		dev.POST("/seed", s.devSeed)
 		log.Printf("[dev] PAYMENT_DEV_MODE=true，已挂载 dev mock 端点")
