@@ -99,8 +99,10 @@ func isVerificationRelatedPath(path string) bool {
 }
 
 const ctxAdminRole = "admin.role"
+const ctxAdminPermissions = "admin.permissions"
 
-// requireActiveAdmin 校验管理员账号正常，并把角色写入 context 供 requireAdminRole 使用。
+// requireActiveAdmin 校验管理员账号正常，并把角色和权限列表写入 context。
+// 权限列表一次性查出，后续 requirePermission 从 context 读取，零额外 DB 开销。
 func (s *Server) requireActiveAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if middleware.CurrentSubject(c) != middleware.SubjectAdmin {
@@ -124,6 +126,17 @@ func (s *Server) requireActiveAdmin() gin.HandlerFunc {
 			return
 		}
 		c.Set(ctxAdminRole, admin.Role)
+
+		// 查权限列表（超管快捷跳过，减少 DB 查询）
+		if admin.Role == model.AdminRoleAdmin {
+			c.Set(ctxAdminPermissions, []string{model.PermSuperAdmin})
+		} else {
+			var perms []string
+			s.db.Model(&model.AdminPermission{}).
+				Where("admin_id = ?", id).Pluck("permission", &perms)
+			c.Set(ctxAdminPermissions, perms)
+		}
+
 		c.Next()
 	}
 }
@@ -131,18 +144,29 @@ func (s *Server) requireActiveAdmin() gin.HandlerFunc {
 func adminIsSuper(c *gin.Context) bool {
 	role, _ := c.Get(ctxAdminRole)
 	r, _ := role.(string)
-	return r == model.AdminRoleAdmin
+	if r == model.AdminRoleAdmin {
+		return true
+	}
+	perms, _ := c.Get(ctxAdminPermissions)
+	permList, _ := perms.([]string)
+	for _, p := range permList {
+		if p == model.PermSuperAdmin {
+			return true
+		}
+	}
+	return false
 }
 
 // requireAdminRole 限定只有指定角色（或超管 admin）可访问。挂在 requireActiveAdmin 之后。
+// 向后兼容：保留原有角色判定，同时支持权限项判定（拥有对应权限也放行）。
 func (s *Server) requireAdminRole(allowed ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		role, _ := c.Get(ctxAdminRole)
-		r, _ := role.(string)
-		if r == model.AdminRoleAdmin { // 超管放行一切
+		if adminIsSuper(c) {
 			c.Next()
 			return
 		}
+		role, _ := c.Get(ctxAdminRole)
+		r, _ := role.(string)
 		for _, a := range allowed {
 			if r == a {
 				c.Next()
@@ -150,6 +174,28 @@ func (s *Server) requireAdminRole(allowed ...string) gin.HandlerFunc {
 			}
 		}
 		response.Forbidden(c, "当前角色无权执行该操作")
+		c.Abort()
+	}
+}
+
+// requirePermission 校验当前管理员是否拥有指定权限项。
+// 超管（role=admin 或拥有 super_admin 权限）恒放行。
+// 非超管从 context 中读取权限列表（由 requireActiveAdmin 一次性查出）。
+func (s *Server) requirePermission(perm string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if adminIsSuper(c) {
+			c.Next()
+			return
+		}
+		perms, _ := c.Get(ctxAdminPermissions)
+		permList, _ := perms.([]string)
+		for _, p := range permList {
+			if p == perm {
+				c.Next()
+				return
+			}
+		}
+		response.Forbidden(c, "当前账号无此操作权限")
 		c.Abort()
 	}
 }

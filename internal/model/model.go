@@ -24,6 +24,34 @@ const (
 	AdminRoleAuditor = "auditor" // 审核：内容审核相关
 )
 
+// 权限项 Key（独立权限配置模式，不透传角色概念）。
+// 超管拥有 super_admin 即放行一切；非超管按 admin_permissions 表查到的权限项判定。
+const (
+	PermSuperAdmin      = "super_admin"
+	PermCreatorAudit    = "creator_audit"
+	PermContentAudit    = "content_audit"
+	PermDistributorAudit = "distributor_audit"
+	PermClaimAudit      = "claim_audit"
+	PermFinance         = "finance"
+	PermConfigManage    = "config_manage"
+	PermAccountManage   = "account_manage"
+)
+
+// AllPermissions 全部权限项列表，供前端渲染权限选择面板。
+var AllPermissions = []struct {
+	Key  string `json:"key"`
+	Name string `json:"name"`
+}{
+	{PermSuperAdmin, "超级管理员"},
+	{PermCreatorAudit, "创作者入驻审核"},
+	{PermContentAudit, "短剧内容审核"},
+	{PermDistributorAudit, "发行商入驻审核"},
+	{PermClaimAudit, "认领授权审核"},
+	{PermFinance, "财务管理"},
+	{PermConfigManage, "全局配置管理"},
+	{PermAccountManage, "系统用户管理"},
+}
+
 // 创作者主体类型：个人 / 机构。
 const (
 	CreatorTypePersonal     = "personal"
@@ -214,6 +242,17 @@ type Admin struct {
 }
 
 func (Admin) TableName() string { return "admins" }
+
+// AdminPermission 管理员-权限项关联（多对多）。
+// 每个管理员可拥有多个权限项；super_admin 拥有此权限即放行一切。
+type AdminPermission struct {
+	ID         uint64    `gorm:"primaryKey;column:id" json:"id"`
+	AdminID    uint64    `gorm:"column:admin_id;uniqueIndex:uniq_admin_permission,priority:1" json:"admin_id"`
+	Permission string    `gorm:"column:permission;size:32;uniqueIndex:uniq_admin_permission,priority:2" json:"permission"`
+	CreatedAt  time.Time `gorm:"column:created_at" json:"created_at"`
+}
+
+func (AdminPermission) TableName() string { return "admin_permissions" }
 
 // Creator —— 创作者表（MVP 数据库设计 3.4）
 // IDCardNoEnc / BankCardNoEnc 存 AES-GCM 密文（base64），不入接口返回。

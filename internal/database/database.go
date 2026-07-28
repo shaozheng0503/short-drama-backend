@@ -76,6 +76,7 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		&model.DistributorWithdrawal{},
 		&model.DistributorInvoice{},
 		&model.DistributorDepositTransaction{},
+		&model.AdminPermission{},
 	); err != nil {
 		return nil, err
 	}
@@ -83,6 +84,9 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		return nil, err
 	}
 	if err := ensureRoleAdmins(db, cfg); err != nil {
+		return nil, err
+	}
+	if err := ensureAdminPermissions(db); err != nil {
 		return nil, err
 	}
 	if err := seed.EnsureThemeCategories(db); err != nil {
@@ -435,6 +439,38 @@ func ensureRoleAdmins(db *gorm.DB, cfg config.Config) error {
 			return err
 		}
 		log.Printf("seeded role admin: username=%s role=%s", ra.username, ra.role)
+	}
+	return nil
+}
+
+// ensureAdminPermissions 为现有 3 个种子账号补权限项（幂等）。
+// admin → super_admin；finance → finance；auditor → creator_audit + content_audit + distributor_audit + claim_audit。
+// 已拥有对应权限则跳过，不重复写入。
+func ensureAdminPermissions(db *gorm.DB) error {
+	permMap := map[string][]string{
+		"admin":   {model.PermSuperAdmin},
+		"finance": {model.PermFinance},
+		"auditor": {model.PermCreatorAudit, model.PermContentAudit, model.PermDistributorAudit, model.PermClaimAudit},
+	}
+	for username, perms := range permMap {
+		var admin model.Admin
+		err := db.Where("username = ?", username).First(&admin).Error
+		if err != nil {
+			continue // 账号不存在则跳过
+		}
+		for _, perm := range perms {
+			var count int64
+			db.Model(&model.AdminPermission{}).
+				Where("admin_id = ? AND permission = ?", admin.ID, perm).
+				Count(&count)
+			if count > 0 {
+				continue
+			}
+			db.Create(&model.AdminPermission{
+				AdminID:    admin.ID,
+				Permission: perm,
+			})
+		}
 	}
 	return nil
 }

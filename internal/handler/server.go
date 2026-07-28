@@ -394,6 +394,17 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.GET("/me", s.adminMe)
 	adminAuth.GET("/dashboard", s.adminDashboard)
 
+	// === 系统用户管理（独立权限配置模式）===
+	adminAuth.GET("/permissions", s.requirePermission(model.PermAccountManage), s.adminListPermissions)
+	adminAuth.GET("/admins", s.requirePermission(model.PermAccountManage), s.adminListAdmins)
+	adminAuth.POST("/admins", s.requirePermission(model.PermAccountManage), s.adminCreateAdminAccount)
+	adminAuth.GET("/admins/:id", s.requirePermission(model.PermAccountManage), s.adminGetAdminAccount)
+	adminAuth.PUT("/admins/:id", s.requirePermission(model.PermAccountManage), s.adminUpdateAdminAccount)
+	adminAuth.PUT("/admins/:id/password", s.requirePermission(model.PermAccountManage), s.adminResetAdminPassword)
+	adminAuth.PUT("/admins/:id/permissions", s.requirePermission(model.PermAccountManage), s.adminSetAdminPermissions)
+	adminAuth.POST("/admins/:id/ban", s.requirePermission(model.PermAccountManage), s.adminBanAdminAccount)
+	adminAuth.POST("/admins/:id/unban", s.requirePermission(model.PermAccountManage), s.adminUnbanAdminAccount)
+
 	adminAuth.GET("/categories", s.adminListCategories)
 	adminAuth.POST("/categories", s.adminCreateCategory)
 	adminAuth.PUT("/categories/:id", s.adminUpdateCategory)
@@ -410,9 +421,9 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.DELETE("/dramas/:id", s.adminDeleteDrama)
 	adminAuth.POST("/dramas/:id/publish", s.adminPublishDrama)
 	adminAuth.POST("/dramas/:id/offline", s.adminOfflineDrama)
-	adminAuth.POST("/dramas/:id/approve", s.requireAdminRole(model.AdminRoleAuditor), s.adminApproveDrama)
-	adminAuth.POST("/dramas/:id/reject", s.requireAdminRole(model.AdminRoleAuditor), s.adminRejectDrama)
-	adminAuth.POST("/dramas/:id/audit", s.requireAdminRole(model.AdminRoleAuditor), s.adminAuditDrama) // 分批审核：按维度(content/video)通过/驳回
+	adminAuth.POST("/dramas/:id/approve", s.requirePermission(model.PermContentAudit), s.adminApproveDrama)
+	adminAuth.POST("/dramas/:id/reject", s.requirePermission(model.PermContentAudit), s.adminRejectDrama)
+	adminAuth.POST("/dramas/:id/audit", s.requirePermission(model.PermContentAudit), s.adminAuditDrama) // 分批审核：按维度(content/video)通过/驳回
 	adminAuth.PUT("/dramas/:id/distributable", s.adminSetDistributable)                                // 开关发行商认领
 
 	adminAuth.GET("/dramas/:id/episodes", s.adminListEpisodes)
@@ -436,8 +447,8 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.PUT("/creators/:id", s.adminUpdateCreator)
 	adminAuth.POST("/creators/:id/ban", s.adminBanCreator)
 	adminAuth.POST("/creators/:id/unban", s.adminUnbanCreator)
-	adminAuth.POST("/creators/:id/verification/approve", s.requireAdminRole(model.AdminRoleAuditor), s.adminApproveCreatorVerification)
-	adminAuth.POST("/creators/:id/verification/reject", s.requireAdminRole(model.AdminRoleAuditor), s.adminRejectCreatorVerification)
+	adminAuth.POST("/creators/:id/verification/approve", s.requirePermission(model.PermCreatorAudit), s.adminApproveCreatorVerification)
+	adminAuth.POST("/creators/:id/verification/reject", s.requirePermission(model.PermCreatorAudit), s.adminRejectCreatorVerification)
 	adminAuth.GET("/creator-channel-accounts", s.adminListCreatorChannelAccounts)
 	adminAuth.POST("/creator-channel-accounts", s.adminCreateChannelAccount)
 	adminAuth.PUT("/creator-channel-accounts/:id", s.adminUpdateChannelAccount)
@@ -454,18 +465,18 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.GET("/orders", s.adminListOrders)
 	adminAuth.GET("/orders/:order_no", s.adminGetOrder)
 	// 退款 / 主动查单:仅财务角色;路径与现有 orders 同前缀,便于按订单聚合权限。
-	adminAuth.POST("/orders/:order_no/refund", s.requireAdminRole(model.AdminRoleFinance), s.adminRefundOrder)
-	adminAuth.POST("/orders/:order_no/sync", s.requireAdminRole(model.AdminRoleFinance), s.adminSyncOrder)
+	adminAuth.POST("/orders/:order_no/refund", s.requirePermission(model.PermFinance), s.adminRefundOrder)
+	adminAuth.POST("/orders/:order_no/sync", s.requirePermission(model.PermFinance), s.adminSyncOrder)
 	// 充值单主动查单:与订单查单对称,webhook 丢失时兜底回写充值状态。
-	adminAuth.POST("/distributor-recharges/:recharge_no/sync", s.requireAdminRole(model.AdminRoleFinance), s.adminSyncRecharge)
+	adminAuth.POST("/distributor-recharges/:recharge_no/sync", s.requirePermission(model.PermFinance), s.adminSyncRecharge)
 
 	adminAuth.GET("/withdrawals", s.adminListWithdrawals)
 	adminAuth.GET("/withdrawals/:id", s.adminGetWithdrawal) // 财务提现详情（含完整银行卡号）
-	adminAuth.POST("/withdrawals/:id/approve", s.requireAdminRole(model.AdminRoleFinance), s.adminApproveWithdrawal)
-	adminAuth.POST("/withdrawals/:id/reject", s.requireAdminRole(model.AdminRoleFinance), s.adminRejectWithdrawal)
-	adminAuth.POST("/withdrawals/:id/mark-paid", s.requireAdminRole(model.AdminRoleFinance), s.adminMarkWithdrawalPaid)
+	adminAuth.POST("/withdrawals/:id/approve", s.requirePermission(model.PermFinance), s.adminApproveWithdrawal)
+	adminAuth.POST("/withdrawals/:id/reject", s.requirePermission(model.PermFinance), s.adminRejectWithdrawal)
+	adminAuth.POST("/withdrawals/:id/mark-paid", s.requirePermission(model.PermFinance), s.adminMarkWithdrawalPaid)
 	// 2026-07-02 改：流程图步骤 3「合并审核」——财务一次审完 withdrawal + invoice
-	adminAuth.POST("/withdrawals/:id/review", s.requireAdminRole(model.AdminRoleFinance), s.adminReviewWithdrawal)
+	adminAuth.POST("/withdrawals/:id/review", s.requirePermission(model.PermFinance), s.adminReviewWithdrawal)
 	adminAuth.GET("/withdrawals/:id/download.pdf", s.adminDownloadWithdrawalPDF) // 财务提现单 PDF
 
 	// === Admin 结算（2026-07-01）===
@@ -474,35 +485,35 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.GET("/settlements/:id", s.adminGetSettlement)
 	adminAuth.GET("/settlements/:id/download.pdf", s.adminDownloadSettlementPDF) // 财务 PDF 对账单
 	// 2026-07-28 删除 POST /settlements/generate（邱嘉诚要求，前端已移除）
-	adminAuth.POST("/settlements/:id/close", s.requireAdminRole(model.AdminRoleFinance), s.adminCloseSettlement)
+	adminAuth.POST("/settlements/:id/close", s.requirePermission(model.PermFinance), s.adminCloseSettlement)
 
 	// App 付费收入（平台自有支付分账）：按短剧聚合的毛收入/净收入，订单中心+收益汇总（财务角色）
-	adminAuth.GET("/finance/app-income", s.requireAdminRole(model.AdminRoleFinance), s.adminListAppIncome)
+	adminAuth.GET("/finance/app-income", s.requirePermission(model.PermFinance), s.adminListAppIncome)
 	// 订单导出 Excel：财务把 App 用户购买订单导出汇总（订单中心导出，财务角色）
-	adminAuth.GET("/finance/orders-export.xlsx", s.requireAdminRole(model.AdminRoleFinance), s.adminExportOrders)
+	adminAuth.GET("/finance/orders-export.xlsx", s.requirePermission(model.PermFinance), s.adminExportOrders)
 	// 财务 Excel 导入每日收入（财务角色）
-	adminAuth.GET("/finance/income/template.xlsx", s.requireAdminRole(model.AdminRoleFinance), s.adminDownloadIncomeTemplate)
-	adminAuth.GET("/finance/income/imports", s.requireAdminRole(model.AdminRoleFinance), s.adminListIncomeImports)
-	adminAuth.GET("/finance/income/imports/:batch_no", s.requireAdminRole(model.AdminRoleFinance), s.adminGetIncomeImport)
-	adminAuth.POST("/finance/income/import", s.requireAdminRole(model.AdminRoleFinance), s.adminImportDailyIncome)
-	adminAuth.GET("/finance/channel-incomes", s.requireAdminRole(model.AdminRoleFinance), s.adminListChannelIncomes)
-	adminAuth.PUT("/finance/channel-incomes/:id", s.requireAdminRole(model.AdminRoleFinance), s.adminUpdateChannelIncome)
-	adminAuth.DELETE("/finance/channel-incomes/:id", s.requireAdminRole(model.AdminRoleFinance), s.adminDeleteChannelIncome)
+	adminAuth.GET("/finance/income/template.xlsx", s.requirePermission(model.PermFinance), s.adminDownloadIncomeTemplate)
+	adminAuth.GET("/finance/income/imports", s.requirePermission(model.PermFinance), s.adminListIncomeImports)
+	adminAuth.GET("/finance/income/imports/:batch_no", s.requirePermission(model.PermFinance), s.adminGetIncomeImport)
+	adminAuth.POST("/finance/income/import", s.requirePermission(model.PermFinance), s.adminImportDailyIncome)
+	adminAuth.GET("/finance/channel-incomes", s.requirePermission(model.PermFinance), s.adminListChannelIncomes)
+	adminAuth.PUT("/finance/channel-incomes/:id", s.requirePermission(model.PermFinance), s.adminUpdateChannelIncome)
+	adminAuth.DELETE("/finance/channel-incomes/:id", s.requirePermission(model.PermFinance), s.adminDeleteChannelIncome)
 
 	// 全局价格配置：读对所有 admin 开放，写仅超管。
 	adminAuth.GET("/config/pricing", s.adminGetPricingConfig)
-	adminAuth.PUT("/config/pricing", s.requireAdminRole(), s.adminUpdatePricingConfig)
+	adminAuth.PUT("/config/pricing", s.requirePermission(model.PermConfigManage), s.adminUpdatePricingConfig)
 	adminAuth.GET("/config/aigc-tools", s.adminGetAIGCTools)
-	adminAuth.PUT("/config/aigc-tools", s.requireAdminRole(), s.adminUpdateAIGCTools)
+	adminAuth.PUT("/config/aigc-tools", s.requirePermission(model.PermConfigManage), s.adminUpdateAIGCTools)
 	adminAuth.GET("/config/hot-search", s.adminGetHotSearch)
-	adminAuth.PUT("/config/hot-search", s.requireAdminRole(), s.adminUpdateHotSearch)
+	adminAuth.PUT("/config/hot-search", s.requirePermission(model.PermConfigManage), s.adminUpdateHotSearch)
 	adminAuth.GET("/config/income-share", s.adminGetIncomeShareConfig)
-	adminAuth.PUT("/config/income-share", s.requireAdminRole(), s.adminUpdateIncomeShareConfig)
+	adminAuth.PUT("/config/income-share", s.requirePermission(model.PermConfigManage), s.adminUpdateIncomeShareConfig)
 	// 个税阶梯：读对所有 admin 开放，写仅超管。
 	adminAuth.GET("/config/tax-brackets", s.adminListTaxBrackets)
-	adminAuth.POST("/config/tax-brackets", s.requireAdminRole(), s.adminCreateTaxBracket)
-	adminAuth.PUT("/config/tax-brackets/:id", s.requireAdminRole(), s.adminUpdateTaxBracket)
-	adminAuth.DELETE("/config/tax-brackets/:id", s.requireAdminRole(), s.adminDeleteTaxBracket)
+	adminAuth.POST("/config/tax-brackets", s.requirePermission(model.PermConfigManage), s.adminCreateTaxBracket)
+	adminAuth.PUT("/config/tax-brackets/:id", s.requirePermission(model.PermConfigManage), s.adminUpdateTaxBracket)
+	adminAuth.DELETE("/config/tax-brackets/:id", s.requirePermission(model.PermConfigManage), s.adminDeleteTaxBracket)
 
 	adminAuth.GET("/contracts", s.adminListContracts)
 	adminAuth.POST("/contracts", s.adminCreateContract)
@@ -517,26 +528,26 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.GET("/distributors/template.xlsx", s.adminDownloadDistributorTemplate) // 批量导入模板下载
 	adminAuth.POST("/distributors/import", s.adminImportDistributors)                 // 批量导入发行商
 	adminAuth.GET("/distributors/:id", s.adminGetDistributor)
-	adminAuth.POST("/distributors/:id/verification/approve", s.requireAdminRole(model.AdminRoleAuditor), s.adminApproveDistributorVerification)
-	adminAuth.POST("/distributors/:id/verification/reject", s.requireAdminRole(model.AdminRoleAuditor), s.adminRejectDistributorVerification)
+	adminAuth.POST("/distributors/:id/verification/approve", s.requirePermission(model.PermDistributorAudit), s.adminApproveDistributorVerification)
+	adminAuth.POST("/distributors/:id/verification/reject", s.requirePermission(model.PermDistributorAudit), s.adminRejectDistributorVerification)
 	adminAuth.POST("/distributors/:id/ban", s.adminBanDistributor)
 	adminAuth.POST("/distributors/:id/unban", s.adminUnbanDistributor)
 	// 认领审核
 	adminAuth.GET("/distributor-claims", s.adminListDistributorClaims)
 	adminAuth.GET("/distributor-claims/:id", s.adminGetDistributorClaim)
-	adminAuth.POST("/distributor-claims/:id/approve", s.requireAdminRole(model.AdminRoleAuditor), s.adminApproveClaim)
-	adminAuth.POST("/distributor-claims/:id/reject", s.requireAdminRole(model.AdminRoleAuditor), s.adminRejectClaim)
-	adminAuth.POST("/distributor-claims/:id/contract", s.requireAdminRole(model.AdminRoleAuditor), s.adminUploadContract)
+	adminAuth.POST("/distributor-claims/:id/approve", s.requirePermission(model.PermClaimAudit), s.adminApproveClaim)
+	adminAuth.POST("/distributor-claims/:id/reject", s.requirePermission(model.PermClaimAudit), s.adminRejectClaim)
+	adminAuth.POST("/distributor-claims/:id/contract", s.requirePermission(model.PermClaimAudit), s.adminUploadContract)
 	// 2026-07-28 删除 POST /finance/distributor-income/import（邱嘉诚要求，前端已移除）
 	// 结算管理
 	adminAuth.GET("/distributor-settlements", s.adminListDistributorSettlements)
 	adminAuth.GET("/distributor-settlements/:id", s.adminGetDistributorSettlement)
 	// 2026-07-28 删除 POST /distributor-settlements/generate（邱嘉诚要求，前端已移除）
-	adminAuth.POST("/distributor-settlements/:id/confirm-receipt", s.requireAdminRole(model.AdminRoleFinance), s.adminConfirmDistributorSettlement)
+	adminAuth.POST("/distributor-settlements/:id/confirm-receipt", s.requirePermission(model.PermFinance), s.adminConfirmDistributorSettlement)
 	// 提现管理（已废弃，保留只读）
 	adminAuth.GET("/distributor-withdrawals", s.adminListDistributorWithdrawals)
-	adminAuth.POST("/distributor-withdrawals/:id/review", s.requireAdminRole(model.AdminRoleFinance), s.adminReviewDistributorWithdrawal)
-	adminAuth.POST("/distributor-withdrawals/:id/mark-paid", s.requireAdminRole(model.AdminRoleFinance), s.adminMarkPaidDistributorWithdrawal)
+	adminAuth.POST("/distributor-withdrawals/:id/review", s.requirePermission(model.PermFinance), s.adminReviewDistributorWithdrawal)
+	adminAuth.POST("/distributor-withdrawals/:id/mark-paid", s.requirePermission(model.PermFinance), s.adminMarkPaidDistributorWithdrawal)
 
 	// === Webhooks（公开，由 provider 自己验签）===
 	webhooks := v1.Group("/webhooks")

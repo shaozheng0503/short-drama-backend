@@ -87,7 +87,8 @@ func (s *Server) adminMe(c *gin.Context) {
 		response.ServerError(c, "获取管理员失败")
 		return
 	}
-	response.OK(c, adminView(admin))
+	perms := s.loadAdminPermissions(aid)
+	response.OK(c, adminViewWithPerms(admin, perms))
 }
 
 func adminView(a model.Admin) gin.H {
@@ -96,5 +97,15 @@ func adminView(a model.Admin) gin.H {
 		"username": a.Username,
 		"role":     a.Role,
 		"status":   a.Status,
+	}
+}
+
+func adminViewWithPerms(a model.Admin, perms []string) gin.H {
+	return gin.H{
+		"id":          a.ID,
+		"username":    a.Username,
+		"role":        a.Role,
+		"status":      a.Status,
+		"permissions": perms,
 	}
 }
