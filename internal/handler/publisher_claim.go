@@ -35,11 +35,16 @@ func platformLabel(p string) string {
 }
 
 type createClaimRequest struct {
-	DramaID   uint64   `json:"drama_id" binding:"required"`
-	Platforms []string `json:"platforms" binding:"required"`
+	DramaID               uint64   `json:"drama_id" binding:"required"`
+	Platforms             []string `json:"platforms" binding:"required"`
+	AuthorizationConfirmed bool    `json:"authorization_confirmed"` // 合并原 submit 步骤：前端勾选即传 true
 }
 
-// POST /v1/publisher/claims —— 创建认领申请
+// POST /v1/publisher/claims —— 创建认领申请（一步完成：创建 + 冻结押金 + 提交审核）
+//
+// 2026-07-28 会议决策：合并原三步流程（create → deposit → submit）为单一原子请求。
+// 原因：三步分离导致用户卡在 deposit_pending，管理员无法审核；且发行商必须付押金才能创建审核。
+// 同时修复预扣款漏洞：认领时即冻结押金，余额不足则创建失败，防止单账号无限认领。
 func (s *Server) publisherCreateClaim(c *gin.Context) {
 	id := middleware.CurrentID(c)
 
@@ -67,6 +72,11 @@ func (s *Server) publisherCreateClaim(c *gin.Context) {
 			return
 		}
 	}
+	// 合并 submit 步骤：必须勾选授权确认
+	if !req.AuthorizationConfirmed {
+		response.InvalidParam(c, "必须勾选确认已完成第三方平台授权")
+		return
+	}
 
 	// 校验剧存在且已上架
 	var drama model.Drama
@@ -93,11 +103,10 @@ func (s *Server) publisherCreateClaim(c *gin.Context) {
 	s.db.Where("distributor_id = ? AND drama_id = ? AND status IN ?", id, req.DramaID,
 		[]string{model.DistDramaAuthorized, model.DistDramaActive}).Find(&existingDDs)
 	hasExisting := len(existingDDs) > 0
-	// 也检查自己是否有审核中的认领
+	// 也检查自己是否有审核中的认领（注意：不再检查 deposit_pending/auth_pending，因为旧状态已废弃）
 	var existingApps int64
 	s.db.Model(&model.DistributorApplication{}).Where("distributor_id = ? AND drama_id = ? AND status IN ?",
 		id, req.DramaID, []string{
-			model.ClaimDepositPending, model.ClaimAuthPending,
 			model.ClaimReviewPending, model.ClaimContractPending,
 		}).Count(&existingApps)
 	hasExisting = hasExisting || existingApps > 0
@@ -105,26 +114,55 @@ func (s *Server) publisherCreateClaim(c *gin.Context) {
 	// 计算保证金
 	var depositAmount int64
 	if hasExisting {
-		// 追加认领：只收新增平台 × 加价比例，不重新收基础押金
 		depositAmount = s.calcAppendDepositAmount(drama, len(req.Platforms))
 	} else {
-		// 首单：基础押金 + 平台加价
 		depositAmount = s.calcDepositAmount(drama, req.Platforms)
 	}
 
-	// 创建认领申请
+	// === 事务：创建认领 + 冻结押金 + 提交审核，一步原子完成 ===
 	claim := model.DistributorApplication{
-		ApplicationNo:      generateBusinessNo("CL"),
-		DistributorID:      id,
-		DramaID:            req.DramaID,
-		Platforms:          platformsToJSON(req.Platforms),
-		DepositAmountCents: depositAmount,
-		DepositStatus:      model.ClaimDepositUnpaid,
-		Status:             model.ClaimDepositPending,
-		ContractStatus:     model.ClaimContractNone,
+		ApplicationNo:        generateBusinessNo("CL"),
+		DistributorID:        id,
+		DramaID:              req.DramaID,
+		Platforms:            platformsToJSON(req.Platforms),
+		DepositAmountCents:   depositAmount,
+		AuthorizationConfirmed: true,
+		ContractStatus:       model.ClaimContractNone,
 	}
-	if err := s.db.Create(&claim).Error; err != nil {
-		response.ServerError(c, "创建认领申请失败")
+	now := time.Now()
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 行锁 distributor，检查余额并冻结（与 publisherPayDeposit 逻辑对称）
+		var dist model.Distributor
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, id).Error; err != nil {
+			return err
+		}
+		if dist.DepositAvailableCents < depositAmount {
+			return fmt.Errorf("押金余额不足，需要 %.2f 元，当前可用 %.2f 元，请先充值",
+				float64(depositAmount)/100, float64(dist.DepositAvailableCents)/100)
+		}
+		// 冻结押金
+		dist.DepositAvailableCents -= depositAmount
+		dist.DepositFrozenCents += depositAmount
+		if err := tx.Save(&dist).Error; err != nil {
+			return err
+		}
+		// 记录冻结流水
+		if err := s.recordDepositTx(tx, id, model.DepositTxFreeze, -depositAmount,
+			dist.DepositAvailableCents, "claim", claim.ApplicationNo, "认领剧集冻结押金"); err != nil {
+			return err
+		}
+		// 创建认领申请：押金已冻结 + 已授权 + 直接进入待审核
+		claim.DepositStatus = model.ClaimDepositPaid
+		claim.Status = model.ClaimReviewPending
+		claim.AuthorizedAt = &now
+		if err := tx.Create(&claim).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		response.Conflict(c, err.Error())
 		return
 	}
 
@@ -143,7 +181,10 @@ func (s *Server) publisherGetClaim(c *gin.Context) {
 	response.OK(c, s.claimView(claim))
 }
 
-// POST /v1/publisher/claims/:id/deposit —— 发起押金支付
+// POST /v1/publisher/claims/:id/deposit —— 发起押金支付（已废弃，合并到 create 接口）
+//
+// 保留向后兼容：处理旧前端创建的 deposit_pending 状态认领。
+// 新前端应直接用 POST /publisher/claims 一步完成。
 func (s *Server) publisherPayDeposit(c *gin.Context) {
 	id := middleware.CurrentID(c)
 	claimID := parseUint(c.Param("id"))
@@ -209,7 +250,10 @@ func (s *Server) publisherPayDeposit(c *gin.Context) {
 	response.OK(c, s.claimView(claim))
 }
 
-// POST /v1/publisher/claims/:id/submit —— 确认已完成第三方授权后提交审核
+// POST /v1/publisher/claims/:id/submit —— 确认授权并提交审核（已废弃，合并到 create 接口）
+//
+// 保留向后兼容：处理旧前端创建的 authorization_pending 状态认领。
+// 新前端应直接用 POST /publisher/claims 一步完成（authorization_confirmed=true）。
 func (s *Server) publisherSubmitClaim(c *gin.Context) {
 	id := middleware.CurrentID(c)
 	claimID := parseUint(c.Param("id"))
