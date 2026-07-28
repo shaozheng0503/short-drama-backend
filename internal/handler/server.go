@@ -430,6 +430,8 @@ func (s *Server) Router() *gin.Engine {
 
 	adminAuth.GET("/creators", s.adminListCreators)
 	adminAuth.POST("/creators", s.adminCreateCreator)
+	adminAuth.GET("/creators/template.xlsx", s.adminDownloadCreatorTemplate)   // 批量导入模板下载
+	adminAuth.POST("/creators/import", s.adminImportCreators)                  // 批量导入创作者
 	adminAuth.GET("/creators/:id", s.adminGetCreator)
 	adminAuth.PUT("/creators/:id", s.adminUpdateCreator)
 	adminAuth.POST("/creators/:id/ban", s.adminBanCreator)
@@ -512,6 +514,8 @@ func (s *Server) Router() *gin.Engine {
 
 	// === Admin 发行商管理（0.15.0）===
 	adminAuth.GET("/distributors", s.adminListDistributors)
+	adminAuth.GET("/distributors/template.xlsx", s.adminDownloadDistributorTemplate) // 批量导入模板下载
+	adminAuth.POST("/distributors/import", s.adminImportDistributors)                 // 批量导入发行商
 	adminAuth.GET("/distributors/:id", s.adminGetDistributor)
 	adminAuth.POST("/distributors/:id/verification/approve", s.requireAdminRole(model.AdminRoleAuditor), s.adminApproveDistributorVerification)
 	adminAuth.POST("/distributors/:id/verification/reject", s.requireAdminRole(model.AdminRoleAuditor), s.adminRejectDistributorVerification)
