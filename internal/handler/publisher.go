@@ -173,9 +173,11 @@ func (s *Server) dramaTotalMinutes(dramaID uint64) int {
 }
 
 // recordDepositTx 记录押金流水。返回错误以便事务回滚。
-func (s *Server) recordDepositTx(tx *gorm.DB, distributorID uint64, txType string, amount int64, balanceAfter int64, relatedType string, relatedNo string, remark string) error {
+// dramaID: 关联剧集 ID（freeze/deduct 时有值，recharge 传 0）。
+func (s *Server) recordDepositTx(tx *gorm.DB, distributorID uint64, txType string, amount int64, balanceAfter int64, relatedType string, relatedNo string, remark string, dramaID uint64) error {
 	dt := model.DistributorDepositTransaction{
 		DistributorID:     distributorID,
+		DramaID:           dramaID,
 		Type:              txType,
 		AmountCents:       amount,
 		BalanceAfterCents: balanceAfter,

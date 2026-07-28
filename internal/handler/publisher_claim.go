@@ -149,7 +149,7 @@ func (s *Server) publisherCreateClaim(c *gin.Context) {
 		}
 		// 记录冻结流水
 		if err := s.recordDepositTx(tx, id, model.DepositTxFreeze, -depositAmount,
-			dist.DepositAvailableCents, "claim", claim.ApplicationNo, "认领剧集冻结押金"); err != nil {
+			dist.DepositAvailableCents, "claim", claim.ApplicationNo, "认领剧集冻结押金", req.DramaID); err != nil {
 			return err
 		}
 		// 创建认领申请：押金已冻结 + 已授权 + 直接进入待审核
@@ -230,7 +230,7 @@ func (s *Server) publisherPayDeposit(c *gin.Context) {
 			return err
 		}
 		// 记录流水
-		if err := s.recordDepositTx(tx, id, model.DepositTxFreeze, -claim.DepositAmountCents, dist.DepositAvailableCents, "claim", claim.ApplicationNo, "认领剧集冻结押金"); err != nil {
+		if err := s.recordDepositTx(tx, id, model.DepositTxFreeze, -claim.DepositAmountCents, dist.DepositAvailableCents, "claim", claim.ApplicationNo, "认领剧集冻结押金", claim.DramaID); err != nil {
 			return err
 		}
 		// 更新认领状态

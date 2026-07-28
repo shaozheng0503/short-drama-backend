@@ -353,7 +353,7 @@ func (s *Server) adminApproveClaim(c *gin.Context) {
 			}
 			if err := s.recordDepositTx(tx, claim.DistributorID, model.DepositTxFreeze,
 				-claim.DepositAmountCents, d.DepositAvailableCents,
-				"claim", claim.ApplicationNo, "认领审核兜底冻结押金"); err != nil {
+				"claim", claim.ApplicationNo, "认领审核兜底冻结押金", claim.DramaID); err != nil {
 				return err
 			}
 		}
@@ -449,7 +449,7 @@ func (s *Server) adminRejectClaim(c *gin.Context) {
 			if err := tx.Save(&dist).Error; err != nil {
 				return err
 			}
-			if err := s.recordDepositTx(tx, claim.DistributorID, model.DepositTxUnfreeze, claim.DepositAmountCents, dist.DepositAvailableCents, "claim", claim.ApplicationNo, "认领驳回释放押金"); err != nil {
+			if err := s.recordDepositTx(tx, claim.DistributorID, model.DepositTxUnfreeze, claim.DepositAmountCents, dist.DepositAvailableCents, "claim", claim.ApplicationNo, "认领驳回释放押金", claim.DramaID); err != nil {
 				return err
 			}
 		}
@@ -715,7 +715,7 @@ func (s *Server) adminConfirmDistributorSettlement(c *gin.Context) {
 				if err := tx.Save(&dist).Error; err != nil {
 					return err
 				}
-				if err := s.recordDepositTx(tx, st.DistributorID, model.DepositTxUnfreeze, st.DeductedDepositCents, dist.DepositAvailableCents, "settlement", st.SettlementNo, "结算单退回回滚押金抵扣"); err != nil {
+				if err := s.recordDepositTx(tx, st.DistributorID, model.DepositTxUnfreeze, st.DeductedDepositCents, dist.DepositAvailableCents, "settlement", st.SettlementNo, "结算单退回回滚押金抵扣", 0); err != nil {
 					return err
 				}
 			}

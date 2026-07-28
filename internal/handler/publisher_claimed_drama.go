@@ -145,10 +145,10 @@ func (s *Server) publisherListClaimedDramas(c *gin.Context) {
 		s.db.Model(&model.DistributorIncomeDaily{}).Where("distributor_id = ? AND drama_id = ?", id, did).
 			Select("COALESCE(SUM(income_cents),0)").Scan(&totalIncome)
 
-		// 累计抵扣押金
+		// 累计抵扣押金（按剧隔离，不混入其他剧的抵扣）
 		var totalDeducted int64
 		s.db.Model(&model.DistributorDepositTransaction{}).
-			Where("distributor_id = ? AND type = ?", id, model.DepositTxDeduct).
+			Where("distributor_id = ? AND type = ? AND drama_id = ?", id, model.DepositTxDeduct, did).
 			Select("COALESCE(SUM(ABS(amount_cents)),0)").Scan(&totalDeducted)
 
 		// 剩余冻结押金 = 冻结总额 - 已抵扣
@@ -299,10 +299,10 @@ func (s *Server) publisherGetClaimedDrama(c *gin.Context) {
 	var totalIncome int64
 	s.db.Model(&model.DistributorIncomeDaily{}).Where("distributor_id = ? AND drama_id = ?", id, dramaID).Select("COALESCE(SUM(income_cents),0)").Scan(&totalIncome)
 
-	// 累计抵扣押金
+	// 累计抵扣押金（按剧隔离，不混入其他剧的抵扣）
 	var totalDeducted int64
 	s.db.Model(&model.DistributorDepositTransaction{}).
-		Where("distributor_id = ? AND type = ?", id, model.DepositTxDeduct).
+		Where("distributor_id = ? AND type = ? AND drama_id = ?", id, model.DepositTxDeduct, dramaID).
 		Select("COALESCE(SUM(ABS(amount_cents)),0)").Scan(&totalDeducted)
 
 	remainingFrozen := totalFrozen - totalDeducted
@@ -530,14 +530,15 @@ func (s *Server) publisherClaimedDramaIncomeRecords(c *gin.Context) {
 // GET /v1/publisher/claimed-dramas/:id/deposit-deductions —— 剧集押金抵扣记录
 func (s *Server) publisherClaimedDramaDepositDeductions(c *gin.Context) {
 	id := middleware.CurrentID(c)
-	_, ok := s.resolveClaimedDramaID(c, id)
+	dramaID, ok := s.resolveClaimedDramaID(c, id)
 	if !ok {
 		response.NotFound(c, "已认领剧集不存在")
 		return
 	}
 
 	page, pageSize := paginate(c)
-	q := s.db.Model(&model.DistributorDepositTransaction{}).Where("distributor_id = ? AND type = ?", id, model.DepositTxDeduct)
+	q := s.db.Model(&model.DistributorDepositTransaction{}).
+		Where("distributor_id = ? AND type = ? AND drama_id = ?", id, model.DepositTxDeduct, dramaID)
 	var total int64
 	q.Count(&total)
 	var items []model.DistributorDepositTransaction

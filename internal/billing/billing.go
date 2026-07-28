@@ -1087,6 +1087,7 @@ func (s *Service) MarkRechargePaid(rechargeNo, platformTradeNo, paymentMethod st
 		// 3. 写流水
 		if err := tx.Create(&model.DistributorDepositTransaction{
 			DistributorID:      rc.DistributorID,
+			DramaID:            0, // 充值不关联具体剧集
 			Type:               model.DepositTxRecharge,
 			AmountCents:        rc.AmountCents,
 			BalanceAfterCents:  dist.DepositAvailableCents,

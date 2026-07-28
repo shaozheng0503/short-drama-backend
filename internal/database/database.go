@@ -113,6 +113,9 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 	if err := migrateDistributorSettlementUniqueCycle(db); err != nil {
 		return nil, err
 	}
+	if err := migrateBackfillDepositTxDramaID(db); err != nil {
+		return nil, err
+	}
 	if cfg.SeedMockData {
 		result, err := seed.Run(db, cfg)
 		if err != nil {
@@ -371,6 +374,31 @@ func migrateDistributorSettlementUniqueCycle(db *gorm.DB) error {
 	return db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_dist_settlement_cycle
 ON distributor_settlements (distributor_id, cycle_key)
 WHERE cycle_key <> ''`).Error
+}
+
+// migrateBackfillDepositTxDramaID 回填 distributor_deposit_transactions.drama_id。
+// 新增 drama_id 列后，已有的 freeze/unfreeze 记录 drama_id=0，需通过
+// related_business_no 关联 distributor_applications.application_no 回填对应剧集 ID。
+// 充值（type=recharge）记录 drama_id 保持 0（充值不关联具体剧集）。
+func migrateBackfillDepositTxDramaID(db *gorm.DB) error {
+	result := db.Exec(`UPDATE distributor_deposit_transactions t
+SET drama_id = sub.drama_id
+FROM (
+	SELECT da.drama_id, da.application_no
+	FROM distributor_applications da
+	WHERE da.application_no IS NOT NULL AND da.application_no <> ''
+) sub
+WHERE t.related_business_no = sub.application_no
+  AND t.drama_id = 0
+  AND t.type IN ('freeze', 'unfreeze')`)
+	if result.Error != nil {
+		log.Printf("[migrate] backfill deposit_tx drama_id failed: %v", result.Error)
+		return result.Error
+	}
+	if result.RowsAffected > 0 {
+		log.Printf("[migrate] backfilled drama_id for %d deposit transactions", result.RowsAffected)
+	}
+	return nil
 }
 
 func ensureInitialAdmin(db *gorm.DB, cfg config.Config) error {

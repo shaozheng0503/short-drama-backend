@@ -1257,6 +1257,7 @@ func (DistributorInvoice) TableName() string { return "distributor_invoices" }
 type DistributorDepositTransaction struct {
 	ID                 uint64    `gorm:"primaryKey;column:id" json:"id"`
 	DistributorID      uint64    `gorm:"column:distributor_id;index" json:"distributor_id"`
+	DramaID            uint64    `gorm:"column:drama_id;default:0;index:idx_deposit_tx_drama" json:"drama_id"` // 关联剧集（freeze/deduct 有值，recharge 为 0）
 	Type               string    `gorm:"column:type;size:20;index" json:"type"`               // recharge/freeze/unfreeze/deduct
 	AmountCents        int64     `gorm:"column:amount_cents" json:"amount_cents"`              // 正数=增加，负数=减少
 	BalanceAfterCents  int64     `gorm:"column:balance_after_cents" json:"balance_after_cents"` // 变动后可用余额
