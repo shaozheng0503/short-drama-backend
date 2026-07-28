@@ -471,7 +471,7 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.GET("/settlements", s.adminListSettlements)
 	adminAuth.GET("/settlements/:id", s.adminGetSettlement)
 	adminAuth.GET("/settlements/:id/download.pdf", s.adminDownloadSettlementPDF) // 财务 PDF 对账单
-	adminAuth.POST("/settlements/generate", s.requireAdminRole(model.AdminRoleFinance), s.adminGenerateSettlements)
+	// 2026-07-28 删除 POST /settlements/generate（邱嘉诚要求，前端已移除）
 	adminAuth.POST("/settlements/:id/close", s.requireAdminRole(model.AdminRoleFinance), s.adminCloseSettlement)
 
 	// App 付费收入（平台自有支付分账）：按短剧聚合的毛收入/净收入，订单中心+收益汇总（财务角色）
@@ -523,12 +523,11 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/distributor-claims/:id/approve", s.requireAdminRole(model.AdminRoleAuditor), s.adminApproveClaim)
 	adminAuth.POST("/distributor-claims/:id/reject", s.requireAdminRole(model.AdminRoleAuditor), s.adminRejectClaim)
 	adminAuth.POST("/distributor-claims/:id/contract", s.requireAdminRole(model.AdminRoleAuditor), s.adminUploadContract)
-	// 收益导入
-	adminAuth.POST("/finance/distributor-income/import", s.requireAdminRole(model.AdminRoleFinance), s.adminImportDistributorIncome)
+	// 2026-07-28 删除 POST /finance/distributor-income/import（邱嘉诚要求，前端已移除）
 	// 结算管理
 	adminAuth.GET("/distributor-settlements", s.adminListDistributorSettlements)
 	adminAuth.GET("/distributor-settlements/:id", s.adminGetDistributorSettlement)
-	adminAuth.POST("/distributor-settlements/generate", s.requireAdminRole(model.AdminRoleFinance), s.adminGenerateDistributorSettlement)
+	// 2026-07-28 删除 POST /distributor-settlements/generate（邱嘉诚要求，前端已移除）
 	adminAuth.POST("/distributor-settlements/:id/confirm-receipt", s.requireAdminRole(model.AdminRoleFinance), s.adminConfirmDistributorSettlement)
 	// 提现管理（已废弃，保留只读）
 	adminAuth.GET("/distributor-withdrawals", s.adminListDistributorWithdrawals)
