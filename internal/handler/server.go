@@ -367,6 +367,7 @@ func (s *Server) Router() *gin.Engine {
 	pubAuth.GET("/claimed-dramas/:id/claims", s.publisherClaimedDramaClaims)
 	pubAuth.GET("/claimed-dramas/:id/income-records", s.publisherClaimedDramaIncomeRecords)
 	pubAuth.GET("/claimed-dramas/:id/deposit-deductions", s.publisherClaimedDramaDepositDeductions)
+	pubAuth.GET("/claimed-dramas/:id/download", s.publisherDownloadClaimedDrama)
 	// 押金
 	pubAuth.GET("/deposit/account", s.publisherDepositAccount)
 	pubAuth.POST("/deposit/recharge", s.publisherRecharge)

@@ -145,6 +145,7 @@ func (s *Server) batchGetOccupiedPlatforms(dramaIDs []uint64) map[uint64]map[str
 }
 
 // buildPublisherDramaList 构建剧集广场列表响应项
+// 2026-07-28 会议：价格对发行商隐藏，仅展示标题/封面/集数/可认领平台
 func (s *Server) buildPublisherDramaList(dramas []model.Drama, occupiedPlatforms map[uint64]map[string]bool, distID uint64, verified bool) []gin.H {
 	list := make([]gin.H, 0, len(dramas))
 	for _, d := range dramas {
@@ -159,7 +160,6 @@ func (s *Server) buildPublisherDramaList(dramas []model.Drama, occupiedPlatforms
 			"title":               d.Title,
 			"cover_url":           d.CoverURL,
 			"episode_count":       d.TotalEpisodes,
-			"price_cents":         d.PriceCents,
 			"available_platforms": available,
 			"released_platforms":  occupiedKeys(occupied),
 			"claimable":           distributable,
@@ -170,6 +170,12 @@ func (s *Server) buildPublisherDramaList(dramas []model.Drama, occupiedPlatforms
 }
 
 // GET /v1/publisher/dramas/:id —— 剧集详情
+//
+// 2026-07-28 会议信息展示规则：
+//   - 未认领：仅可看标题、封面、可认领平台、保证金规则；不可看剧情介绍、角色、集数列表
+//   - 已认领（审核中/已授权）：可看剧情介绍、角色信息、剧集级数；价格和合同信息隐藏
+//
+// 设计依据：未授权主体不应提前获取核心内容用于违规上传；已授权发行商不需要看价格和合同。
 func (s *Server) publisherGetDrama(c *gin.Context) {
 	id := parseUint(c.Param("id"))
 	if id == 0 {
@@ -199,25 +205,59 @@ func (s *Server) publisherGetDrama(c *gin.Context) {
 
 	distributable := drama.Status == "published" && len(available) > 0 && isDistributable(drama)
 
-	response.OK(c, gin.H{
+	// 基础信息：所有发行商可见
+	v := gin.H{
 		"id":                  drama.ID,
 		"title":               drama.Title,
 		"cover_url":           drama.CoverURL,
 		"episode_count":       drama.TotalEpisodes,
-		"price_cents":         drama.PriceCents,
-		"description":         drama.Description,
 		"available_platforms": available,
 		"released_platforms":  occupiedKeys(occupied),
 		"deposit_rule": gin.H{
-			"base_cents":      s.calcDepositAmount(drama, []string{model.PlatformDouyin}),
-			"platform_rate":   "每增加一个平台 +15%",
-			"duration_minutes": s.dramaTotalMinutes(drama.ID),
-			"tier_rule":       "≤25分钟 400元，≥26分钟 500元，每增一个平台 +15%",
-			"deposit_examples": depositExamples,
+			"base_cents":       s.calcDepositAmount(drama, []string{model.PlatformDouyin}),
+			"platform_rate":    "每增加一个平台 +15%",
+			"duration_minutes":  s.dramaTotalMinutes(drama.ID),
+			"tier_rule":        "≤25分钟 400元，≥26分钟 500元，每增一个平台 +15%",
+			"deposit_examples":  depositExamples,
 		},
 		"claimable": distributable,
 		"can_claim": distributable && verified,
-	})
+	}
+
+	// 检查当前发行商是否有该剧的有效认领/授权
+	hasClaim := s.distributorHasClaim(distID, id)
+	if hasClaim {
+		// 已认领（审核中或已授权）：可看剧情介绍、角色信息、集数列表
+		v["description"] = drama.Description
+
+		// 角色信息
+		var characters []model.DramaCharacter
+		s.db.Where("drama_id = ?", id).Order("sort_order asc").Find(&characters)
+		v["characters"] = characters
+
+		// 集数列表（简要信息：集号+标题+时长，不含播放地址）
+		var episodes []model.Episode
+		s.db.Select("id, episode_no, title, duration_seconds, status").
+			Where("drama_id = ?", id).Order("episode_no asc").Find(&episodes)
+		epList := make([]gin.H, 0, len(episodes))
+		for _, ep := range episodes {
+			epList = append(epList, gin.H{
+				"id":               ep.ID,
+				"episode_no":       ep.EpisodeNo,
+				"title":            ep.Title,
+				"duration_seconds": ep.DurationSeconds,
+				"status":           ep.Status,
+			})
+		}
+		v["episodes"] = epList
+		// 注意：price_cents 和合同信息不返回——发行商不需要看价格，合同线下对接
+	} else {
+		v["description"] = ""
+		v["characters"] = []interface{}{}
+		v["episodes"] = []interface{}{}
+	}
+
+	response.OK(c, v)
 }
 
 // ============================================================
@@ -235,6 +275,31 @@ func (s *Server) isDistributorVerified(id uint64) bool {
 // isDistributable 判断剧集是否开放发行（Distributable 为 nil 或 true 都视为开放）
 func isDistributable(d model.Drama) bool {
 	return d.Distributable == nil || *d.Distributable
+}
+
+// distributorHasClaim 检查发行商是否对指定剧集有有效认领/授权关系。
+// 含已授权发行（distributor_dramas: authorized/active）和审核中认领（distributor_applications: pending 状态）。
+// 用于信息展示规则：有认领关系 → 可看剧情/角色/集数；无 → 不可看。
+func (s *Server) distributorHasClaim(distributorID, dramaID uint64) bool {
+	// 已授权/活跃
+	var ddCount int64
+	s.db.Model(&model.DistributorDrama{}).
+		Where("distributor_id = ? AND drama_id = ? AND status IN ?",
+			distributorID, dramaID, []string{model.DistDramaAuthorized, model.DistDramaActive}).
+		Count(&ddCount)
+	if ddCount > 0 {
+		return true
+	}
+	// 审核中的认领
+	var appCount int64
+	s.db.Model(&model.DistributorApplication{}).
+		Where("distributor_id = ? AND drama_id = ? AND status IN ?",
+			distributorID, dramaID, []string{
+				model.ClaimDepositPending, model.ClaimAuthPending,
+				model.ClaimReviewPending, model.ClaimContractPending,
+			}).
+		Count(&appCount)
+	return appCount > 0
 }
 
 // getOccupiedPlatforms 返回指定剧集已被占用的平台集合（含已发行 + 审核中的认领）。

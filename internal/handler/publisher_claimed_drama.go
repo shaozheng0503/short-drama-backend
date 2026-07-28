@@ -578,3 +578,95 @@ func (s *Server) resolveClaimedDramaID(c *gin.Context, distributorID uint64) (ui
 	}
 	return 0, false
 }
+
+// GET /v1/publisher/claimed-dramas/:id/download —— 已认领剧集下载
+//
+// 2026-07-28 会议决策：发行商完成剧集认领且经平台授权后，开放已领剧集一键下载入口。
+// 下载包仅包含：剧集视频、封面、角色信息。
+// 下载包不包含：权属文件、不侵权声明等敏感文件，避免信息泄露。
+// 仅 authorized/active 状态可下载，审核中/已驳回不可下载。
+func (s *Server) publisherDownloadClaimedDrama(c *gin.Context) {
+	id := middleware.CurrentID(c)
+	dramaID, ok := s.resolveClaimedDramaID(c, id)
+	if !ok {
+		response.NotFound(c, "已认领剧集不存在")
+		return
+	}
+
+	// 校验授权状态：只有 authorized/active 的才能下载
+	var authCount int64
+	s.db.Model(&model.DistributorDrama{}).
+		Where("distributor_id = ? AND drama_id = ? AND status IN ?",
+			id, dramaID, []string{model.DistDramaAuthorized, model.DistDramaActive}).
+		Count(&authCount)
+	if authCount == 0 {
+		response.Forbidden(c, "仅已授权剧集可下载，请等待平台审核通过后再试")
+		return
+	}
+
+	var drama model.Drama
+	if err := s.db.First(&drama, dramaID).Error; err != nil {
+		response.NotFound(c, "剧集不存在")
+		return
+	}
+
+	// 1. 剧集视频列表（仅已就绪的可下载）
+	var episodes []model.Episode
+	s.db.Where("drama_id = ? AND status = ?", dramaID, "ready").
+		Order("episode_no asc").Find(&episodes)
+	episodeList := make([]gin.H, 0, len(episodes))
+	for _, ep := range episodes {
+		episodeList = append(episodeList, gin.H{
+			"episode_no":       ep.EpisodeNo,
+			"title":            ep.Title,
+			"video_url":        ep.VideoURL,
+			"duration_seconds": ep.DurationSeconds,
+		})
+	}
+
+	// 2. 封面列表（主封面 + 多图封面）
+	coverList := []string{}
+	if drama.CoverURL != "" {
+		coverList = append(coverList, drama.CoverURL)
+	}
+	var covers []model.DramaCover
+	s.db.Where("drama_id = ?", dramaID).Order("sort_order asc").Find(&covers)
+	for _, cv := range covers {
+		// 去重（CoverURL 可能与第一张 DramaCover 重复）
+		seen := false
+		for _, u := range coverList {
+			if u == cv.URL {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			coverList = append(coverList, cv.URL)
+		}
+	}
+
+	// 3. 角色信息
+	var characters []model.DramaCharacter
+	s.db.Where("drama_id = ?", dramaID).Order("sort_order asc").Find(&characters)
+	characterList := make([]gin.H, 0, len(characters))
+	for _, ch := range characters {
+		characterList = append(characterList, gin.H{
+			"name":      ch.Name,
+			"photo_url": ch.PhotoURL,
+			"intro":     ch.Intro,
+			"role":      ch.Role,
+		})
+	}
+
+	// 不包含：权属文件（copyright_files）、不侵权声明等敏感文件
+	response.OK(c, gin.H{
+		"drama_id":      dramaID,
+		"drama_title":   drama.Title,
+		"episode_count": len(episodeList),
+		"cover_count":   len(coverList),
+		"episodes":      episodeList,
+		"covers":        coverList,
+		"characters":    characterList,
+		"notice":        "下载包仅包含剧集视频、封面和角色信息，权属文件等敏感内容不纳入下载范围",
+	})
+}
