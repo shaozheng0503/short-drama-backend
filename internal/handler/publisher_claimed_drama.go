@@ -386,6 +386,10 @@ func (s *Server) publisherGetClaimedDrama(c *gin.Context) {
 		v["latest_rejected_application_id"] = latest.ID
 	}
 
+	// 2026-07-28 会议：在已认领剧集详情中返回脱敏后的剧目详细信息（对齐管理端，排除敏感字段）
+	// 仅对当前发行商已认领（含审核中/已驳回等可见态）的剧集开放，访问控制已由 resolveClaimedDramaID 保证。
+	v["drama"] = s.dramaPublisherView(drama)
+
 	response.OK(c, v)
 }
 
@@ -669,4 +673,65 @@ func (s *Server) publisherDownloadClaimedDrama(c *gin.Context) {
 		"characters":    characterList,
 		"notice":        "下载包仅包含剧集视频、封面和角色信息，权属文件等敏感内容不纳入下载范围",
 	})
+}
+
+// dramaPublisherView 构建发行商可见的脱敏剧目详情视图。
+//
+// 2026-07-28 会议信息展示规则：对齐管理端 DramaInfoSection，但排除以下敏感字段：
+//   - 排除：free_episodes / price_cents / scheduled_publish_at
+//   - 排除：制作人员/作品属性（is_ai / aigc_tools / language_id / audience / alias_paid /
+//     alias_free / production_org / producer / director / screenwriter /
+//     production_cost_cents / is_ip_adaptation / publish_type）
+//   - 排除：cost_config_url（成本配置图）/ non_infringement_url（不侵权承诺函）
+//
+//   - 保留：标题/简介/创作者/分类/总集数、封面列表、角色信息、权属文件、剧集视频（含播放地址）
+func (s *Server) dramaPublisherView(drama model.Drama) gin.H {
+	covers, characters := s.loadDramaExtras(drama.ID)
+
+	// 权属文件：nil → 空数组
+	copyrightFiles := drama.CopyrightFileURLs
+	if copyrightFiles == nil {
+		copyrightFiles = []string{}
+	}
+
+	// 剧集视频列表（含播放地址，对齐管理端 episodeAdminView 口径）
+	var episodes []model.Episode
+	s.db.Where("drama_id = ?", drama.ID).Order("episode_no asc").Find(&episodes)
+	epList := make([]gin.H, 0, len(episodes))
+	for _, ep := range episodes {
+		epList = append(epList, gin.H{
+			"id":               ep.ID,
+			"episode_no":       ep.EpisodeNo,
+			"title":            ep.Title,
+			"video_url":        ep.VideoURL,
+			"duration_seconds": ep.DurationSeconds,
+			"status":           ep.Status,
+		})
+	}
+
+	return gin.H{
+		// 剧目基础
+		"id":              drama.ID,
+		"title":           drama.Title,
+		"description":     drama.Description,
+		"cover_url":       drama.CoverURL,
+		"category_id":     drama.CategoryID,
+		"category_name":   s.nameOfCategory(drama.CategoryID),
+		"creator_id":      drama.CreatorID,
+		"creator_name":    s.nameOfCreator(drama.CreatorID),
+		"total_episodes":  drama.TotalEpisodes,
+		// 封面列表
+		"covers": covers,
+		// 角色信息
+		"characters": characters,
+		// 权属文件
+		"copyright_file_urls": copyrightFiles,
+		// 剧集视频
+		"episodes": epList,
+		// 排除：free_episodes / price_cents / scheduled_publish_at
+		// 排除：is_ai / aigc_tools / language_id / audience / alias_paid / alias_free /
+		//       production_org / producer / director / screenwriter /
+		//       production_cost_cents / is_ip_adaptation / publish_type
+		// 排除：cost_config_url / non_infringement_url
+	}
 }
