@@ -52,10 +52,11 @@ func (s *Server) abandonView(ar model.DistributorAbandonRequest) gin.H {
 		"created_at":            ar.CreatedAt,
 		"updated_at":            ar.UpdatedAt,
 	}
-	// 剧集标题
+	// 剧集标题 + 封面
 	var drama model.Drama
-	if err := s.db.Select("id, title").First(&drama, ar.DramaID).Error; err == nil {
+	if err := s.db.Select("id, title, cover_url").First(&drama, ar.DramaID).Error; err == nil {
 		v["drama_title"] = drama.Title
+		v["drama_cover_url"] = drama.CoverURL
 	}
 	return v
 }
@@ -186,24 +187,29 @@ func (s *Server) publisherListAbandonRequests(c *gin.Context) {
 	var items []model.DistributorAbandonRequest
 	q.Order("created_at desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&items)
 
-	// 批量查剧名
+	// 批量查剧名 + 封面
 	dramaIDs := make([]uint64, 0, len(items))
 	for _, ar := range items {
 		dramaIDs = append(dramaIDs, ar.DramaID)
 	}
-	dramaMap := map[uint64]string{}
+	type dramaInfo struct {
+		Title    string
+		CoverURL string
+	}
+	dramaMap := map[uint64]dramaInfo{}
 	if len(dramaIDs) > 0 {
 		var dramas []model.Drama
-		s.db.Select("id, title").Where("id IN ?", dramaIDs).Find(&dramas)
+		s.db.Select("id, title, cover_url").Where("id IN ?", dramaIDs).Find(&dramas)
 		for _, d := range dramas {
-			dramaMap[d.ID] = d.Title
+			dramaMap[d.ID] = dramaInfo{Title: d.Title, CoverURL: d.CoverURL}
 		}
 	}
 
 	list := make([]gin.H, 0, len(items))
 	for _, ar := range items {
 		v := s.abandonView(ar)
-		v["drama_title"] = dramaMap[ar.DramaID]
+		v["drama_title"] = dramaMap[ar.DramaID].Title
+		v["drama_cover_url"] = dramaMap[ar.DramaID].CoverURL
 		list = append(list, v)
 	}
 
@@ -258,12 +264,16 @@ func (s *Server) adminListAbandonRequests(c *gin.Context) {
 			distMap[d.ID] = distributorName(&d)
 		}
 	}
-	dramaMap := map[uint64]string{}
+	type dramaInfo struct {
+		Title    string
+		CoverURL string
+	}
+	dramaMap := map[uint64]dramaInfo{}
 	if len(dramaIDs) > 0 {
 		var dramas []model.Drama
-		s.db.Select("id, title").Where("id IN ?", dramaIDs).Find(&dramas)
+		s.db.Select("id, title, cover_url").Where("id IN ?", dramaIDs).Find(&dramas)
 		for _, d := range dramas {
-			dramaMap[d.ID] = d.Title
+			dramaMap[d.ID] = dramaInfo{Title: d.Title, CoverURL: d.CoverURL}
 		}
 	}
 
@@ -271,7 +281,8 @@ func (s *Server) adminListAbandonRequests(c *gin.Context) {
 	for _, ar := range items {
 		v := s.abandonView(ar)
 		v["distributor_name"] = distMap[ar.DistributorID]
-		v["drama_title"] = dramaMap[ar.DramaID]
+		v["drama_title"] = dramaMap[ar.DramaID].Title
+		v["drama_cover_url"] = dramaMap[ar.DramaID].CoverURL
 		list = append(list, v)
 	}
 
