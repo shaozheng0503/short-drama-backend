@@ -148,9 +148,12 @@ EOF
   ok "reload 完成（${ENV_NAME}）"
 
   # /ready 探活（最多 30 秒：reload 后 tableflip 切进程，新进程需要 1-2 秒起来）
+  # 注意：不能用 sudo bash -c "curl ..."，SSH 传参时会剥掉双引号导致 curl 丢失 URL
+  #       必须把整个命令作为单引号字符串传给 SSH，让远程 shell 原样执行
   echo "==> /ready 探活（内网 127.0.0.1:${REMOTE_PORT}，最多 30s）..."
+  READY=0
   for i in $(seq 1 15); do
-    if "${SSH[@]}" sudo bash -c "curl -fsS http://127.0.0.1:${REMOTE_PORT}/ready" >/dev/null 2>&1; then
+    if "${SSH[@]}" "sudo curl -fsS http://127.0.0.1:${REMOTE_PORT}/ready" >/dev/null 2>&1; then
       ok "/ready 通（第 ${i} 次，≈ $((i*2))s）"
       READY=1
       break
