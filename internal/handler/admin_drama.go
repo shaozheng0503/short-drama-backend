@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -420,7 +421,8 @@ func (s *Server) adminOfflineDrama(c *gin.Context) {
 // adminRejectDrama —— 管理员驳回。audit_status → rejected；
 // 若 drama 当前为 published 强制 offline（涉及合规风险，立即下架优先于通知 creator）。
 type adminRejectDramaRequest struct {
-	Reason string `json:"reason"`
+	Reason         string              `json:"reason"`
+	EpisodeReasons []episodeReasonItem `json:"episode_reasons"`
 }
 
 func (s *Server) adminRejectDrama(c *gin.Context) {
@@ -467,8 +469,26 @@ func (s *Server) adminRejectDrama(c *gin.Context) {
 	case model.DramaStatusAwaitingPublish, model.DramaStatusReviewing:
 		updates["status"] = model.DramaStatusDraft
 	}
-	if err := s.db.Model(&drama).Updates(updates).Error; err != nil {
-		response.ServerError(c, "驳回失败")
+	// 事务：更新剧状态 + 清除/写入分集审核原因
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 先清除所有分集的旧审核原因
+		if err := tx.Model(&model.Episode{}).Where("drama_id = ?", id).Update("audit_reason", "").Error; err != nil {
+			return err
+		}
+		// 写入本次驳回的分集原因
+		for _, ep := range req.EpisodeReasons {
+			if ep.Reason == "" {
+				continue
+			}
+			if err := tx.Model(&model.Episode{}).Where("id = ? AND drama_id = ?", ep.EpisodeID, id).
+				Update("audit_reason", ep.Reason).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Model(&drama).Updates(updates).Error
+	})
+	if err != nil {
+		response.ServerError(c, "驳回失败: "+err.Error())
 		return
 	}
 	s.db.First(&drama, id)
@@ -476,6 +496,19 @@ func (s *Server) adminRejectDrama(c *gin.Context) {
 		content := "您的作品《" + drama.Title + "》审核未通过，请修改后重新提交。"
 		if req.Reason != "" {
 			content += "驳回原因：" + req.Reason
+		}
+		// 如果有分集原因，附上
+		if len(req.EpisodeReasons) > 0 {
+			content += "\n\n分集原因："
+			for _, ep := range req.EpisodeReasons {
+				if ep.Reason == "" {
+					continue
+				}
+				var episode model.Episode
+				if err := s.db.First(&episode, ep.EpisodeID).Error; err == nil {
+					content += fmt.Sprintf("\n第%d集：%s", episode.EpisodeNo, ep.Reason)
+				}
+			}
 		}
 		s.sendNotification(*drama.CreatorID, "作品审核未通过", content, "")
 	}
@@ -527,6 +560,118 @@ func (s *Server) adminApproveDrama(c *gin.Context) {
 		s.sendNotification(*drama.CreatorID, "作品审核通过",
 			"您的作品《"+drama.Title+"》已审核通过，可以发布上架。", "")
 	}
+	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
+}
+
+// adminSendbackDrama —— 管理员打回已上架剧集。
+// POST /admin/dramas/:id/sendback  body {"reason": "总体原因", "episode_reasons": [{"episode_id": 1, "reason": "第1集原因"}, ...]}
+// 与 reject 的区别：打回专门用于 published 状态的剧，将其退回 draft 让创作者修改后重新提交。
+// reject 则是审核流程中的驳回，published 时走 offline（合规下架）。
+type adminSendbackDramaRequest struct {
+	Reason         string                   `json:"reason"`
+	EpisodeReasons []episodeReasonItem      `json:"episode_reasons"`
+}
+
+type episodeReasonItem struct {
+	EpisodeID uint64 `json:"episode_id"`
+	Reason    string `json:"reason"`
+}
+
+func (s *Server) adminSendbackDrama(c *gin.Context) {
+	id := parseUint(c.Param("id"))
+	if id == 0 {
+		response.InvalidParam(c, "id 不合法")
+		return
+	}
+	var req adminSendbackDramaRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "请求体格式错误")
+		return
+	}
+	if req.Reason == "" {
+		response.InvalidParam(c, "打回原因不能为空")
+		return
+	}
+	if len(req.Reason) > 500 {
+		response.InvalidParam(c, "打回原因不能超过 500 字")
+		return
+	}
+
+	var drama model.Drama
+	if err := s.db.First(&drama, id).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "短剧不存在")
+			return
+		}
+		response.ServerError(c, "查询短剧失败")
+		return
+	}
+
+	// 打回仅适用于已上架的剧
+	if drama.Status != model.DramaStatusPublished {
+		response.Conflict(c, fmt.Sprintf("仅已上架状态可打回（当前: %s），驳回请使用 /reject 接口", drama.Status))
+		return
+	}
+
+	now := time.Now()
+	reviewerID := middleware.CurrentID(c)
+
+	// 事务：更新剧状态 + 清除分集审核原因 + 写入分集审核原因
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 先清除所有分集的旧审核原因
+		if err := tx.Model(&model.Episode{}).Where("drama_id = ?", id).Update("audit_reason", "").Error; err != nil {
+			return err
+		}
+		// 写入本次打回的分集原因
+		for _, ep := range req.EpisodeReasons {
+			if ep.Reason == "" {
+				continue
+			}
+			if err := tx.Model(&model.Episode{}).Where("id = ? AND drama_id = ?", ep.EpisodeID, id).
+				Update("audit_reason", ep.Reason).Error; err != nil {
+				return err
+			}
+		}
+		// 更新剧状态：published → draft，audit_status → rejected
+		updates := map[string]interface{}{
+			"status":               model.DramaStatusDraft,
+			"audit_status":         model.DramaAuditRejected,
+			"audit_reason":         req.Reason,
+			"content_audit_status": model.DramaAuditRejected,
+			"content_audit_reason": req.Reason,
+			"video_audit_status":   model.DramaAuditRejected,
+			"video_audit_reason":   req.Reason,
+			"reviewer_id":          reviewerID,
+			"reviewed_at":          now,
+		}
+		return tx.Model(&drama).Updates(updates).Error
+	})
+	if err != nil {
+		response.ServerError(c, "打回失败: "+err.Error())
+		return
+	}
+
+	s.db.First(&drama, id)
+
+	// 通知创作者
+	if drama.CreatorID != nil {
+		content := "您的作品《" + drama.Title + "》已被管理员打回，请根据原因修改后重新提交。\n打回原因：" + req.Reason
+		// 如果有分集原因，附上
+		if len(req.EpisodeReasons) > 0 {
+			content += "\n\n分集原因："
+			for _, ep := range req.EpisodeReasons {
+				if ep.Reason == "" {
+					continue
+				}
+				var episode model.Episode
+				if err := s.db.First(&episode, ep.EpisodeID).Error; err == nil {
+					content += fmt.Sprintf("\n第%d集：%s", episode.EpisodeNo, ep.Reason)
+				}
+			}
+		}
+		s.sendNotification(*drama.CreatorID, "作品被打回", content, "")
+	}
+
 	response.OK(c, dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID)))
 }
 

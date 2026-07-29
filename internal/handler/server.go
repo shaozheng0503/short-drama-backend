@@ -428,6 +428,7 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/dramas/:id/approve", s.requirePermission(model.PermContentAudit), s.adminApproveDrama)
 	adminAuth.POST("/dramas/:id/reject", s.requirePermission(model.PermContentAudit), s.adminRejectDrama)
 	adminAuth.POST("/dramas/:id/audit", s.requirePermission(model.PermContentAudit), s.adminAuditDrama) // 分批审核：按维度(content/video)通过/驳回
+	adminAuth.POST("/dramas/:id/sendback", s.requirePermission(model.PermContentAudit), s.adminSendbackDrama) // 打回已上架剧集
 	adminAuth.PUT("/dramas/:id/distributable", s.adminSetDistributable)                                // 开关发行商认领
 
 	adminAuth.GET("/dramas/:id/episodes", s.adminListEpisodes)

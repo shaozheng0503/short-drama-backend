@@ -465,6 +465,8 @@ type Episode struct {
 	DurationSeconds int        `gorm:"column:duration_seconds;default:0" json:"duration_seconds"`
 	Status          string     `gorm:"column:status;size:20;default:uploading" json:"status"`
 	LikeCount       int64      `gorm:"column:like_count;default:0" json:"like_count"` // 集级点赞数（对齐红果：点赞是单集的）
+	// AuditReason —— 管理员打回/驳回时针对该集的具体原因（空表示无集级问题）
+	AuditReason     string     `gorm:"column:audit_reason;type:text" json:"audit_reason"`
 	// VODSyncedAt —— 后端最近一次主动调 VOD DescribeMediaInfos 的时间
 	// （v0.13.1 懒加载机制用，30 秒内不重复调）
 	VODSyncedAt  *time.Time `gorm:"column:vod_synced_at" json:"vod_synced_at,omitempty"`

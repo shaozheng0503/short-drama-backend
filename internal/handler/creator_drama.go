@@ -822,6 +822,10 @@ func (s *Server) creatorSubmitDrama(c *gin.Context) {
 		}).Error; err != nil {
 			return err
 		}
+		// 清除分集审核原因（打回/驳回时写入的 per-episode reason）
+		if err := tx.Model(&model.Episode{}).Where("drama_id = ?", dramaID).Update("audit_reason", "").Error; err != nil {
+			return err
+		}
 		// 自动生成关联合同（幂等：该剧+创作者已有合同则跳过）。
 		var cnt int64
 		if err := tx.Model(&model.Contract{}).

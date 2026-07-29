@@ -176,6 +176,7 @@ func episodeAdminView(e model.Episode) gin.H {
 		"video_url":        e.VideoURL,
 		"duration_seconds": e.DurationSeconds,
 		"status":           e.Status,
+		"audit_reason":     e.AuditReason,
 		"vod_synced_at":    e.VODSyncedAt, // v0.13.1：最近一次主动同步 VOD 的时间
 		"created_at":       e.CreatedAt,
 		"updated_at":       e.UpdatedAt,
