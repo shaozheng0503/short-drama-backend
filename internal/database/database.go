@@ -76,6 +76,7 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		&model.DistributorWithdrawal{},
 		&model.DistributorInvoice{},
 		&model.DistributorDepositTransaction{},
+		&model.DistributorAbandonRequest{},
 		&model.AdminPermission{},
 	); err != nil {
 		return nil, err

@@ -988,6 +988,13 @@ const (
 	DepositTxDeduct    = "deduct"    // 抵扣（收益抵扣押金）
 )
 
+// 放弃认领申请状态
+const (
+	AbandonPending  = "pending"  // 待审核
+	AbandonApproved = "approved" // 已通过
+	AbandonRejected = "rejected" // 已驳回
+)
+
 // 授权状态
 const (
 	DistDramaAuthorized = "authorized" // 已授权
@@ -1268,3 +1275,25 @@ type DistributorDepositTransaction struct {
 }
 
 func (DistributorDepositTransaction) TableName() string { return "distributor_deposit_transactions" }
+
+// DistributorAbandonRequest —— 放弃认领申请表
+type DistributorAbandonRequest struct {
+	ID                 uint64     `gorm:"primaryKey;column:id" json:"id"`
+	AbandonNo          string     `gorm:"column:abandon_no;size:32;uniqueIndex" json:"abandon_no"`           // 申请单号（AB 前缀）
+	DistributorID      uint64     `gorm:"column:distributor_id;index" json:"distributor_id"`               // 发行商 ID
+	DramaID            uint64     `gorm:"column:drama_id;index" json:"drama_id"`                            // 剧集 ID
+	DistributorDramaID uint64     `gorm:"column:distributor_drama_id;index" json:"distributor_drama_id"`   // 关联 distributor_dramas.id
+	Platforms          string     `gorm:"column:platforms;type:text" json:"platforms"`                     // 放弃的平台 JSON 数组
+	OriginalPlatforms  string     `gorm:"column:original_platforms;type:text" json:"original_platforms"`     // 申请时的全部平台 JSON 数组（快照）
+	RefundAmountCents  int64      `gorm:"column:refund_amount_cents;default:0" json:"refund_amount_cents"` // 退还押金金额（分）
+	OriginalDepositCents int64    `gorm:"column:original_deposit_cents;default:0" json:"original_deposit_cents"` // 原始押金总额（分，快照）
+	Reason             string     `gorm:"column:reason;type:text" json:"reason"`                           // 放弃原因
+	Status             string     `gorm:"column:status;size:20;default:pending;index" json:"status"`       // pending/approved/rejected
+	RejectReason       string     `gorm:"column:reject_reason;size:255" json:"reject_reason"`              // 驳回原因
+	ReviewedBy         *uint64    `gorm:"column:reviewed_by" json:"reviewed_by"`                            // 审核人 ID
+	ReviewedAt         *time.Time `gorm:"column:reviewed_at" json:"reviewed_at"`                            // 审核时间
+	CreatedAt          time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt          time.Time  `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (DistributorAbandonRequest) TableName() string { return "distributor_abandon_requests" }

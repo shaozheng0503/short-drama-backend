@@ -302,7 +302,7 @@ func (s *Server) distributorHasClaim(distributorID, dramaID uint64) bool {
 	return appCount > 0
 }
 
-// getOccupiedPlatforms 返回指定剧集已被占用的平台集合（含已发行 + 审核中的认领）。
+// getOccupiedPlatforms 返回指定剧集已被占用的平台集合（含已发行 + 审核中的认领 + 放弃审核中的平台）。
 func (s *Server) getOccupiedPlatforms(dramaID uint64) map[string]bool {
 	occupied := map[string]bool{}
 	if dramaID == 0 {
@@ -325,6 +325,15 @@ func (s *Server) getOccupiedPlatforms(dramaID uint64) map[string]bool {
 	s.db.Where("drama_id = ? AND status IN ?", dramaID, activeClaimStatuses).Find(&apps)
 	for _, app := range apps {
 		for _, p := range parsePlatforms(app.Platforms) {
+			occupied[p] = true
+		}
+	}
+	// 放弃认领审核中的平台（distributor_abandon_requests: pending）
+	// 放弃审核期间，被放弃的平台仍标记为占用，防止其他发行商在审核期间抢认
+	var abandons []model.DistributorAbandonRequest
+	s.db.Where("drama_id = ? AND status = ?", dramaID, model.AbandonPending).Find(&abandons)
+	for _, ar := range abandons {
+		for _, p := range parsePlatforms(ar.Platforms) {
 			occupied[p] = true
 		}
 	}

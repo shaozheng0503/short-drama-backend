@@ -368,6 +368,10 @@ func (s *Server) Router() *gin.Engine {
 	pubAuth.GET("/claimed-dramas/:id/income-records", s.publisherClaimedDramaIncomeRecords)
 	pubAuth.GET("/claimed-dramas/:id/deposit-deductions", s.publisherClaimedDramaDepositDeductions)
 	pubAuth.GET("/claimed-dramas/:id/download", s.publisherDownloadClaimedDrama)
+	// 放弃认领
+	pubAuth.POST("/claimed-dramas/:id/abandon", s.publisherCreateAbandon)
+	pubAuth.GET("/abandon-requests", s.publisherListAbandonRequests)
+	pubAuth.GET("/abandon-requests/:id", s.publisherGetAbandonRequest)
 	// 押金
 	pubAuth.GET("/deposit/account", s.publisherDepositAccount)
 	pubAuth.POST("/deposit/recharge", s.publisherRecharge)
@@ -538,6 +542,11 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/distributor-claims/:id/approve", s.requirePermission(model.PermClaimAudit), s.adminApproveClaim)
 	adminAuth.POST("/distributor-claims/:id/reject", s.requirePermission(model.PermClaimAudit), s.adminRejectClaim)
 	adminAuth.POST("/distributor-claims/:id/contract", s.requirePermission(model.PermClaimAudit), s.adminUploadContract)
+	// 放弃认领审核
+	adminAuth.GET("/distributor-abandons", s.adminListAbandonRequests)
+	adminAuth.GET("/distributor-abandons/:id", s.adminGetAbandonRequest)
+	adminAuth.POST("/distributor-abandons/:id/approve", s.requirePermission(model.PermClaimAudit), s.adminApproveAbandon)
+	adminAuth.POST("/distributor-abandons/:id/reject", s.requirePermission(model.PermClaimAudit), s.adminRejectAbandon)
 	// 2026-07-28 删除 POST /finance/distributor-income/import（邱嘉诚要求，前端已移除）
 	// 结算管理
 	adminAuth.GET("/distributor-settlements", s.adminListDistributorSettlements)
