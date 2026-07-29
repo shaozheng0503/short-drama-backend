@@ -235,6 +235,9 @@ paths:
                               properties:
                                 drama_title:
                                   type: string
+                                drama_cover_url:
+                                  type: string
+                                  description: 剧集封面图 URL
 
   /publisher/abandon-requests/{id}:
     get:
@@ -267,6 +270,9 @@ paths:
                         properties:
                           drama_title:
                             type: string
+                          drama_cover_url:
+                            type: string
+                            description: 剧集封面图 URL
         '404':
           description: 放弃申请不存在
 
@@ -322,6 +328,9 @@ paths:
                               properties:
                                 drama_title:
                                   type: string
+                                drama_cover_url:
+                                  type: string
+                                  description: 剧集封面图 URL
                                 distributor_name:
                                   type: string
 
@@ -357,6 +366,9 @@ paths:
                         properties:
                           drama_title:
                             type: string
+                          drama_cover_url:
+                            type: string
+                            description: 剧集封面图 URL
                           distributor_name:
                             type: string
                           distributor_phone:
