@@ -1290,6 +1290,7 @@ type DistributorAbandonRequest struct {
 	RefundAmountCents  int64      `gorm:"column:refund_amount_cents;default:0" json:"refund_amount_cents"` // 退还押金金额（分）
 	OriginalDepositCents int64    `gorm:"column:original_deposit_cents;default:0" json:"original_deposit_cents"` // 原始押金总额（分，快照）
 	Reason             string     `gorm:"column:reason;type:text" json:"reason"`                           // 放弃原因
+	ReasonImages       []string   `gorm:"column:reason_images;type:text;serializer:json" json:"reason_images"` // 放弃原因截图（URL 数组，最多 9 张）
 	Status             string     `gorm:"column:status;size:20;default:pending;index" json:"status"`       // pending/approved/rejected
 	RejectReason       string     `gorm:"column:reject_reason;size:255" json:"reject_reason"`              // 驳回原因
 	ReviewedBy         *uint64    `gorm:"column:reviewed_by" json:"reviewed_by"`                            // 审核人 ID

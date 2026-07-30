@@ -79,6 +79,12 @@ components:
         reason:
           type: string
           description: 放弃原因
+        reason_images:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: 放弃原因截图（URL 数组，最多 9 张）
         status:
           $ref: '#/components/schemas/AbandonStatus'
         reject_reason:
@@ -117,6 +123,13 @@ components:
           minLength: 2
           maxLength: 500
           description: 放弃原因
+        reason_images:
+          type: array
+          items:
+            type: string
+            format: uri
+          maxItems: 9
+          description: 放弃原因截图（URL 数组，最多 9 张，通过 /v1/common/uploads/image-sign 上传后获取 URL）
 
     RejectRequest:
       type: object

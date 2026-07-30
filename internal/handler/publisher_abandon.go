@@ -45,6 +45,7 @@ func (s *Server) abandonView(ar model.DistributorAbandonRequest) gin.H {
 		"refund_amount_cents":   ar.RefundAmountCents,
 		"original_deposit_cents": ar.OriginalDepositCents,
 		"reason":                ar.Reason,
+		"reason_images":         ar.ReasonImages,
 		"status":                ar.Status,
 		"reject_reason":         ar.RejectReason,
 		"reviewed_by":           ar.ReviewedBy,
@@ -67,8 +68,9 @@ func (s *Server) publisherCreateAbandon(c *gin.Context) {
 	ddID := parseUint(c.Param("id"))
 
 	var req struct {
-		Platforms []string `json:"platforms"`
-		Reason    string   `json:"reason"`
+		Platforms    []string `json:"platforms"`
+		Reason       string   `json:"reason"`
+		ReasonImages []string `json:"reason_images"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.InvalidParam(c, "platforms 和 reason 必填")
@@ -80,6 +82,10 @@ func (s *Server) publisherCreateAbandon(c *gin.Context) {
 	}
 	if len(req.Reason) < 2 || len(req.Reason) > 500 {
 		response.InvalidParam(c, "放弃原因需 2-500 字")
+		return
+	}
+	if len(req.ReasonImages) > 9 {
+		response.InvalidParam(c, "放弃原因截图最多 9 张")
 		return
 	}
 
@@ -163,6 +169,7 @@ func (s *Server) publisherCreateAbandon(c *gin.Context) {
 		RefundAmountCents:  refundAmount,
 		OriginalDepositCents: dd.DepositAmountCents,
 		Reason:             req.Reason,
+		ReasonImages:       req.ReasonImages,
 		Status:             model.AbandonPending,
 	}
 
