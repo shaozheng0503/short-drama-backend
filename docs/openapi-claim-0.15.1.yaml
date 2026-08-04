@@ -1,87 +1,75 @@
 openapi: 3.0.3
 info:
   title: 短剧平台 - 认领流程 API（0.15.1 变更）
-  description: |
-    本文档覆盖 2026-07-24 认领流程 5 项修复涉及的全部接口变更。
+  description: '本文档覆盖 2026-07-24 认领流程 5 项修复涉及的全部接口变更。
+
     可直接导入 Apifox 覆盖对应接口。
 
+
     ## 变更摘要
+
     1. claimed-dramas 列表/详情现包含审核中 + 已驳回认领，附驳回原因
+
     2. 驳回后 deposit_status 更新为 released
+
     3. Admin 认领详情返回 authorization_confirmed 字段
+
     4. 审核前 contract_status 为 none（非 pending），驳回后也为 none
+
     5. auth_pending 统一为 authorization_pending
+
+    '
   version: 0.15.1
   contact:
     name: Drama Platform API
-
 servers:
-  - url: https://api.langzhi.top/v1
-    description: 生产环境
-  - url: https://api-dev.langzhi.top/v1
-    description: 沙箱环境
-
-# ============================================================
-# 通用枚举定义（供 $ref 引用）
-# ============================================================
+- url: https://api.langzhi.top
+  description: 生产环境
+- url: https://api-dev.langzhi.top
+  description: 沙箱环境
 components:
   schemas:
-    # ---- 认领状态（status / review_status）----
     ClaimStatus:
       type: string
       description: 认领流程状态
       enum:
-        - deposit_pending        # 待支付押金
-        - authorization_pending  # 待手动授权（原 auth_pending，已统一）
-        - review_pending         # 待审核
-        - contract_pending       # 待签署合同
-        - completed              # 已完成
-        - rejected               # 已驳回
-
-    # ---- 押金状态（deposit_status）----
+      - deposit_pending
+      - authorization_pending
+      - review_pending
+      - contract_pending
+      - completed
+      - rejected
     DepositStatus:
       type: string
       description: 押金状态
       enum:
-        - unpaid    # 未支付
-        - paid      # 已支付（冻结中）
-        - released  # 已释放（驳回后退回可用余额）
-
-    # ---- 合同状态（contract_status）----
+      - unpaid
+      - paid
+      - released
     ContractStatus:
       type: string
       description: 合同状态
       enum:
-        - none      # 未进入合同阶段（新增：审核前 / 驳回后）
-        - pending   # 待签署
-        - signed    # 已签署
-        - completed # 已完成
-
-    # ---- 剧级聚合状态（claimed-dramas 列表/详情的 status）----
+      - none
+      - pending
+      - signed
+      - completed
     DramaLevelStatus:
       type: string
       description: 剧级聚合状态
       enum:
-        - active    # 已授权/活跃
-        - appending # 有活跃认领 + 有审核中认领
-        - pending   # 审核中（无活跃认领）
-        - rejected  # 仅驳回（无活跃认领）
-        - revoked   # 全部已撤销
-
-    # ---- 发行平台 ----
+      - active
+      - appending
+      - pending
+      - rejected
+      - revoked
     Platform:
       type: string
       description: 发行平台
       enum:
-        - douyin         # 抖音
-        - kuaishou       # 快手
-        - wechat_video   # 微信视频号
-
-    # ============================================================
-    # 发行商端响应模型
-    # ============================================================
-
-    # claimed-dramas 列表项
+      - douyin
+      - kuaishou
+      - wechat_video
     ClaimedDramaListItem:
       type: object
       properties:
@@ -125,17 +113,19 @@ components:
         latest_reject_reason:
           type: string
           nullable: true
-          description: |
-            最近一条驳回原因（新增字段）。
+          description: '最近一条驳回原因（新增字段）。
+
             仅当该剧存在已驳回认领时返回，否则不出现。
+
+            '
         latest_rejected_application_id:
           type: integer
           nullable: true
-          description: |
-            最近一条被驳回的认领申请 ID（新增字段）。
+          description: '最近一条被驳回的认领申请 ID（新增字段）。
+
             仅当该剧存在已驳回认领时返回，否则不出现。
 
-    # claimed-dramas 详情
+            '
     ClaimedDramaDetail:
       type: object
       properties:
@@ -190,14 +180,15 @@ components:
         created_at:
           type: string
           format: date-time
-
-    # claimed-dramas/:id/claims 明细项
     ClaimDetailItem:
       type: object
       properties:
         type:
           type: string
-          enum: [pending, rejected, completed]
+          enum:
+          - pending
+          - rejected
+          - completed
           description: 认领记录类型
         application_id:
           type: integer
@@ -236,9 +227,11 @@ components:
         reject_reason:
           type: string
           nullable: true
-          description: |
-            驳回原因（新增：rejected 类型必返回，其他类型为空）。
+          description: '驳回原因（新增：rejected 类型必返回，其他类型为空）。
+
             前端可据此展示「驳回原因：xxx」。
+
+            '
         reviewed_at:
           type: string
           format: date-time
@@ -247,8 +240,6 @@ components:
         created_at:
           type: string
           format: date-time
-
-    # 认领申请视图（/publisher/claims 返回）
     ClaimApplicationView:
       type: object
       properties:
@@ -282,14 +273,19 @@ components:
           description: 是否已确认第三方平台授权
         review_status:
           $ref: '#/components/schemas/ClaimStatus'
-          description: |
-            认领流程状态。
+          description: '认领流程状态。
+
             注意：已从 auth_pending 统一为 authorization_pending。
+
+            '
         contract_status:
           $ref: '#/components/schemas/ContractStatus'
-          description: |
-            合同状态。
-            注意：未进入合同阶段（deposit_pending / authorization_pending / review_pending / rejected）时为 none。
+          description: '合同状态。
+
+            注意：未进入合同阶段（deposit_pending / authorization_pending / review_pending /
+            rejected）时为 none。
+
+            '
         contract_file_url:
           type: string
           nullable: true
@@ -308,12 +304,6 @@ components:
           type: string
           format: date-time
           nullable: true
-
-    # ============================================================
-    # 管理端响应模型
-    # ============================================================
-
-    # Admin 认领详情
     AdminClaimDetail:
       type: object
       properties:
@@ -343,16 +333,20 @@ components:
           type: integer
         deposit_status:
           $ref: '#/components/schemas/DepositStatus'
-          description: |
-            押金状态。
+          description: '押金状态。
+
             驳回后为 released（已释放回可用余额）。
+
+            '
         status:
           $ref: '#/components/schemas/ClaimStatus'
         contract_status:
           $ref: '#/components/schemas/ContractStatus'
-          description: |
-            合同状态。
+          description: '合同状态。
+
             审核前 / 驳回后为 none；审核通过后为 pending；上传合同后为 completed。
+
+            '
         contract_file_url:
           type: string
           nullable: true
@@ -362,10 +356,13 @@ components:
           description: 驳回原因（rejected 状态时有值）
         authorization_confirmed:
           type: boolean
-          description: |
-            新增字段：是否已确认第三方平台授权。
+          description: '新增字段：是否已确认第三方平台授权。
+
             发行商 submit 时设为 true，与发行商侧一致。
+
             管理端 UI 可据此展示「授权确认：已确认 / 未确认」。
+
+            '
         reviewed_at:
           type: string
           format: date-time
@@ -382,8 +379,6 @@ components:
         created_at:
           type: string
           format: date-time
-
-    # Admin 认领列表项
     AdminClaimListItem:
       type: object
       properties:
@@ -426,43 +421,43 @@ components:
           type: string
           format: date-time
           nullable: true
-
-# ============================================================
-# 路径定义
-# ============================================================
 paths:
-  # ============================================================
-  # 发行商端 - claimed-dramas
-  # ============================================================
-
-  # --- Issue 1: claimed-dramas 现包含审核中 + 已驳回认领 ---
-  /publisher/claimed-dramas:
+  /v1/publisher/claimed-dramas:
     get:
-      tags: [发行商-已认领剧集]
+      tags:
+      - 发行商-已认领剧集
       summary: 已认领剧集列表（按剧聚合）
-      description: |
-        按剧聚合返回该发行商所有认领记录，一剧一行。
+      description: '按剧聚合返回该发行商所有认领记录，一剧一行。
+
         包含：已授权发行 + 审核中认领 + 已驳回认领。
 
+
         【变更】新增展示审核中(pending)和已驳回(rejected)的认领，
+
         驳回认领附 latest_reject_reason 字段供前端展示驳回原因。
+
+        '
       parameters:
-        - name: page
-          in: query
-          schema: { type: integer, default: 1 }
-        - name: page_size
-          in: query
-          schema: { type: integer, default: 20 }
-        - name: status
-          in: query
-          schema:
-            $ref: '#/components/schemas/DramaLevelStatus'
-          description: 按剧级状态筛选
-        - name: platform
-          in: query
-          schema:
-            $ref: '#/components/schemas/Platform'
-          description: 按平台筛选
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+      - name: status
+        in: query
+        schema:
+          $ref: '#/components/schemas/DramaLevelStatus'
+        description: 按剧级状态筛选
+      - name: platform
+        in: query
+        schema:
+          $ref: '#/components/schemas/Platform'
+        description: 按平台筛选
       responses:
         '200':
           description: 成功
@@ -471,7 +466,9 @@ paths:
               schema:
                 type: object
                 properties:
-                  code: { type: integer, example: 0 }
+                  code:
+                    type: integer
+                    example: 0
                   data:
                     type: object
                     properties:
@@ -479,25 +476,32 @@ paths:
                         type: array
                         items:
                           $ref: '#/components/schemas/ClaimedDramaListItem'
-                      page: { type: integer }
-                      page_size: { type: integer }
-                      total: { type: integer }
-
-  /publisher/claimed-dramas/{id}:
+                      page:
+                        type: integer
+                      page_size:
+                        type: integer
+                      total:
+                        type: integer
+  /v1/publisher/claimed-dramas/{id}:
     get:
-      tags: [发行商-已认领剧集]
+      tags:
+      - 发行商-已认领剧集
       summary: 已认领剧集详情（剧级汇总）
-      description: |
-        返回某剧的聚合详情。
+      description: '返回某剧的聚合详情。
+
         :id 可以是 distributor_drama.id 或 distributor_application.id（无 DD 时）。
 
+
         【变更】新增 latest_reject_reason / latest_rejected_application_id 字段。
+
+        '
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema: { type: integer }
-          description: distributor_drama.id 或 distributor_application.id
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+        description: distributor_drama.id 或 distributor_application.id
       responses:
         '200':
           description: 成功
@@ -506,24 +510,30 @@ paths:
               schema:
                 type: object
                 properties:
-                  code: { type: integer, example: 0 }
+                  code:
+                    type: integer
+                    example: 0
                   data:
                     $ref: '#/components/schemas/ClaimedDramaDetail'
-
-  /publisher/claimed-dramas/{id}/claims:
+  /v1/publisher/claimed-dramas/{id}/claims:
     get:
-      tags: [发行商-已认领剧集]
+      tags:
+      - 发行商-已认领剧集
       summary: 剧集认领明细列表
-      description: |
-        返回某剧所有认领记录（已完成 + 审核中 + 已驳回）。
+      description: '返回某剧所有认领记录（已完成 + 审核中 + 已驳回）。
+
         :id 可以是 distributor_drama.id 或 distributor_application.id。
 
+
         【变更】已驳回认领记录现包含 reject_reason 字段，前端可展示驳回原因。
+
+        '
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema: { type: integer }
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
       responses:
         '200':
           description: 成功
@@ -532,7 +542,9 @@ paths:
               schema:
                 type: object
                 properties:
-                  code: { type: integer, example: 0 }
+                  code:
+                    type: integer
+                    example: 0
                   data:
                     type: object
                     properties:
@@ -540,36 +552,43 @@ paths:
                         type: array
                         items:
                           $ref: '#/components/schemas/ClaimDetailItem'
-                      total: { type: integer }
-
-  # ============================================================
-  # 发行商端 - claims（申请单列表）
-  # ============================================================
-
-  /publisher/claims:
+                      total:
+                        type: integer
+  /v1/publisher/claims:
     get:
-      tags: [发行商-认领申请]
+      tags:
+      - 发行商-认领申请
       summary: 认领申请列表
-      description: |
-        按申请单返回该发行商所有认领申请（含已驳回）。
+      description: '按申请单返回该发行商所有认领申请（含已驳回）。
+
 
         【变更】
+
         - review_status: auth_pending → authorization_pending（Issue 5）
+
         - deposit_status: 驳回后为 released（Issue 2）
+
         - contract_status: 审核前为 none（Issue 4）
+
         - reject_reason: rejected 状态时有值
+
+        '
       parameters:
-        - name: page
-          in: query
-          schema: { type: integer, default: 1 }
-        - name: page_size
-          in: query
-          schema: { type: integer, default: 20 }
-        - name: status
-          in: query
-          schema:
-            $ref: '#/components/schemas/ClaimStatus'
-          description: 按认领状态筛选
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+      - name: status
+        in: query
+        schema:
+          $ref: '#/components/schemas/ClaimStatus'
+        description: 按认领状态筛选
       responses:
         '200':
           description: 成功
@@ -578,7 +597,9 @@ paths:
               schema:
                 type: object
                 properties:
-                  code: { type: integer, example: 0 }
+                  code:
+                    type: integer
+                    example: 0
                   data:
                     type: object
                     properties:
@@ -586,22 +607,28 @@ paths:
                         type: array
                         items:
                           $ref: '#/components/schemas/ClaimApplicationView'
-                      page: { type: integer }
-                      page_size: { type: integer }
-                      total: { type: integer }
-
+                      page:
+                        type: integer
+                      page_size:
+                        type: integer
+                      total:
+                        type: integer
     post:
-      tags: [发行商-认领申请]
+      tags:
+      - 发行商-认领申请
       summary: 创建认领申请
-      description: |
-        创建认领申请，初始状态为 deposit_pending，contract_status 为 none。
+      description: '创建认领申请，初始状态为 deposit_pending，contract_status 为 none。
+
+        '
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [drama_id, platforms]
+              required:
+              - drama_id
+              - platforms
               properties:
                 drama_id:
                   type: integer
@@ -619,23 +646,26 @@ paths:
               schema:
                 type: object
                 properties:
-                  code: { type: integer, example: 0 }
+                  code:
+                    type: integer
+                    example: 0
                   data:
                     $ref: '#/components/schemas/ClaimApplicationView'
         '403':
           description: 未认证用户不可认领
         '409':
           description: 平台已被占用 / 剧集未上架
-
-  /publisher/claims/{id}:
+  /v1/publisher/claims/{id}:
     get:
-      tags: [发行商-认领申请]
+      tags:
+      - 发行商-认领申请
       summary: 认领申请详情
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema: { type: integer }
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
       responses:
         '200':
           description: 成功
@@ -644,21 +674,25 @@ paths:
               schema:
                 type: object
                 properties:
-                  code: { type: integer, example: 0 }
+                  code:
+                    type: integer
+                    example: 0
                   data:
                     $ref: '#/components/schemas/ClaimApplicationView'
-
-  /publisher/claims/{id}/deposit:
+  /v1/publisher/claims/{id}/deposit:
     post:
-      tags: [发行商-认领申请]
+      tags:
+      - 发行商-认领申请
       summary: 支付押金
-      description: |
-        从可用余额冻结押金，状态从 deposit_pending → authorization_pending。
+      description: '从可用余额冻结押金，状态从 deposit_pending → authorization_pending。
+
+        '
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema: { type: integer }
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
       requestBody:
         content:
           application/json:
@@ -674,27 +708,32 @@ paths:
           description: 支付成功
         '409':
           description: 余额不足 / 状态不可支付
-
-  /publisher/claims/{id}/submit:
+  /v1/publisher/claims/{id}/submit:
     post:
-      tags: [发行商-认领申请]
+      tags:
+      - 发行商-认领申请
       summary: 确认授权并提交审核
-      description: |
-        发行商确认已完成第三方平台授权后提交审核。
+      description: '发行商确认已完成第三方平台授权后提交审核。
+
         状态从 authorization_pending → review_pending。
+
         同时写入 authorization_confirmed=true 和 authorized_at。
+
+        '
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema: { type: integer }
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [authorization_confirmed]
+              required:
+              - authorization_confirmed
               properties:
                 authorization_confirmed:
                   type: boolean
@@ -704,29 +743,31 @@ paths:
           description: 提交成功
         '409':
           description: 当前状态不可提交审核
-
-  # ============================================================
-  # 管理端 - 认领审核
-  # ============================================================
-
-  /admin/distributor-claims:
+  /v1/admin/distributor-claims:
     get:
-      tags: [管理端-认领审核]
+      tags:
+      - 管理端-认领审核
       summary: 认领申请列表
       parameters:
-        - name: page
-          in: query
-          schema: { type: integer, default: 1 }
-        - name: page_size
-          in: query
-          schema: { type: integer, default: 20 }
-        - name: status
-          in: query
-          schema:
-            $ref: '#/components/schemas/ClaimStatus'
-          description: |
-            按状态筛选。
-            注意：筛选「待手动授权」时用 authorization_pending（非 auth_pending）。
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+      - name: status
+        in: query
+        schema:
+          $ref: '#/components/schemas/ClaimStatus'
+        description: '按状态筛选。
+
+          注意：筛选「待手动授权」时用 authorization_pending（非 auth_pending）。
+
+          '
       responses:
         '200':
           description: 成功
@@ -735,7 +776,9 @@ paths:
               schema:
                 type: object
                 properties:
-                  code: { type: integer, example: 0 }
+                  code:
+                    type: integer
+                    example: 0
                   data:
                     type: object
                     properties:
@@ -743,24 +786,32 @@ paths:
                         type: array
                         items:
                           $ref: '#/components/schemas/AdminClaimListItem'
-                      page: { type: integer }
-                      page_size: { type: integer }
-                      total: { type: integer }
-
-  /admin/distributor-claims/{id}:
+                      page:
+                        type: integer
+                      page_size:
+                        type: integer
+                      total:
+                        type: integer
+  /v1/admin/distributor-claims/{id}:
     get:
-      tags: [管理端-认领审核]
+      tags:
+      - 管理端-认领审核
       summary: 认领申请详情
-      description: |
-        【变更】
+      description: '【变更】
+
         - 新增 authorization_confirmed 字段（Issue 3）
+
         - deposit_status: 驳回后为 released（Issue 2）
+
         - contract_status: 审核前为 none，驳回后为 none（Issue 4）
+
+        '
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema: { type: integer }
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
       responses:
         '200':
           description: 成功
@@ -769,54 +820,70 @@ paths:
               schema:
                 type: object
                 properties:
-                  code: { type: integer, example: 0 }
+                  code:
+                    type: integer
+                    example: 0
                   data:
                     $ref: '#/components/schemas/AdminClaimDetail'
-
-  /admin/distributor-claims/{id}/approve:
+  /v1/admin/distributor-claims/{id}/approve:
     post:
-      tags: [管理端-认领审核]
+      tags:
+      - 管理端-认领审核
       summary: 审核通过（创建授权 + 合同）
-      description: |
-        审核通过后：
+      description: '审核通过后：
+
         - status → contract_pending
+
         - contract_status → pending
+
         - 创建 distributor_drama 授权记录
+
         - 创建合同记录
+
+        '
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema: { type: integer }
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
       responses:
         '200':
           description: 审核通过
         '409':
           description: 仅 review_pending 状态可审核通过
-
-  /admin/distributor-claims/{id}/reject:
+  /v1/admin/distributor-claims/{id}/reject:
     post:
-      tags: [管理端-认领审核]
+      tags:
+      - 管理端-认领审核
       summary: 驳回（释放押金）
-      description: |
-        驳回后：
+      description: '驳回后：
+
         - status → rejected
+
         - deposit_status → released（Issue 2：从 paid 改为 released）
+
         - contract_status → none（Issue 4：从 pending 改为 none）
+
         - reject_reason 写入传入的 reason
+
         - 冻结押金释放回可用余额
+
+        '
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema: { type: integer }
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [reason]
+              required:
+              - reason
               properties:
                 reason:
                   type: string
@@ -830,11 +897,16 @@ paths:
               schema:
                 type: object
                 properties:
-                  code: { type: integer, example: 0 }
+                  code:
+                    type: integer
+                    example: 0
                   data:
                     type: object
                     properties:
-                      id: { type: integer }
-                      status: { type: string, example: rejected }
+                      id:
+                        type: integer
+                      status:
+                        type: string
+                        example: rejected
         '409':
           description: 仅 review_pending 状态可驳回

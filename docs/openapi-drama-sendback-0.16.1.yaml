@@ -1,27 +1,28 @@
 openapi: 3.0.3
 info:
   title: 短剧平台 - 剧集打回 API（0.16.1 新增）
-  description: |
-    管理员可将已上架的剧集打回，退回创作者修改后重新提交。
+  description: '管理员可将已上架的剧集打回，退回创作者修改后重新提交。
+
     支持写明总体原因，也可以添加具体每集的原因。
+
     同时增强现有驳回接口（reject），也支持每集原因。
+
+    '
   version: 0.16.1
   contact:
     name: Drama Platform API
-
 servers:
-  - url: https://api.langzhi.top/v1
-    description: 生产环境
-  - url: https://api-dev.langzhi.top/v1
-    description: 沙箱环境
-
+- url: https://api.langzhi.top
+  description: 生产环境
+- url: https://api-dev.langzhi.top
+  description: 沙箱环境
 components:
   schemas:
     EpisodeReasonItem:
       type: object
       required:
-        - episode_id
-        - reason
+      - episode_id
+      - reason
       properties:
         episode_id:
           type: integer
@@ -30,11 +31,10 @@ components:
         reason:
           type: string
           description: 该集的打回/驳回原因
-
     SendbackRequest:
       type: object
       required:
-        - reason
+      - reason
       properties:
         reason:
           type: string
@@ -46,7 +46,6 @@ components:
           items:
             $ref: '#/components/schemas/EpisodeReasonItem'
           description: 每集的具体原因（可选）
-
     RejectRequest:
       type: object
       properties:
@@ -59,7 +58,6 @@ components:
           items:
             $ref: '#/components/schemas/EpisodeReasonItem'
           description: 每集的具体原因（可选，新增）
-
     Episode:
       type: object
       properties:
@@ -73,7 +71,10 @@ components:
           type: string
         status:
           type: string
-          enum: [uploading, ready, failed]
+          enum:
+          - uploading
+          - ready
+          - failed
         audit_reason:
           type: string
           description: 分集审核原因（打回/驳回时写入，重新提交时清除）
@@ -87,34 +88,42 @@ components:
         updated_at:
           type: string
           format: date-time
-
 paths:
-  /admin/dramas/{id}/sendback:
+  /v1/admin/dramas/{id}/sendback:
     post:
       tags:
-        - 管理端-剧集审核
+      - 管理端-剧集审核
       summary: 打回已上架剧集
-      description: |
-        管理员将已上架（published）的剧集打回，退回草稿状态让创作者修改后重新提交。
+      description: '管理员将已上架（published）的剧集打回，退回草稿状态让创作者修改后重新提交。
+
 
         - 仅 published 状态可打回
+
         - 打回后 status → draft，audit_status → rejected
+
         - 支持总体原因 + 每集原因
+
         - 打回时通知创作者（含分集原因）
+
         - 创作者重新提交时自动清除分集原因
 
+
         与 reject 的区别：
+
         - reject：审核流程中的驳回，published → offline（合规下架）
+
         - sendback：已上架剧集打回，published → draft（退回创作者修改）
+
+        '
       security:
-        - bearerAuth: []
+      - bearerAuth: []
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
-          description: 剧集 ID
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+        description: 剧集 ID
       requestBody:
         required: true
         content:
@@ -126,10 +135,10 @@ paths:
                 value:
                   reason: 视频内容存在违规，需要修改后重新提交
                   episode_reasons:
-                    - episode_id: 1
-                      reason: 第1集片头有违规画面，需剪辑处理
-                    - episode_id: 3
-                      reason: 第3集字幕有错别字
+                  - episode_id: 1
+                    reason: 第1集片头有违规画面，需剪辑处理
+                  - episode_id: 3
+                    reason: 第3集字幕有错别字
               sendbackOverallOnly:
                 value:
                   reason: 内容需要调整，请修改后重新提交
@@ -149,28 +158,33 @@ paths:
                     description: 更新后的剧集信息
         '409':
           description: 仅已上架状态可打回（当前状态不支持）
-
-  /admin/dramas/{id}/reject:
+  /v1/admin/dramas/{id}/reject:
     post:
       tags:
-        - 管理端-剧集审核
+      - 管理端-剧集审核
       summary: 驳回剧集（增强：支持每集原因）
-      description: |
-        审核流程中的驳回，行为不变，新增 episode_reasons 字段支持每集原因。
+      description: '审核流程中的驳回，行为不变，新增 episode_reasons 字段支持每集原因。
+
 
         - published → offline（合规下架）
+
         - awaiting_publish / reviewing → draft
+
         - draft / offline 不动 status
+
         - 事务内清除旧分集原因 + 写入新分集原因
+
         - 通知创作者时附上分集原因
+
+        '
       security:
-        - bearerAuth: []
+      - bearerAuth: []
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
       requestBody:
         required: true
         content:
@@ -182,30 +196,30 @@ paths:
                 value:
                   reason: 资料内容不符合要求
                   episode_reasons:
-                    - episode_id: 1
-                      reason: 封面图不清晰
+                  - episode_id: 1
+                    reason: 封面图不清晰
               rejectOverallOnly:
                 value:
                   reason: 资料内容不符合要求
       responses:
         '200':
           description: 驳回成功
-
-  /admin/dramas/{id}/episodes:
+  /v1/admin/dramas/{id}/episodes:
     get:
       tags:
-        - 管理端-剧集管理
+      - 管理端-剧集管理
       summary: 分集列表（新增 audit_reason 字段）
-      description: |
-        分集列表，新增返回 audit_reason 字段（打回/驳回时写入的分集原因）。
+      description: '分集列表，新增返回 audit_reason 字段（打回/驳回时写入的分集原因）。
+
+        '
       security:
-        - bearerAuth: []
+      - bearerAuth: []
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
       responses:
         '200':
           description: 成功
@@ -221,6 +235,5 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Episode'
-
 security:
-  - bearerAuth: []
+- bearerAuth: []

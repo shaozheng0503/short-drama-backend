@@ -1,41 +1,42 @@
 openapi: 3.0.3
 info:
   title: 短剧平台 - 放弃认领 API（0.16.0 新增）
-  description: |
-    本文档覆盖放弃认领功能的全部接口，包含发行商端 3 个接口和管理端 4 个接口。
+  description: '本文档覆盖放弃认领功能的全部接口，包含发行商端 3 个接口和管理端 4 个接口。
+
     可直接导入 Apifox 覆盖对应接口。
 
+
     ## 功能说明
+
     发行商认领剧集后，如因平台审核不通过等原因需要放弃认领，可申请放弃一个或多个平台。
+
     管理员审核通过后，对应押金按认领押金算法逆推退还。
+
+    '
   version: 0.16.0
   contact:
     name: Drama Platform API
-
 servers:
-  - url: https://api.langzhi.top/v1
-    description: 生产环境
-  - url: https://api-dev.langzhi.top/v1
-    description: 沙箱环境
-
+- url: https://api.langzhi.top
+  description: 生产环境
+- url: https://api-dev.langzhi.top
+  description: 沙箱环境
 components:
   schemas:
     AbandonStatus:
       type: string
       description: 放弃申请状态
       enum:
-        - pending
-        - approved
-        - rejected
-
+      - pending
+      - approved
+      - rejected
     Platform:
       type: string
       description: 发行平台
       enum:
-        - douyin
-        - kuaishou
-        - wechat_video
-
+      - douyin
+      - kuaishou
+      - wechat_video
     AbandonRequest:
       type: object
       properties:
@@ -106,12 +107,11 @@ components:
         updated_at:
           type: string
           format: date-time
-
     CreateAbandonRequest:
       type: object
       required:
-        - platforms
-        - reason
+      - platforms
+      - reason
       properties:
         platforms:
           type: array
@@ -129,39 +129,43 @@ components:
             type: string
             format: uri
           maxItems: 9
-          description: 放弃原因截图（URL 数组，最多 9 张，通过 /v1/common/uploads/image-sign 上传后获取 URL）
-
+          description: 放弃原因截图（URL 数组，最多 9 张，通过 /v1/common/uploads/image-sign 上传后获取
+            URL）
     RejectRequest:
       type: object
       required:
-        - reason
+      - reason
       properties:
         reason:
           type: string
           description: 驳回原因
-
 paths:
-  /publisher/claimed-dramas/{id}/abandon:
+  /v1/publisher/claimed-dramas/{id}/abandon:
     post:
       tags:
-        - 发行商-放弃认领
+      - 发行商-放弃认领
       summary: 创建放弃认领申请
-      description: |
-        发行商在已认领剧集详情页发起放弃申请。
+      description: '发行商在已认领剧集详情页发起放弃申请。
+
 
         - 可放弃一个或多个平台
+
         - 退还押金按认领押金算法逆推计算
+
         - 同一剧同一时间只能有一个待审核的放弃申请
+
         - 存在未完成结算单时不可申请
+
+        '
       security:
-        - bearerAuth: []
+      - bearerAuth: []
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
-          description: distributor_dramas.id
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+        description: distributor_dramas.id
       requestBody:
         required: true
         content:
@@ -171,11 +175,15 @@ paths:
             examples:
               abandonOnePlatform:
                 value:
-                  platforms: ["douyin"]
+                  platforms:
+                  - douyin
                   reason: 抖音平台审核不通过，内容资质不符
               abandonAll:
                 value:
-                  platforms: ["douyin", "kuaishou", "wechat_video"]
+                  platforms:
+                  - douyin
+                  - kuaishou
+                  - wechat_video
                   reason: 各平台均审核不通过，无法继续发行
       responses:
         '200':
@@ -194,31 +202,30 @@ paths:
           description: 参数无效（平台参数无效/原因长度不符/所选平台不在已认领列表中）
         '409':
           description: 该剧已有待审核的放弃申请 / 存在未完成的结算单 / 当前授权状态不可放弃
-
-  /publisher/abandon-requests:
+  /v1/publisher/abandon-requests:
     get:
       tags:
-        - 发行商-放弃认领
+      - 发行商-放弃认领
       summary: 放弃申请列表
       description: 发行商查看自己提交的所有放弃认领申请
       security:
-        - bearerAuth: []
+      - bearerAuth: []
       parameters:
-        - name: page
-          in: query
-          schema:
-            type: integer
-            default: 1
-        - name: page_size
-          in: query
-          schema:
-            type: integer
-            default: 20
-        - name: status
-          in: query
-          schema:
-            $ref: '#/components/schemas/AbandonStatus'
-          description: 按状态筛选
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+      - name: status
+        in: query
+        schema:
+          $ref: '#/components/schemas/AbandonStatus'
+        description: 按状态筛选
       responses:
         '200':
           description: 成功
@@ -243,28 +250,27 @@ paths:
                         type: array
                         items:
                           allOf:
-                            - $ref: '#/components/schemas/AbandonRequest'
-                            - type: object
-                              properties:
-                                drama_title:
-                                  type: string
-                                drama_cover_url:
-                                  type: string
-                                  description: 剧集封面图 URL
-
-  /publisher/abandon-requests/{id}:
+                          - $ref: '#/components/schemas/AbandonRequest'
+                          - type: object
+                            properties:
+                              drama_title:
+                                type: string
+                              drama_cover_url:
+                                type: string
+                                description: 剧集封面图 URL
+  /v1/publisher/abandon-requests/{id}:
     get:
       tags:
-        - 发行商-放弃认领
+      - 发行商-放弃认领
       summary: 放弃申请详情
       security:
-        - bearerAuth: []
+      - bearerAuth: []
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
       responses:
         '200':
           description: 成功
@@ -278,40 +284,39 @@ paths:
                     example: 0
                   data:
                     allOf:
-                      - $ref: '#/components/schemas/AbandonRequest'
-                      - type: object
-                        properties:
-                          drama_title:
-                            type: string
-                          drama_cover_url:
-                            type: string
-                            description: 剧集封面图 URL
+                    - $ref: '#/components/schemas/AbandonRequest'
+                    - type: object
+                      properties:
+                        drama_title:
+                          type: string
+                        drama_cover_url:
+                          type: string
+                          description: 剧集封面图 URL
         '404':
           description: 放弃申请不存在
-
-  /admin/distributor-abandons:
+  /v1/admin/distributor-abandons:
     get:
       tags:
-        - 管理端-放弃认领审核
+      - 管理端-放弃认领审核
       summary: 放弃申请列表
       description: 管理端查看所有发行商提交的放弃认领申请
       security:
-        - bearerAuth: []
+      - bearerAuth: []
       parameters:
-        - name: page
-          in: query
-          schema:
-            type: integer
-            default: 1
-        - name: page_size
-          in: query
-          schema:
-            type: integer
-            default: 20
-        - name: status
-          in: query
-          schema:
-            $ref: '#/components/schemas/AbandonStatus'
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+      - name: status
+        in: query
+        schema:
+          $ref: '#/components/schemas/AbandonStatus'
       responses:
         '200':
           description: 成功
@@ -336,31 +341,30 @@ paths:
                         type: array
                         items:
                           allOf:
-                            - $ref: '#/components/schemas/AbandonRequest'
-                            - type: object
-                              properties:
-                                drama_title:
-                                  type: string
-                                drama_cover_url:
-                                  type: string
-                                  description: 剧集封面图 URL
-                                distributor_name:
-                                  type: string
-
-  /admin/distributor-abandons/{id}:
+                          - $ref: '#/components/schemas/AbandonRequest'
+                          - type: object
+                            properties:
+                              drama_title:
+                                type: string
+                              drama_cover_url:
+                                type: string
+                                description: 剧集封面图 URL
+                              distributor_name:
+                                type: string
+  /v1/admin/distributor-abandons/{id}:
     get:
       tags:
-        - 管理端-放弃认领审核
+      - 管理端-放弃认领审核
       summary: 放弃申请详情
       description: 管理端查看放弃申请详情，包含发行商信息和剧集信息
       security:
-        - bearerAuth: []
+      - bearerAuth: []
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
       responses:
         '200':
           description: 成功
@@ -374,42 +378,48 @@ paths:
                     example: 0
                   data:
                     allOf:
-                      - $ref: '#/components/schemas/AbandonRequest'
-                      - type: object
-                        properties:
-                          drama_title:
-                            type: string
-                          drama_cover_url:
-                            type: string
-                            description: 剧集封面图 URL
-                          distributor_name:
-                            type: string
-                          distributor_phone:
-                            type: string
+                    - $ref: '#/components/schemas/AbandonRequest'
+                    - type: object
+                      properties:
+                        drama_title:
+                          type: string
+                        drama_cover_url:
+                          type: string
+                          description: 剧集封面图 URL
+                        distributor_name:
+                          type: string
+                        distributor_phone:
+                          type: string
         '404':
           description: 放弃申请不存在
-
-  /admin/distributor-abandons/{id}/approve:
+  /v1/admin/distributor-abandons/{id}/approve:
     post:
       tags:
-        - 管理端-放弃认领审核
+      - 管理端-放弃认领审核
       summary: 审核通过
-      description: |
-        管理员审核通过放弃申请，系统在单一数据库事务内完成以下操作：
+      description: '管理员审核通过放弃申请，系统在单一数据库事务内完成以下操作：
+
         - 行锁 distributor + distributor_dramas，重新校验状态
+
         - 部分放弃：移除被放弃的平台，扣减 deposit_amount_cents
+
         - 全部放弃：status -> revoked, deposit_status -> released
+
         - 钱包更新：冻结 -= refund，可用 += refund
+
         - 记录押金流水（type=unfreeze）
+
         - 更新放弃申请状态为 approved
+
+        '
       security:
-        - bearerAuth: []
+      - bearerAuth: []
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
       responses:
         '200':
           description: 审核通过成功
@@ -433,23 +443,24 @@ paths:
                         type: integer
         '409':
           description: 状态异常（非待审核/授权记录状态异常/冻结余额不足）
-
-  /admin/distributor-abandons/{id}/reject:
+  /v1/admin/distributor-abandons/{id}/reject:
     post:
       tags:
-        - 管理端-放弃认领审核
+      - 管理端-放弃认领审核
       summary: 审核驳回
-      description: |
-        管理员驳回放弃申请，仅更新申请状态为 rejected，不涉及押金和授权记录变更。
+      description: '管理员驳回放弃申请，仅更新申请状态为 rejected，不涉及押金和授权记录变更。
+
         发行商可重新提交新的放弃申请。
+
+        '
       security:
-        - bearerAuth: []
+      - bearerAuth: []
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
       requestBody:
         required: true
         content:
@@ -481,6 +492,5 @@ paths:
                         type: string
         '409':
           description: 仅待审核状态可驳回
-
 security:
-  - bearerAuth: []
+- bearerAuth: []

@@ -145,7 +145,6 @@ func (s *Server) batchGetOccupiedPlatforms(dramaIDs []uint64) map[uint64]map[str
 }
 
 // buildPublisherDramaList 构建剧集广场列表响应项
-// 2026-07-28 会议：价格对发行商隐藏，仅展示标题/封面/集数/可认领平台
 func (s *Server) buildPublisherDramaList(dramas []model.Drama, occupiedPlatforms map[uint64]map[string]bool, distID uint64, verified bool) []gin.H {
 	list := make([]gin.H, 0, len(dramas))
 	for _, d := range dramas {
@@ -160,6 +159,8 @@ func (s *Server) buildPublisherDramaList(dramas []model.Drama, occupiedPlatforms
 			"title":               d.Title,
 			"cover_url":           d.CoverURL,
 			"episode_count":       d.TotalEpisodes,
+			"price_cents":         d.PriceCents,
+			"free_episodes":       d.FreeEpisodes,
 			"available_platforms": available,
 			"released_platforms":  occupiedKeys(occupied),
 			"claimable":           distributable,
