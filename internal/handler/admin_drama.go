@@ -825,11 +825,15 @@ func (s *Server) recomputeDramaAuditTx(tx *gorm.DB, drama *model.Drama, reviewer
 			updates["status"] = model.DramaStatusAwaitingPublish
 		}
 	case model.DramaAuditRejected:
-		switch drama.Status {
-		case model.DramaStatusPublished:
-			updates["status"] = model.DramaStatusOffline
-		case model.DramaStatusAwaitingPublish, model.DramaStatusReviewing:
-			updates["status"] = model.DramaStatusDraft
+		// 只有两个维度都审完才推进 status；单维度驳回时保持 reviewing，
+		// 等管理员把另一维度也审完再统一收敛状态。
+		if content != model.DramaAuditPending && video != model.DramaAuditPending {
+			switch drama.Status {
+			case model.DramaStatusPublished:
+				updates["status"] = model.DramaStatusOffline
+			case model.DramaStatusAwaitingPublish, model.DramaStatusReviewing:
+				updates["status"] = model.DramaStatusDraft
+			}
 		}
 	}
 	if err := tx.Model(&model.Drama{}).Where("id = ?", drama.ID).Updates(updates).Error; err != nil {
