@@ -154,17 +154,22 @@ func (s *Server) buildPublisherDramaList(dramas []model.Drama, occupiedPlatforms
 		}
 		available := getAvailablePlatformsFromOccupied(occupied)
 		distributable := d.Status == "published" && len(available) > 0 && isDistributable(d)
+		// 认领押金基础金额（单平台），与详情接口 deposit_rule.base_cents 一致
+		depositBaseCents := s.calcDepositAmount(d, []string{model.PlatformDouyin})
+		// 多平台认领总押金示例（所有可认领平台一起认领）
+		depositAllCents := s.calcDepositAmount(d, available)
 		list = append(list, gin.H{
-			"id":                  d.ID,
-			"title":               d.Title,
-			"cover_url":           d.CoverURL,
-			"episode_count":       d.TotalEpisodes,
-			"price_cents":         d.PriceCents,
-			"free_episodes":       d.FreeEpisodes,
-			"available_platforms": available,
-			"released_platforms":  occupiedKeys(occupied),
-			"claimable":           distributable,
-			"can_claim":           distributable && verified,
+			"id":                      d.ID,
+			"title":                   d.Title,
+			"cover_url":               d.CoverURL,
+			"episode_count":           d.TotalEpisodes,
+			"deposit_base_cents":      depositBaseCents,
+			"deposit_all_cents":       depositAllCents,
+			"deposit_platform_rate":    "每增加一个平台 +15%",
+			"available_platforms":     available,
+			"released_platforms":      occupiedKeys(occupied),
+			"claimable":               distributable,
+			"can_claim":               distributable && verified,
 		})
 	}
 	return list
