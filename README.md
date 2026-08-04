@@ -1,8 +1,8 @@
-# Drama Platform Backend
+# short-drama-backend
 
 <div align="center">
 
-**A production-grade short-drama streaming platform backend, built with Go.**
+**生产级短剧平台后端 | A production-grade short-drama streaming platform backend, built with Go.**
 
 [![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev/dl/)
 [![Framework](https://img.shields.io/badge/Framework-Gin-009688?style=flat-square)](https://github.com/gin-gonic/gin)
@@ -10,96 +10,170 @@
 [![Cache](https://img.shields.io/badge/Cache-Redis-DC382D?style=flat-square&logo=redis&logoColor=white)](https://redis.io/)
 [![License](https://img.shields.io/badge/License-Proprietary-lightgrey?style=flat-square)]()
 
-[Features](#features) · [Quick Start](#quick-start) · [Architecture](#architecture) · [API Reference](#api-reference) · [Deployment](#deployment) · [Project Structure](#project-structure)
+[English Summary](#english-summary) · [项目概述](#项目概述) · [功能特性](#功能特性) · [快速开始](#快速开始) · [系统架构](#系统架构) · [API 文档](#api-文档) · [部署运维](#部署运维) · [目录结构](#目录结构)
 
 </div>
 
 ---
 
-## Overview
+## English Summary
 
-Short-drama (micro-drama) platforms have become a major content format, but building one requires solving hard problems around **payment integrity**, **multi-party revenue settlement**, and **high availability**. This project provides a complete, production-ready backend that powers the full business loop:
+**short-drama-backend** is a production-grade backend for a micro-drama (短剧) streaming platform, built solo from scratch in Go. It powers the complete business loop — *creators upload → admins review → distributors claim → users pay to unlock → revenue splits & settles → withdrawals process* — across **four independently-authenticated surfaces** (App / Creator / Distributor / Admin), spanning **45 tables** and **289 endpoints**.
 
-**Creators upload** → **Admins review & publish** → **Distributors claim & distribute** → **Users pay to unlock** → **Revenue splits & settles** → **Withdrawals process**.
+The engineering focus is on the two things a payment backend should take most seriously: **money correctness** and **uptime**.
 
-### At a Glance
+- **Payment integrity** — Concurrent ordering is serialized with Postgres transaction-level advisory locks plus partial unique indexes; payment callbacks are signature-verified and idempotent inside `SELECT … FOR UPDATE` transactions; order payment, unlock records, and revenue splits commit atomically; refunds support partial/idempotent flows with proportional balance clawback; active order-status queries reconcile state if callbacks are lost.
+- **Distributor deposit & claim system** — Distributors place tiered deposits to claim dramas for specific platforms (¥400 base for ≤25min, ¥500 for ≥26min, +15% per additional platform); the abandon-claim flow supports symmetric refund algorithms within single transactions with row-level locking.
+- **Payment-channel abstraction** — A unified `Provider` interface routes WeChat Pay V3 and Alipay across app & H5 scenes; missing credentials degrade to a safe "unavailable" provider.
+- **Settlement engine** — Semi-monthly settlement cycles for both creators and distributors with tax-previewed withdrawals, PDF receipt generation, and invoice tracking.
+- **Zero-downtime deploys** — `cloudflare/tableflip` + systemd enables hot-restarts via `SIGHUP` with listener FD inheritance.
 
-| Metric | Value |
-|--------|-------|
-| Database tables | 45 |
-| API endpoints | 289 |
-| Client surfaces | 4 (App / Creator / Distributor / Admin) |
-| Payment channels | 2 (WeChat Pay V3, Alipay) |
-| Deployment downtime | Zero (hot-reload via `SIGHUP`) |
+> The sections below are in Chinese (the project's primary language).
 
 ---
 
-## Features
+## 项目概述
 
-### Multi-Sided Platform
+短剧是近年来快速增长的内容形态，但搭建一套短剧平台需要解决**支付资金安全**、**多方分账结算**、**高可用部署**等一系列硬问题。本项目提供了一套完整的、生产可用的后端服务，打通了从内容生产到资金结算的全链路：
 
-- **App (Users)** — Phone/SMS login, drama browsing & search, episode playback with history, likes & favorites, comments, in-app purchases with WeChat Pay & Alipay.
-- **Creator Portal** — KYC verification, drama & episode management, VOD upload signatures, revenue dashboard, semi-monthly settlement, tax-calculated withdrawals with PDF receipts, e-contracts, invoicing.
-- **Distributor Portal** — Enterprise verification, drama marketplace, deposit-based platform claiming (tiered pricing by duration + platform count), abandon-claim workflow with symmetric deposit refunds, distribution revenue tracking.
-- **Admin Panel** — Role-based access control (super_admin / finance / auditor / claim_audit / distributor_audit), content review (with per-episode sendback reasons), order & refund management, channel income import, settlement management, operation audit logs.
+**创作者上传** → **管理员审核上架** → **发行商押金认领发行** → **用户付费解锁观看** → **收益自动分账** → **半月度结算提现**。
 
-### Payment & Financial Safety
+### 数据概览
 
-- **Concurrent order safety** — Transaction-level advisory locks (`pg_advisory_xact_lock`) + partial unique indexes prevent duplicate charges from double-clicks.
-- **Idempotent callbacks** — Payment notifications are signature-verified inside `SELECT ... FOR UPDATE` transactions; amount/channel mismatches return HTTP 500 to force gateway retries rather than silently failing.
-- **Atomic revenue split** — Order payment, episode unlock, and creator revenue crediting commit atomically in a single transaction.
-- **Partial & full refunds** — Idempotent refund with proportional balance clawback from creators; supports multiple partial refunds with `GREATEST` guards against negative balances.
-- **Reconciliation** — Active order-status queries sync with payment gateways; a standalone `reconcile` command detects inconsistencies and exits non-zero for CI/cron alerts.
-
-### Distributor Deposit System
-
-- **Tiered deposit calculation** — Base deposit by drama duration (≤25min: ¥400, ≥26min: ¥500), with +15% per additional platform.
-- **Claim workflow** — Deposit payment → authorization → content review → contract signing → authorized distribution.
-- **Abandon-claim flow** — Distributors can relinquish platforms with evidence (screenshots up to 9 images); symmetric refund algorithm returns `original_deposit - remaining_platforms_share`; platforms remain locked during review to prevent claim races.
-- **Transaction-safe approval** — Admin approval uses row-level locking in a single transaction to ensure wallet consistency.
-
-### Engineering
-
-- **Zero-downtime deploys** — `cloudflare/tableflip` + systemd `SIGHUP` hot-reload with listener FD inheritance.
-- **Four-identity JWT auth** — App/Creator/Distributor/Admin tokens are strictly isolated at the middleware layer; cross-identity calls are rejected.
-- **PII encryption** — ID numbers and bank card numbers are stored AES-GCM encrypted; APIs return masked values by default.
-- **Provider abstraction** — Payment (`Prepay`/`VerifyAndParse`/`QueryOrder`/`Refund`), SMS, KYC, and storage all use provider interfaces; missing credentials gracefully degrade to safe "unavailable" providers rather than failing open.
-- **Rate limiting & brute-force protection** — Token-bucket rate limiting, login lockout (5 attempts / 15min), SMS code cooldown with IP-based throttling.
-- **Audit logging** — All admin actions logged with actor/method/path/status/IP/UA; request bodies are never recorded.
+| 指标 | 数值 |
+|------|------|
+| 数据库表 | 45 张 |
+| API 路由 | 289 条 |
+| 客户端身份 | 4 端（App / 创作者 / 发行商 / 管理后台） |
+| 支付渠道 | 2 个（微信支付 V3、支付宝） |
+| 部署停机时间 | 0（`SIGHUP` 热重启） |
 
 ---
 
-## Architecture
+## 功能特性
+
+### 四端业务
+
+- **App 端（用户）** — 手机号验证码登录（未注册自动注册）、剧集浏览搜索、播放与观看历史、点赞/收藏、评论与楼中楼回复、消息中心、微信/支付宝双渠道付费解锁单集。
+- **创作者端** — 创作者入驻、实名认证（腾讯云 KYC 活体检测）、短剧/剧集 CRUD、云点播上传签名 + 封面直传签名、收益看板、半月度结算、个税预览与算税提现、PDF 结算单、电子合同、发票管理。
+- **发行商端** — 企业认证、剧集广场浏览筛选、**押金认领**（保证金按时长 × 平台数阶梯计算）、已认领剧集管理、**放弃认领**（支持上传截图证据、对称退还算法）、发行收益看板、结算与提现。
+- **管理后台** — RBAC 细粒度权限控制（超管/财务/审核/认领审核/发行商审核）、内容审核（含**打回分集原因**）、创作者/发行商审核、订单与退款管理、渠道收入批量导入、结算单管理、操作审计日志。
+
+### 支付与资金安全
+
+- **并发下单防护** — 事务级咨询锁（`pg_advisory_xact_lock`）+ 部分唯一索引双保险，杜绝狂点导致的重复扣款；已解锁直接拦截，未过期 pending 订单复用，30 分钟 TTL 自动关单。
+- **回调幂等与校验** — 支付回调在 `SELECT ... FOR UPDATE` 事务内验签处理，必须同时满足金额一致、渠道一致、订单状态 pending 才标记支付；校验失败返回 HTTP 500 强制渠道重试，绝不静默吞掉。
+- **原子分账** — 订单标记已付、写入解锁记录、创作者收益累加、当日统计 UPSERT 在同一事务内完成，要么全成要么全滚。
+- **退款（部分/全额/幂等）** — 以退款单号为幂等键，支持多次部分退款；按分成比例从创作者余额与当日统计回退，`GREATEST` 防护防写负。
+- **对账兜底** — 60s ticker 关过期单、主动查单 `SyncOrderStatus` 回写状态、独立 `reconcile` 命令发现账务不平即 `exit 1`（可挂 CI/定时巡检）。
+
+### 发行商押金与认领体系
+
+- **阶梯押金算法** — 基础押金按时长分档（≤25 分钟 ¥400，≥26 分钟 ¥500），每增加一个平台 +15%。
+- **认领流程** — 押金缴纳 → 授权确认 → 内容审核 → 合同签署 → 已授权，任意环节可驳回。
+- **放弃认领** — 发行商可上传最多 9 张截图作为放弃证据；退还金额 = 原始押金 − 剩余平台应收押金（与认领算法对称）；审核期间平台锁定防抢认；事务行锁保证并发安全。
+- **管理端审核** — 通过：事务内更新授权记录 + 解冻押金 + 记录流水；驳回：仅更新申请状态，发行商可重新申请。
+
+### 工程能力
+
+- **零停机发版** — `cloudflare/tableflip` + systemd `SIGHUP` 热重启，新进程继承监听 fd，Ready 后老进程优雅退出。
+- **四身份 JWT 鉴权** — App/Creator/Distributor/Admin 四端 token 严格隔离，中间件拒绝跨身份调用；账号封禁每次请求查库即时生效。
+- **PII 加密** — 身份证号、银行卡号 `AES-GCM` 密文落库，接口默认脱敏只回尾号。
+- **Provider 抽象** — 支付、短信、KYC、存储均使用 Provider 接口，缺密钥时安全降级为 UnavailableProvider，拒绝裸跑。
+- **限流与防爆破** — 令牌桶限流、Admin 密码错 5 次锁 15 分钟、短信错码 ≥5 次锁定 + IP 限流 + 60s 冷却。
+- **审计日志** — 记录 `actor/method/path/action/status/IP/UA`，不记请求体避免敏感信息泄漏。
+
+---
+
+## 快速开始
+
+### 前置依赖
+
+- Go 1.25+
+- PostgreSQL 13+
+- Redis 6+
+
+### 启动步骤
+
+```bash
+# 1. 克隆项目
+git clone https://github.com/shaozheng0503/short-drama-backend.git
+cd short-drama-backend
+
+# 2. 创建数据库
+createdb ai_drama
+
+# 3. 准备配置
+cp .env.example .env
+# 至少配置以下字段：
+#   DATABASE_DSN=postgres://user:pass@localhost:5432/ai_drama?sslmode=disable
+#   JWT_SECRET=<随机 32 字节 base64>
+#   DATA_ENCRYPTION_KEY=$(openssl rand -base64 32)
+
+# 4. 启动（开发模式：短信回显验证码、支付走 mock）
+set -a && source .env && set +a
+go run ./cmd/api
+```
+
+服务默认监听 `:8080`。首次启动会自动建表（AutoMigrate），并按 `ADMIN_INIT_USERNAME` / `ADMIN_INIT_PASSWORD` 创建初始管理员。
+
+### 开发模式
+
+设置 `PAYMENT_DEV_MODE=true` 时挂载模拟支付接口，方便前端联调：
+
+```bash
+# 一键模拟支付成功
+curl -X POST http://localhost:8080/v1/dev/orders/{order_no}/pay
+```
+
+典型联调链路：
+
+```
+POST /v1/common/sms/send → POST /v1/app/auth/login → GET /v1/app/dramas
+→ GET /v1/app/episodes/:id/play → POST /v1/app/orders（下单）
+→ POST /v1/dev/orders/:no/pay（模拟支付）→ GET /v1/app/episodes/:id/play（获取播放地址）
+```
+
+### 健康检查
+
+```bash
+curl http://localhost:8080/health   # 存活探针
+curl http://localhost:8080/ready     # 就绪探针（DB + Redis 连通性）
+```
+
+---
+
+## 系统架构
 
 ```mermaid
 flowchart TB
-    subgraph Clients["Clients"]
-        U["App (Users)"]
-        C["Creator Portal"]
-        D["Distributor Portal"]
-        A["Admin Panel"]
+    subgraph Clients["客户端 Clients"]
+        U["App · 用户"]
+        C["Creator · 创作者"]
+        D["Publisher · 发行商"]
+        A["Admin · 管理后台"]
     end
 
-    subgraph API["API Layer (Gin)"]
-        MW["Middleware<br/>JWT Auth · Rate Limit · Idempotency · Audit Log"]
+    subgraph API["API 层 · Gin"]
+        MW["中间件链<br/>JWT 鉴权 · 令牌桶限流 · 幂等 · 操作审计"]
     end
 
-    subgraph Domains["Domain Modules"]
-        B["billing<br/>Orders · Unlocks · Refunds · Reconciliation"]
-        P["payment<br/>WeChat Pay · Alipay · Dev Mock"]
-        CT["content<br/>Dramas · Episodes · Playback"]
-        CR["creator<br/>KYC · Settlement · Withdrawals"]
-        DS["distributor<br/>Deposits · Claims · Abandonment"]
-        ST["settlement<br/>Cycle-based Settlement Engine"]
-        INT["integrations<br/>SMS · COS · VOD · KYC · Alerts"]
+    subgraph Domains["领域模块 Domain Modules"]
+        B["billing<br/>订单/解锁/分账/退款/对账"]
+        P["payment<br/>微信支付V3 · 支付宝 · Dev Mock"]
+        CT["content<br/>剧集/播放/评论"]
+        CR["creator<br/>实名/结算/提现/合同"]
+        DS["distributor<br/>押金/认领/放弃"]
+        ST["settlement<br/>半月度结算引擎"]
+        INT["integrations<br/>短信 · COS · VOD · KYC · 告警"]
     end
 
-    DB[("PostgreSQL<br/>45 tables · Row locks · Advisory locks")]
-    RD[("Redis<br/>Idempotency · Rate limits · SMS codes")]
-    TC["Tencent Cloud<br/>SMS · COS · VOD · KYC"]
-    PAY["Payment Gateways<br/>WeChat Pay V3 · Alipay"]
+    DB[("PostgreSQL<br/>45 表 · 事务+行锁+咨询锁")]
+    RD[("Redis<br/>幂等/限流/验证码")]
+    TC["腾讯云<br/>SMS · COS · VOD · KYC"]
+    PAY["支付渠道<br/>微信支付V3 · 支付宝"]
 
-    U & C & D & A --> MW
+    U & C & D & A -->|"HTTPS + JWT，四身份隔离"| MW
     MW --> Domains
     Domains --> DB
     Domains --> RD
@@ -107,91 +181,33 @@ flowchart TB
     P --> PAY
 ```
 
-### State Machines
+### 关键状态机
 
 ```
-Order      : pending → paid → partial_refunded → refunded
-             pending → closed (timeout 30min)
-             pending → failed
+Order（订单）: pending → paid → partial_refunded → refunded
+              pending → closed（30min 超时）
+              pending → failed
 
-Drama      : draft → reviewing → awaiting_publish → published → offline
-             published → draft (sendback with per-episode reasons)
+Drama（剧集）: draft → reviewing → awaiting_publish → published → offline
+              published → draft（打回 sendback，支持总体原因+分集原因）
 
-Claim      : deposit_pending → auth_pending → review_pending → contract_pending → authorized
-             any stage → rejected
+Claim（认领）: deposit_pending → auth_pending → review_pending → contract_pending → authorized
+              任意环节 → rejected
 
-Abandon    : pending → approved (deposit refunded, authorization updated)
-             pending → rejected (re-submittable)
+Abandon（放弃）: pending → approved（押金退还，授权记录变更）
+                pending → rejected（可重新申请）
 
-Withdrawal : pending → approved → paid
-             pending → rejected
-```
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- Go 1.25+
-- PostgreSQL 13+
-- Redis 6+
-
-### Setup
-
-```bash
-# 1. Clone
-git clone https://github.com/shaozheng0503/short-drama-backend.git
-cd short-drama-backend
-
-# 2. Create database
-createdb ai_drama
-
-# 3. Configure
-cp .env.example .env
-# Edit .env — at minimum set:
-#   DATABASE_DSN=postgres://user:pass@localhost:5432/ai_drama?sslmode=disable
-#   JWT_SECRET=<random-32-byte-base64>
-#   DATA_ENCRYPTION_KEY=$(openssl rand -base64 32)
-
-# 4. Run (dev mode: SMS echoes codes, payments use mock provider)
-set -a && source .env && set +a
-go run ./cmd/api
-```
-
-The server starts on `:8080` by default. Tables are auto-migrated on first startup, and a default admin is created from `ADMIN_INIT_USERNAME` / `ADMIN_INIT_PASSWORD`.
-
-### Development Mode
-
-With `PAYMENT_DEV_MODE=true`, a mock payment endpoint is available:
-
-```bash
-# Simulate successful payment for testing
-curl -X POST http://localhost:8080/v1/dev/orders/{order_no}/pay
-```
-
-Typical dev flow:
-
-```
-POST /v1/common/sms/send → POST /v1/app/auth/login → GET /v1/app/dramas
-→ GET /v1/app/episodes/:id/play → POST /v1/app/orders (create order)
-→ POST /v1/dev/orders/:no/pay (mock pay) → GET /v1/app/episodes/:id/play (get play_url)
-```
-
-### Health Checks
-
-```bash
-curl http://localhost:8080/health   # liveness
-curl http://localhost:8080/ready     # readiness (DB + Redis ping)
+Withdrawal（提现）: pending → approved → paid
+                   pending → rejected
 ```
 
 ---
 
-## API Reference
+## API 文档
 
-### Response Format
+### 统一响应格式
 
-All responses follow the convention:
+所有接口均返回以下格式：
 
 ```json
 {
@@ -201,160 +217,173 @@ All responses follow the convention:
 }
 ```
 
-| Code | HTTP | Meaning |
-|-----:|:----:|---------|
-| 0 | 200 | Success |
-| 40001 | 200 | Invalid parameters / SMS code error |
-| 40101 | 200 | Unauthenticated / token expired |
-| 40301 | 200 | Forbidden / banned / identity mismatch |
-| 40401 | 200 | Resource not found |
-| 40901 | 200 | Duplicate operation / rate limit conflict |
-| 42001 | 200 | Episode not unlocked |
-| 42901 | 429 | Rate limited |
-| 50001 | 500 | Server / third-party error |
+### 错误码
 
-Business errors return HTTP 200 with a non-zero `code`; only rate limits (429) and server errors (500) use non-200 HTTP statuses.
+| code | HTTP | 含义 |
+|-----:|:----:|------|
+| 0 | 200 | 成功 |
+| 40001 | 200 | 参数错误 / 验证码错误 |
+| 40101 | 200 | 未登录 / token 失效 |
+| 40301 | 200 | 无权限 / 账号封禁 / 身份不匹配 |
+| 40401 | 200 | 资源不存在 |
+| 40901 | 200 | 重复操作 / 频控冲突 |
+| 42001 | 200 | 剧集未解锁 |
+| 42901 | 429 | 命中限流 |
+| 50001 | 500 | 服务端 / 第三方错误 |
 
-### Endpoint Overview
+业务错误统一返回 HTTP 200 + 非零 `code`，仅限流（429）和服务端错误（500）使用非 200 HTTP 状态码。
 
-| Prefix | Count | Description |
-|--------|------:|-------------|
-| `/v1/app` | 39 | User-facing APIs |
-| `/v1/creator` | 63 | Creator portal APIs |
-| `/v1/distributor` | 7 | Distributor auth & profile |
-| `/v1/publisher` | 35 | Distributor marketplace, claims, settlement |
-| `/v1/admin` | 131 | Admin panel APIs (RBAC-gated) |
-| `/v1/common` | 5 | Public utilities (SMS, upload signatures, etc.) |
-| `/v1/webhooks` | 3 | Payment & VOD callbacks |
-| `/health`, `/ready` | 2 | Health checks |
+### 路由分布
 
-Full OpenAPI 3.0 specification is maintained in the `docs/` directory and synchronized to Apifox.
+| 前缀 | 数量 | 说明 |
+|------|-----:|------|
+| `/v1/app` | 39 | 用户端接口 |
+| `/v1/creator` | 63 | 创作者端接口 |
+| `/v1/distributor` | 7 | 发行商认证/资料 |
+| `/v1/publisher` | 35 | 发行商广场/认领/放弃/结算 |
+| `/v1/admin` | 131 | 管理后台接口（RBAC 鉴权） |
+| `/v1/common` | 5 | 公共接口（短信、上传签名等） |
+| `/v1/webhooks` | 3 | 支付/VOD 回调 |
+| `/health` `/ready` | 2 | 健康检查 |
+
+完整 OpenAPI 3.0 文档维护在 `docs/` 目录，并同步至 Apifox。
 
 ---
 
-## Project Structure
+## 数据模型
+
+45 张表按业务域划分：
+
+| 域 | 表名 |
+|----|------|
+| 内容 | `dramas`, `episodes`, `drama_covers`, `drama_characters`, `categories`, `languages`, `drama_tags` |
+| 用户与行为 | `users`, `play_histories`, `user_actions`, `comments`, `comment_likes`, `app_messages`, `notifications` |
+| 交易 | `products`, `orders`, `episode_unlocks`, `creator_stats_daily`, `channel_income_daily`, `channel_income_import_batches` |
+| 创作者与结算 | `creators`, `creator_channel_accounts`, `withdrawals`, `tax_brackets`, `contracts`, `settlements`, `settlement_items`, `invoices` |
+| 发行商 | `distributors`, `distributor_applications`, `distributor_dramas`, `distributor_abandon_requests`, `distributor_contracts`, `distributor_deposit_transactions`, `distributor_income_daily`, `distributor_settlements`, `distributor_withdrawals`, `distributor_invoices` |
+| 系统 | `admins`, `admin_permissions`, `sms_codes`, `operation_logs`, `global_configs`, `state_transitions` |
+
+---
+
+## 目录结构
 
 ```
 ├── cmd/
-│   ├── api/                  # HTTP server entrypoint (graceful shutdown + cron + tableflip)
-│   ├── check-config/         # Pre-deploy configuration validation
-│   ├── close-expired-orders/ # Expired order sweeper
-│   ├── gen-income-template/  # Channel income import template generator
-│   ├── publish-scheduled/    # Scheduled drama publisher
-│   ├── reconcile/            # Financial reconciliation (exits non-zero on mismatch)
-│   ├── seed-langzhi/         # Development seed data
-│   ├── setup-cos-referer/    # COS referer anti-hotlink setup
-│   ├── test-alipay/          # Alipay connectivity smoke test
-│   └── test-refund/          # Refund integration tests (14 scenarios, 54 assertions)
+│   ├── api/                  HTTP 服务入口（graceful shutdown + 后台 cron + tableflip 零停机）
+│   ├── check-config/         上线前配置体检
+│   ├── close-expired-orders/ 过期订单关闭（api 后台 ticker 也会触发）
+│   ├── gen-income-template/  渠道收入导入模板生成
+│   ├── publish-scheduled/    定时发布到点短剧
+│   ├── reconcile/            账务对账，不平则 exit 1
+│   ├── seed-langzhi/         种子数据（开发/测试环境）
+│   ├── setup-cos-referer/    COS Referer 防盗链配置
+│   ├── test-alipay/          支付宝凭据/网关连通性烟测（不依赖 DB）
+│   └── test-refund/          退款集成测试（14 场景 / 54 断言）
 ├── internal/
-│   ├── config/               # Environment configuration
-│   ├── database/             # DB connection, AutoMigrate, index migrations
-│   ├── model/                # GORM models (45 tables)
-│   ├── middleware/           # JWT auth (4 identities), RBAC
-│   ├── handler/              # HTTP handlers (74 files, organized by domain)
-│   ├── billing/              # Orders, unlocks, refunds, reconciliation
-│   ├── payment/              # Payment provider abstraction (WeChat / Alipay / Dev / Unavailable)
-│   ├── sms/                  # SMS provider abstraction
-│   ├── kyc/                  # KYC provider abstraction (Tencent Cloud)
-│   ├── cos/                  # Tencent COS (object storage) signatures
-│   ├── vod/                  # Tencent VOD (video on demand) signatures & callbacks
-│   ├── secure/               # AES-GCM encryption for PII fields
-│   ├── idempotency/          # Idempotency-Key middleware
-│   ├── ratelimit/            # Token-bucket rate limiter
-│   ├── alert/                # Async webhook alerts for failures
-│   ├── reconcile/            # Financial consistency checks
-│   ├── redisclient/          # Redis client
-│   ├── response/             # Unified response helpers
-│   └── seed/                 # Seed data helpers
-├── docs/                     # Documentation & OpenAPI specs
-├── scripts/                  # Deployment & migration scripts
-├── docker-compose.yml        # Local dev environment
+│   ├── config/               环境变量装配
+│   ├── database/             连接 + AutoMigrate + 索引迁移 + 初始管理员
+│   ├── model/                GORM 模型定义（45 张表）
+│   ├── middleware/           JWT 鉴权（四端隔离）、RBAC
+│   ├── handler/              HTTP handler（74 个文件，按业务域拆分）
+│   ├── billing/              订单/解锁/分账/退款/对账（事务+行锁+咨询锁）
+│   ├── payment/              支付 Provider 抽象（微信/支付宝/Dev/Unavailable）
+│   ├── sms/                  短信 Provider 抽象
+│   ├── kyc/                  实名认证 Provider（腾讯云 KYC）
+│   ├── cos/                  腾讯云 COS 对象存储签名
+│   ├── vod/                  腾讯云 VOD 云点播签名与回调
+│   ├── secure/               AES-GCM 加密（PII 字段）
+│   ├── idempotency/          Idempotency-Key 中间件
+│   ├── ratelimit/            令牌桶限流
+│   ├── alert/                失败事件异步 webhook 告警
+│   ├── reconcile/            账务一致性校验
+│   ├── redisclient/          Redis 客户端
+│   ├── response/             统一响应格式
+│   └── seed/                 种子数据辅助
+├── docs/                     文档与 OpenAPI 规范
+├── scripts/                  部署与迁移脚本
+├── docker-compose.yml        本地开发环境
 └── go.mod
 ```
 
 ---
 
-## Deployment
+## 部署运维
 
-### Zero-Downtime Deploy
+### 零停机发版
 
-The service uses `cloudflare/tableflip` for hot-reloading. A `systemctl reload` (which sends `SIGHUP`) forks a new process that inherits the listening socket, serves new connections once ready, and gracefully shuts down the old process — zero dropped connections.
+服务基于 `cloudflare/tableflip` 实现热重启：`systemctl reload` 发送 `SIGHUP` → fork+exec 新进程继承监听 fd → 新进程 Ready 后老进程优雅退出，连接不断、客户端零感知。
 
-### One-Command Deploy
+### 一键部署
 
 ```bash
-# Production
+# 生产环境
 ENV=prod ./scripts/deploy-prod.sh
 
-# Sandbox
+# 沙箱环境
 ENV=sandbox ./scripts/deploy-prod.sh
 
-# Both (sandbox first, then production)
+# 双环境（先沙箱后生产）
 ENV=both ./scripts/deploy-prod.sh
 ```
 
-The script handles: compilation → config check → binary upload → backup → reload → readiness probe → HTTPS health check.
+部署脚本流程：编译 → 配置体检 → 二进制上传 → 备份 → reload → ready 探针 → HTTPS 健康检查。
 
-### Standalone
-
-```bash
-GOOS=linux GOARCH=amd64 go build -o drama-api ./cmd/api
-./drama-api
-```
-
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for systemd + Nginx + HTTPS setup details.
-
-### Operational Commands
+### 运维命令
 
 ```bash
-go run ./cmd/check-config --prod    # Validate production config
-go run ./cmd/close-expired-orders   # Close expired pending orders
-go run ./cmd/reconcile              # Financial reconciliation
+go run ./cmd/check-config --prod    # 上线前配置体检
+go run ./cmd/close-expired-orders   # 关闭过期未支付订单
+go run ./cmd/reconcile              # 账务对账
 ```
 
----
-
-## Configuration
-
-All configuration is via environment variables. See `.env.example` for the complete list. Key variables:
-
-| Variable | Required | Description |
-|----------|:--------:|-------------|
-| `DATABASE_DSN` | Yes | PostgreSQL connection string |
-| `JWT_SECRET` | Yes | JWT signing key (≥32 bytes) |
-| `DATA_ENCRYPTION_KEY` | Yes | AES-GCM key for PII encryption (`openssl rand -base64 32`) |
-| `REDIS_ADDR` | Prod | Redis address (required for idempotency in production) |
-| `PAYMENT_DEV_MODE` | No | Set to `true` to enable mock payment provider |
-| `SMS_DEV_MODE` | No | Set to `true` to echo SMS codes in logs |
-| `ADMIN_INIT_USERNAME` / `ADMIN_INIT_PASSWORD` | First run | Initial admin credentials |
-
-WeChat Pay and Alipay credentials are loaded from file paths (not env vars) to reduce leak surface area.
+systemd + Nginx + HTTPS 完整部署说明见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)。
 
 ---
 
-## Data Model
+## 配置说明
 
-Tables are organized by domain:
+所有配置通过环境变量注入，详见 `.env.example`。关键配置项：
 
-| Domain | Tables |
-|--------|--------|
-| Content | `dramas`, `episodes`, `drama_covers`, `drama_characters`, `categories`, `languages`, `drama_tags` |
-| Users | `users`, `play_histories`, `user_actions`, `comments`, `comment_likes`, `app_messages`, `notifications` |
-| Transactions | `products`, `orders`, `episode_unlocks`, `creator_stats_daily`, `channel_income_daily`, `channel_income_import_batches` |
-| Creators | `creators`, `creator_channel_accounts`, `withdrawals`, `tax_brackets`, `contracts`, `settlements`, `settlement_items`, `invoices` |
-| Distributors | `distributors`, `distributor_applications`, `distributor_dramas`, `distributor_abandon_requests`, `distributor_contracts`, `distributor_deposit_transactions`, `distributor_income_daily`, `distributor_settlements`, `distributor_withdrawals`, `distributor_invoices` |
-| System | `admins`, `admin_permissions`, `sms_codes`, `operation_logs`, `global_configs`, `state_transitions` |
+| 变量 | 必填 | 说明 |
+|------|:----:|------|
+| `DATABASE_DSN` | 是 | PostgreSQL 连接串 |
+| `JWT_SECRET` | 是 | JWT 签名密钥（≥32 字节） |
+| `DATA_ENCRYPTION_KEY` | 是 | AES-GCM 加密密钥（`openssl rand -base64 32` 生成） |
+| `REDIS_ADDR` | 生产 | Redis 地址（幂等/限流依赖） |
+| `PAYMENT_DEV_MODE` | 否 | 设为 `true` 启用 mock 支付 |
+| `SMS_DEV_MODE` | 否 | 设为 `true` 短信验证码回显到日志 |
+| `ADMIN_INIT_USERNAME` / `ADMIN_INIT_PASSWORD` | 首次 | 初始管理员账号 |
+
+微信支付、支付宝密钥通过文件路径注入（不进环境变量/不进 commit），降低泄漏面。
 
 ---
 
-## Testing
+## 技术栈
 
-- **Unit tests** cover payment signature verification, amount calculations, refund logic, and core financial operations.
-- **Refund integration test** (`cmd/test-refund`): 14 scenarios, 54 assertions — partial refunds, full refunds, idempotent re-submission, over-refund rejection, concurrent row locking, revenue clawback, negative-balance guards, and edge cases. Uses snapshot + defer cleanup to avoid polluting data.
-- **Alipay smoke test** (`cmd/test-alipay`): Validates credentials, gateway connectivity, and local signing without requiring a database.
-- **Pre-deploy validation**: `check-config --prod` verifies critical configuration; `reconcile` exits non-zero on financial inconsistencies.
+| 层 | 技术选型 | 选型理由 |
+|----|----------|----------|
+| 语言 | Go 1.25 | 单二进制部署、启动快、并发模型契合 IO 密集型服务 |
+| Web 框架 | Gin | 轻量高性能 HTTP 路由 |
+| ORM | GORM | AutoMigrate 高效开发，热点路径手写索引优化 |
+| 数据库 | PostgreSQL | ACID 事务、行锁、咨询锁、部分唯一索引 |
+| 缓存 | Redis | 幂等键、令牌桶限流、短信验证码冷却 |
+| 鉴权 | 自签 JWT | 四身份隔离，无外部依赖 |
+| 短信 | 腾讯云 SMS | 生产真实下发，Dev Provider 本地调试 |
+| 存储 | 腾讯云 COS | 客户端直传签名，服务端只签不存 |
+| 视频 | 腾讯云 VOD | 上传签名 + 转码回调 |
+| 支付 | 微信支付 V3 + 支付宝 | Provider 抽象，支持 app/H5 场景、退款、查单 |
+| 部署 | systemd + tableflip | SIGHUP 热重启实现零停机发版 |
 
-Run tests:
+---
+
+## 测试
+
+- **单元测试**：覆盖支付验签、金额换算、退款逻辑等核心资金操作。
+- **退款集成测试**（`cmd/test-refund`）：14 个场景 / 54 个断言，包含部分退/全退/同号幂等/超额拒/5 goroutine 并发行锁/分账回退/防写负/边界场景，使用快照 + defer 清理不污染数据。
+- **支付宝烟测**（`cmd/test-alipay`）：验证凭据、网关连通性、本地签名，不依赖数据库。
+- **上线前体检**：`check-config --prod` 校验关键配置；`reconcile` 账务不平即 `exit 1`。
+
+运行测试：
 
 ```bash
 go test ./...
@@ -362,27 +391,11 @@ go test ./...
 
 ---
 
-## Tech Stack
-
-| Layer | Technology | Rationale |
-|-------|------------|-----------|
-| Language | Go 1.25 | Single binary, fast startup, excellent concurrency for IO-heavy APIs |
-| Framework | Gin | Minimalist, high-performance HTTP router |
-| ORM | GORM | Productive with AutoMigrate; hand-tuned indexes for hot paths |
-| Database | PostgreSQL | ACID transactions, row-level locking, advisory locks, partial unique indexes |
-| Cache | Redis | Idempotency keys, token-bucket rate limiting, SMS code cooldown |
-| Auth | Self-signed JWT | Four-subject isolation without external dependencies |
-| SMS | Tencent Cloud SMS | Real delivery in production, dev provider for local testing |
-| Storage | Tencent Cloud COS | Direct upload signatures (client uploads, server only signs) |
-| Video | Tencent Cloud VOD | Video upload signatures + transcoding callbacks |
-| Payments | WeChat Pay V3, Alipay | Provider-abstracted, supports app/H5 scenes, refunds, order queries |
-| Deployment | systemd + tableflip | SIGHUP hot-reload for zero-downtime releases |
-
----
-
 ## License
 
-Proprietary. This repository is a redacted copy of a production project for portfolio demonstration purposes. Commercial use or redistribution is not granted without explicit permission.
+本仓库为真实生产项目的脱敏副本，仅作个人作品展示。未授予商用或二次分发许可。
+
+Proprietary. This repository is a redacted copy of a production project for portfolio demonstration. Commercial use or redistribution is not granted without explicit permission.
 
 ---
 
