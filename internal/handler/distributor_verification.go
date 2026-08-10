@@ -25,6 +25,7 @@ type distributorEnterpriseVerificationRequest struct {
 	BusinessLicenseURL string `json:"business_license_url" binding:"required"`
 	BankLicenseURL     string `json:"bank_license_url" binding:"required"`
 	BankName           string `json:"bank_name" binding:"required"`
+	BankBranch         string `json:"bank_branch"` // 支行名称
 	BankCardNo         string `json:"bank_card_no"` // 对公账号，首次必填
 }
 
@@ -122,6 +123,7 @@ func (s *Server) distributorUpdateEnterpriseVerification(c *gin.Context) {
 		"business_license_url":     req.BusinessLicenseURL,
 		"bank_license_url":         req.BankLicenseURL,
 		"bank_name":                req.BankName,
+		"bank_branch":              req.BankBranch,
 		"bank_card_no_enc":         bankCardNoEnc,
 		"bank_card_no_masked":      maskBankCard(bankCardNo),
 		"bank_card_last4":          lastN(bankCardNo, 4),

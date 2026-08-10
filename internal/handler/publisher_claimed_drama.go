@@ -52,7 +52,7 @@ func (s *Server) publisherListClaimedDramas(c *gin.Context) {
 	var pendingApps []model.DistributorApplication
 	s.db.Where("distributor_id = ? AND status IN ?", id, []string{
 		model.ClaimDepositPending, model.ClaimAuthPending,
-		model.ClaimReviewPending, model.ClaimContractPending,
+		model.ClaimReviewPending,
 	}).Find(&pendingApps)
 	pendingByDrama := map[uint64][]model.DistributorApplication{}
 	for _, app := range pendingApps {
@@ -268,7 +268,7 @@ func (s *Server) publisherGetClaimedDrama(c *gin.Context) {
 	var pendingApps []model.DistributorApplication
 	s.db.Where("distributor_id = ? AND drama_id = ? AND status IN ?", id, dramaID, []string{
 		model.ClaimDepositPending, model.ClaimAuthPending,
-		model.ClaimReviewPending, model.ClaimContractPending,
+		model.ClaimReviewPending,
 	}).Find(&pendingApps)
 	for _, app := range pendingApps {
 		for _, p := range parsePlatforms(app.Platforms) {
@@ -422,7 +422,7 @@ func (s *Server) publisherClaimedDramaClaims(c *gin.Context) {
 	var pendingApps []model.DistributorApplication
 	s.db.Where("distributor_id = ? AND drama_id = ? AND status IN ?", id, dramaID, []string{
 		model.ClaimDepositPending, model.ClaimAuthPending,
-		model.ClaimReviewPending, model.ClaimContractPending,
+		model.ClaimReviewPending,
 	}).Order("created_at asc").Find(&pendingApps)
 
 	var rejectedApps []model.DistributorApplication
