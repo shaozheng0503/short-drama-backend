@@ -423,8 +423,28 @@ func (s *Server) adminIncomePeriodSummary(c *gin.Context) {
 		cycleKeys[ck] = struct{}{}
 	}
 
+	// periodStatus 计算整体周期状态（简化视图）
+	//   not_generated: 结算单总数 = 0（尚未生成）
+	//   pending:       有未结算，无已结算
+	//   partial:       既有未结算又有已结算
+	//   completed:     全部已结算或作废（无未结算）
+	periodStatus := func(unsettled, settled, voidC int64) string {
+		total := unsettled + settled + voidC
+		if total == 0 {
+			return "not_generated"
+		}
+		if unsettled == 0 {
+			return "completed"
+		}
+		if settled == 0 {
+			return "pending"
+		}
+		return "partial"
+	}
+
 	settlementStatuses := make([]gin.H, 0, len(cycleKeys))
 	for ck := range cycleKeys {
+		// --- 创作者结算单 ---
 		// 财务周期汇总使用简化视图：将底层 5 个状态映射为 3 个汇总桶
 		// unsettled = draft + open + invoiced（未完结）
 		// settled   = paid（已付款，终态）
@@ -435,11 +455,50 @@ func (s *Server) adminIncomePeriodSummary(c *gin.Context) {
 		}).Count(&unsettledCount)
 		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, model.SettlementStatusPaid).Count(&settledCount)
 		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, model.SettlementStatusVoid).Count(&voidCount)
+
+		// 创作者结算单金额汇总
+		var creatorAmount struct {
+			GrossCents int64
+			NetCents   int64
+		}
+		s.db.Table("settlements").
+			Select("COALESCE(SUM(gross_cents),0) AS gross_cents, COALESCE(SUM(net_cents),0) AS net_cents").
+			Where("cycle_key = ?", ck).Scan(&creatorAmount)
+
+		// --- 发行商结算单 ---
+		// 简化视图：pending_payment + payment_submitted → unsettled, settled → settled
+		var distUnsettled, distSettled int64
+		s.db.Table("distributor_settlements").Where("cycle_key = ? AND status IN ?", ck, []string{
+			model.DistSettlementPendingPayment, model.DistSettlementPaymentSubmitted,
+		}).Count(&distUnsettled)
+		s.db.Table("distributor_settlements").Where("cycle_key = ? AND status = ?", ck, model.DistSettlementSettled).Count(&distSettled)
+
+		// 发行商结算单金额汇总
+		var distAmount struct {
+			GrossCents  int64
+			PayableCents int64
+		}
+		s.db.Table("distributor_settlements").
+			Select("COALESCE(SUM(gross_cents),0) AS gross_cents, COALESCE(SUM(payable_cents),0) AS payable_cents").
+			Where("cycle_key = ?", ck).Scan(&distAmount)
+
 		settlementStatuses = append(settlementStatuses, gin.H{
-			"cycle_key":         ck,
-			"unsettled_count":   unsettledCount,
-			"settled_count":     settledCount,
-			"void_count":        voidCount,
+			"cycle_key":           ck,
+			"unsettled_count":     unsettledCount,
+			"settled_count":       settledCount,
+			"void_count":          voidCount,
+			"total_count":         unsettledCount + settledCount + voidCount,
+			"period_status":       periodStatus(unsettledCount, settledCount, voidCount),
+			"gross_cents":         creatorAmount.GrossCents,
+			"net_cents":           creatorAmount.NetCents,
+			"distributor": gin.H{
+				"unsettled_count": distUnsettled,
+				"settled_count":   distSettled,
+				"total_count":     distUnsettled + distSettled,
+				"period_status":   periodStatus(distUnsettled, distSettled, 0),
+				"gross_cents":     distAmount.GrossCents,
+				"payable_cents":   distAmount.PayableCents,
+			},
 		})
 	}
 
