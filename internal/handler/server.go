@@ -558,7 +558,7 @@ func (s *Server) Router() *gin.Engine {
 	// 结算管理
 	adminAuth.GET("/distributor-settlements", s.adminListDistributorSettlements)
 	adminAuth.GET("/distributor-settlements/:id", s.adminGetDistributorSettlement)
-	// 2026-07-28 删除 POST /distributor-settlements/generate（邱嘉诚要求，前端已移除）
+	adminAuth.POST("/distributor-settlements/generate", s.requirePermission(model.PermFinance), s.adminGenerateDistributorSettlements)
 	adminAuth.POST("/distributor-settlements/:id/confirm-receipt", s.requirePermission(model.PermFinance), s.adminConfirmDistributorSettlement)
 	// 提现管理（已废弃，保留只读）
 	adminAuth.GET("/distributor-withdrawals", s.adminListDistributorWithdrawals)

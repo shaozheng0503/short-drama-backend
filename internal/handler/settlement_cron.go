@@ -318,6 +318,97 @@ func (s *Server) recalcOpenSettlementsForDateRange(tx *gorm.DB, statDates []stri
 				})
 			supplemented++
 		}
+
+		// ---- 发行商结算单补录 ----
+		// 查找该周期的所有发行商结算单
+		var distSettlements []model.DistributorSettlement
+		if err := tx.Where("cycle_key = ?", cycleKey).Find(&distSettlements).Error; err != nil {
+			return supplemented, blocked, err
+		}
+		if len(distSettlements) == 0 {
+			continue // 该周期还没有发行商结算单，无需补录
+		}
+
+		// 重新聚合 distributor_income_daily
+		type distAgg struct {
+			DistributorID uint64
+			GrossCents    int64
+			IncomeCents   int64
+		}
+		var distAggs []distAgg
+		tx.Table("distributor_income_daily").
+			Select("distributor_id, COALESCE(SUM(gross_cents),0) AS gross_cents, COALESCE(SUM(income_cents),0) AS income_cents").
+			Where("stat_date >= ? AND stat_date < ?", startStr, endStr).
+			Group("distributor_id").Scan(&distAggs)
+		distAggMap := map[uint64]distAgg{}
+		for _, a := range distAggs {
+			distAggMap[a.DistributorID] = a
+		}
+
+		for _, dst := range distSettlements {
+			if dst.Status != model.DistSettlementPendingPayment {
+				blocked++
+				continue
+			}
+
+			a, ok := distAggMap[dst.DistributorID]
+			if !ok {
+				continue
+			}
+
+			newGrossCents := a.GrossCents
+			newPlatformCents := newGrossCents * 45 / 100
+			newNetCents := newGrossCents * 55 / 100
+
+			// 金额未变化则跳过
+			if dst.GrossCents == newGrossCents && dst.NetCents == newNetCents && dst.PlatformCents == newPlatformCents {
+				continue
+			}
+
+			// 行锁重校验
+			var locked model.DistributorSettlement
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, dst.ID).Error; err != nil {
+				return supplemented, blocked, err
+			}
+			if locked.Status != model.DistSettlementPendingPayment {
+				blocked++
+				continue
+			}
+
+			oldGross := locked.GrossCents
+			supplementTag := "；supplemented-" + now.Format("200601021504")
+			newRemark := locked.Remark
+			if !strings.Contains(newRemark, "supplemented-") {
+				newRemark = newRemark + supplementTag
+			}
+
+			// 重新计算应付金额（payable = gross - deducted_deposit）
+			payable := newGrossCents - locked.DeductedDepositCents
+			if payable < 0 {
+				payable = 0
+			}
+
+			if err := tx.Model(&locked).Updates(map[string]interface{}{
+				"gross_cents":          newGrossCents,
+				"platform_cents":       newPlatformCents,
+				"net_cents":            newNetCents,
+				"withdrawable_cents":   payable,
+				"payable_cents":        payable,
+				"remark":               newRemark,
+			}).Error; err != nil {
+				return supplemented, blocked, err
+			}
+
+			s.recordTransition("distributor_settlement", locked.ID, model.DistSettlementPendingPayment, model.DistSettlementPendingPayment, "system", nil,
+				fmt.Sprintf("收入补录：总额 %d→%d（差额 %d）", oldGross, newGrossCents, newGrossCents-oldGross),
+				map[string]interface{}{
+					"cycle_key":        cycleKey,
+					"old_gross_cents":  oldGross,
+					"new_gross_cents":  newGrossCents,
+					"delta_cents":      newGrossCents - oldGross,
+				})
+			supplemented++
+		}
 	}
 
 	return supplemented, blocked, nil

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"ai-drama-platform/internal/middleware"
@@ -658,8 +659,188 @@ func (s *Server) distributorSettlementDetailView(st *model.DistributorSettlement
 	return v
 }
 
-// POST /admin/distributor-settlements/generate —— 已废弃，2026-07-28 邱嘉诚要求删除
-// 保留注释标记位置，避免下面 confirm-receipt 路由注释错位
+// adminGenerateDistributorSettlements —— POST /v1/admin/distributor-settlements/generate
+// 2026-08-12 恢复：停 cron 后改为手动触发，与创作者结算单生成对称。
+// 请求体：
+//   {"cycle_key": "2026-08-H1"}
+//   {"period": "2026-08", "half": "H1"}
+func (s *Server) adminGenerateDistributorSettlements(c *gin.Context) {
+	var req struct {
+		CycleKey string `json:"cycle_key"`
+		Period   string `json:"period"`
+		Half     string `json:"half"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "请提供 cycle_key 或 period+half")
+		return
+	}
+
+	cycleKey := req.CycleKey
+	if cycleKey == "" {
+		if req.Period == "" || req.Half == "" {
+			response.InvalidParam(c, "请提供 cycle_key 或 period+half")
+			return
+		}
+		if req.Half != "H1" && req.Half != "H2" {
+			response.InvalidParam(c, "half 只能是 H1 或 H2")
+			return
+		}
+		cycleKey = req.Period + "-" + req.Half
+	}
+
+	if len(cycleKey) < 8 || cycleKey[4] != '-' || cycleKey[7] != '-' {
+		response.InvalidParam(c, "cycle_key 格式不合法，应为 YYYY-MM-H1/H2")
+		return
+	}
+	year, err := strconv.Atoi(cycleKey[:4])
+	if err != nil {
+		response.InvalidParam(c, "cycle_key 格式不合法")
+		return
+	}
+	month, err := strconv.Atoi(cycleKey[5:7])
+	if err != nil || month < 1 || month > 12 {
+		response.InvalidParam(c, "cycle_key 月份不合法")
+		return
+	}
+	halfStr := cycleKey[8:]
+	if halfStr != "H1" && halfStr != "H2" {
+		response.InvalidParam(c, "cycle_key 半月标记不合法，应为 H1 或 H2")
+		return
+	}
+
+	firstOfMonth := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+	var startDate, endDate time.Time
+	if halfStr == "H1" {
+		startDate = firstOfMonth
+		endDate = firstOfMonth.AddDate(0, 0, 14)
+	} else {
+		startDate = firstOfMonth.AddDate(0, 0, 15)
+		endDate = firstOfMonth.AddDate(0, 1, -1)
+	}
+	startStr := startDate.Format("2006-01-02")
+	endStr := endDate.AddDate(0, 0, 1).Format("2006-01-02")
+	periodRange := startStr + " ~ " + endDate.Format("2006-01-02")
+
+	// 汇总各发行商收益
+	type distAgg struct {
+		DistributorID uint64
+		GrossCents    int64
+		IncomeCents   int64
+	}
+	var aggs []distAgg
+	s.db.Table("distributor_income_daily").
+		Select("distributor_id, COALESCE(SUM(gross_cents),0) AS gross_cents, COALESCE(SUM(income_cents),0) AS income_cents").
+		Where("stat_date >= ? AND stat_date < ?", startStr, endStr).
+		Group("distributor_id").Scan(&aggs)
+
+	if len(aggs) == 0 {
+		response.OK(c, gin.H{
+			"cycle_key":    cycleKey,
+			"period_range": periodRange,
+			"created":      0,
+			"message":      "该周期无发行商收益数据",
+		})
+		return
+	}
+
+	created := 0
+	skipped := 0
+	now := time.Now()
+
+	for _, a := range aggs {
+		if a.GrossCents <= 0 {
+			skipped++
+			continue
+		}
+
+		// 查重
+		var existCount int64
+		s.db.Model(&model.DistributorSettlement{}).
+			Where("distributor_id = ? AND cycle_key = ?", a.DistributorID, cycleKey).Count(&existCount)
+		if existCount > 0 {
+			skipped++
+			continue
+		}
+
+		gross := a.GrossCents
+		platformCents := gross * 45 / 100
+		netCents := gross * 55 / 100
+
+		st := model.DistributorSettlement{
+			SettlementNo:  generateBusinessNo("ST-DIST"),
+			DistributorID: a.DistributorID,
+			Period:        cycleKey[:7],
+			CycleKey:      cycleKey,
+			PeriodRange:   periodRange,
+			GrossCents:    gross,
+			PlatformCents: platformCents,
+			NetCents:      netCents,
+			Status:        model.DistSettlementPendingPayment,
+			OpenedAt:      &now,
+		}
+
+		err := s.db.Transaction(func(tx *gorm.DB) error {
+			// 事务内重新查重
+			var existCount int64
+			tx.Model(&model.DistributorSettlement{}).
+				Where("distributor_id = ? AND cycle_key = ?", a.DistributorID, cycleKey).Count(&existCount)
+			if existCount > 0 {
+				return nil
+			}
+
+			if err := tx.Create(&st).Error; err != nil {
+				if isUniqueViolation(err) {
+					return nil
+				}
+				return err
+			}
+
+			// 押金抵扣：行锁内读取冻结余额
+			var dist model.Distributor
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, a.DistributorID).Error; err != nil {
+				return err
+			}
+			deducted := int64(0)
+			if dist.DepositFrozenCents > 0 && gross > 0 {
+				deducted = dist.DepositFrozenCents
+				if deducted > gross {
+					deducted = gross
+				}
+			}
+			if deducted > 0 {
+				dist.DepositFrozenCents -= deducted
+				dist.DepositDeductedCents += deducted
+				if err := tx.Save(&dist).Error; err != nil {
+					return err
+				}
+				if err := s.recordDepositTx(tx, a.DistributorID, model.DepositTxDeduct, -deducted, dist.DepositAvailableCents, "settlement", st.SettlementNo, "收益抵扣押金", 0); err != nil {
+					return err
+				}
+			}
+
+			payable := gross - deducted
+			return tx.Model(&st).Updates(map[string]interface{}{
+				"deducted_deposit_cents": deducted,
+				"withdrawable_cents":     payable,
+				"payable_cents":          payable,
+			}).Error
+		})
+		if err != nil {
+			continue
+		}
+		created++
+	}
+
+	response.OK(c, gin.H{
+		"cycle_key":    cycleKey,
+		"period_range": periodRange,
+		"created":      created,
+		"skipped":      skipped,
+		"message":      fmt.Sprintf("成功生成 %d 笔发行商结算单（跳过 %d 笔已存在）", created, skipped),
+	})
+}
+
+// POST /admin/distributor-settlements/:id/confirm-receipt —— 确认到账 / 退回
 
 // POST /admin/distributor-settlements/:id/confirm-receipt —— 确认到账 / 退回
 func (s *Server) adminConfirmDistributorSettlement(c *gin.Context) {

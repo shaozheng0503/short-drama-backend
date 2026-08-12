@@ -63,65 +63,44 @@ func channelToPlatform(channel string) string {
 }
 
 // adminDownloadIncomeTemplate —— GET /v1/admin/finance/income/template.xlsx
-// 生成双 Sheet 收益导入模板：
-//   - Sheet1「创作者收入分成」：6 列（短剧名称|渠道|总收益|分成比例|日期|短剧ID），财务填写
-//   - Sheet2「发行商分成参考」：只读参考，说明系统自动按 55% 生成发行商收益 + 渠道映射
+// 生成单 Sheet 收益导入模板，7 列：
+//   - 短剧名称 | 渠道 | 总收益 | 创作者分成比例 | 发行商分成比例 | 日期 | 短剧ID
 //
-// 分成比例(D 列)：支持 50 / 50% / 0.5 三种写法，均表示 50%；留空则按该渠道的全局配置比例。
-// 短剧ID(F 列)用于解决名称重复时的歧义；不填则按名称匹配，名称唯一才能定位。
+// 创作者分成比例(D 列)：支持 50 / 50% / 0.5 三种写法，均表示 50%；留空则按该渠道的全局配置比例。
+// 发行商分成比例(E 列)：固定 55%，仅供参考，导入时不读此列（系统自动按 55% 生成发行商收益）。
+// 短剧ID(G 列)用于解决名称重复时的歧义；不填则按名称匹配，名称唯一才能定位。
 func (s *Server) adminDownloadIncomeTemplate(c *gin.Context) {
 	xl := excelize.NewFile()
 	defer xl.Close()
 
-	// ---- Sheet1：创作者收入分成 ----
-	sheet1 := "创作者收入分成"
-	xl.SetSheetName(xl.GetSheetName(0), sheet1)
-	headers := []string{"短剧名称", "渠道", "总收益", "分成比例(如50或50%或0.5,留空按配置)", "日期", "短剧ID(选填,名称重复时必填)"}
+	sheet := "收益导入模板"
+	xl.SetSheetName(xl.GetSheetName(0), sheet)
+	headers := []string{
+		"短剧名称", "渠道", "总收益",
+		"创作者分成比例(如50或50%或0.5,留空按配置)",
+		"发行商分成比例(固定55%,仅供参考)",
+		"日期", "短剧ID(选填,名称重复时必填)",
+	}
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
-		_ = xl.SetCellValue(sheet1, cell, h)
+		_ = xl.SetCellValue(sheet, cell, h)
 	}
 	samples := [][]interface{}{
-		{"总裁的逆袭新娘", "抖音", 123.45, "50%", "2026-05-26", ""},
-		{"总裁的逆袭新娘", "快手", 88.00, "", "2026-05-27", 42},
+		{"总裁的逆袭新娘", "抖音", 123.45, "50%", "55%", "2026-05-26", ""},
+		{"总裁的逆袭新娘", "快手", 88.00, "", "55%", "2026-05-27", 42},
 	}
 	for r, row := range samples {
 		for col, v := range row {
 			cell, _ := excelize.CoordinatesToCellName(col+1, r+2)
-			_ = xl.SetCellValue(sheet1, cell, v)
+			_ = xl.SetCellValue(sheet, cell, v)
 		}
 	}
-	_ = xl.SetColWidth(sheet1, "A", "A", 28)
-	_ = xl.SetColWidth(sheet1, "B", "C", 16)
-	_ = xl.SetColWidth(sheet1, "D", "D", 30)
-	_ = xl.SetColWidth(sheet1, "E", "E", 16)
-	_ = xl.SetColWidth(sheet1, "F", "F", 30)
-
-	// ---- Sheet2：发行商分成参考（只读） ----
-	sheet2 := "发行商分成参考"
-	xl.NewSheet(sheet2)
-	_ = xl.SetCellValue(sheet2, "A1", "说明：导入 Sheet1 后，系统自动按 55% 比例为认领该剧该平台的发行商生成收益记录")
-	_ = xl.SetCellValue(sheet2, "A3", "渠道→平台映射：")
-	_ = xl.SetCellValue(sheet2, "A4", "抖音")
-	_ = xl.SetCellValue(sheet2, "B4", "→ douyin")
-	_ = xl.SetCellValue(sheet2, "A5", "快手")
-	_ = xl.SetCellValue(sheet2, "B5", "→ kuaishou")
-	_ = xl.SetCellValue(sheet2, "A6", "视频号/微信视频号")
-	_ = xl.SetCellValue(sheet2, "B6", "→ wechat_video")
-	_ = xl.SetCellValue(sheet2, "A7", "B站/哔哩哔哩")
-	_ = xl.SetCellValue(sheet2, "B7", "→ bilibili")
-	_ = xl.SetCellValue(sheet2, "A9", "分成比例：固定 55%（shareBP=5500）")
-	_ = xl.SetCellValue(sheet2, "A11", "示例：")
-	_ = xl.SetCellValue(sheet2, "A12", "总收益")
-	_ = xl.SetCellValue(sheet2, "B12", "发行商实得(55%)")
-	_ = xl.SetCellValue(sheet2, "C12", "创作者实得(按Sheet1比例)")
-	_ = xl.SetCellValue(sheet2, "A13", 100.00)
-	_ = xl.SetCellValue(sheet2, "B13", 55.00)
-	_ = xl.SetCellValue(sheet2, "C13", 50.00)
-	_ = xl.SetCellValue(sheet2, "A15", "注意：本 Sheet 仅供参考，请勿填写或修改。导入时只读 Sheet1。")
-	_ = xl.SetColWidth(sheet2, "A", "A", 32)
-	_ = xl.SetColWidth(sheet2, "B", "B", 24)
-	_ = xl.SetColWidth(sheet2, "C", "C", 28)
+	_ = xl.SetColWidth(sheet, "A", "A", 28)
+	_ = xl.SetColWidth(sheet, "B", "C", 16)
+	_ = xl.SetColWidth(sheet, "D", "D", 30)
+	_ = xl.SetColWidth(sheet, "E", "E", 26)
+	_ = xl.SetColWidth(sheet, "F", "F", 16)
+	_ = xl.SetColWidth(sheet, "G", "G", 30)
 
 	var buf bytes.Buffer
 	if err := xl.Write(&buf); err != nil {
@@ -132,6 +111,9 @@ func (s *Server) adminDownloadIncomeTemplate(c *gin.Context) {
 	escaped := url.QueryEscape(filename)
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"income-template.xlsx\"; filename*=UTF-8''%s", escaped))
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
 	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buf.Bytes())
 }
 
@@ -141,15 +123,17 @@ func (s *Server) adminDownloadIncomeTemplate(c *gin.Context) {
 // 表格列（第 1 行表头，从第 2 行起读）：
 //
 //	A 列：短剧名称   B 列：渠道(抖音/快手/腾讯/B站/视频号…)   C 列：总收益
-//	D 列：分成比例(50 / 50% / 0.5，留空按渠道全局配置)   E 列：日期   F 列：短剧ID(选填)
+//	D 列：创作者分成比例(50 / 50% / 0.5，留空按渠道全局配置)
+//	新模板(7列)：E 列发行商分成比例(仅供参考,不读)  F 列日期  G 列短剧ID(选填)
+//	旧模板(6列)：E 列日期  F 列短剧ID(选填)
 //
 // 分成计算：创作者实得 = round(总收益 × 比例)。比例优先取行内 D 列；D 列留空则取
 //
 //	该渠道的全局配置(income.share_ratio.<渠道> → income.share_ratio.default)；
 //	都没配置则回落 100% 并在该行给出 warning，避免漏配时金额归零。
 //
-// 剧目匹配：F 列短剧ID 优先 —— 填了就按 ID 直接定位（仍校验名称一致性，不一致只给 warning）；
-// 没填则按 A 列名称匹配，名称在库内不唯一时该行 fail 并提示填 F 列。
+// 剧目匹配：短剧ID 列优先 —— 填了就按 ID 直接定位（仍校验名称一致性，不一致只给 warning）；
+// 没填则按 A 列名称匹配，名称在库内不唯一时该行 fail 并提示填短剧ID。
 // 增量导入：
 //   - 文件内同一 (剧ID, 渠道, 日期) 重复行会跳过并在 row_reports 标记 duplicate。
 //   - 库内已存在且「创作者实得」相同 → unchanged，不重复入账。
@@ -209,11 +193,17 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 		ratioBP         int  // 行内填的比例；rowHasRatio=false 时无效，待回落配置
 		rowHasRatio     bool // D 列是否填了比例
 		statDate        string
-		explicitDramaID uint64 // F 列填了才非 0
+		explicitDramaID uint64 // 短剧ID 列填了才非 0
 	}
 	var parsed []parsedRow
 	rowReports := make([]incomeImportRowReport, 0)
 	seenRows := map[string]int{}
+
+	// 检测模板格式：新模板 7 列（E 列为发行商分成比例），旧模板 6 列（E 列为日期）
+	dateCol, idCol := 4, 5 // 默认旧模板
+	if len(rows) > 0 && len(rows[0]) >= 5 && strings.Contains(rows[0][4], "发行商") {
+		dateCol, idCol = 5, 6 // 新模板
+	}
 
 	for i := 1; i < len(rows); i++ { // 跳过表头
 		row := rows[i]
@@ -222,8 +212,8 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 		if rowIsBlank(row) {
 			continue
 		}
-		if len(row) < 5 {
-			rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Status: "failed", Message: "列数不足（需 短剧名称/渠道/总收益/分成比例/日期，F 列短剧ID 选填；比例可留空）"})
+		if len(row) < dateCol+1 {
+			rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Status: "failed", Message: "列数不足（需 短剧名称/渠道/总收益/创作者分成比例/发行商分成比例/日期，G 列短剧ID 选填；比例可留空）"})
 			continue
 		}
 		title := strings.TrimSpace(row[0])
@@ -249,14 +239,14 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 		}
 		// 2026-07-06 改：先按 Excel 序列号解析（RawCellValue 模式下日期类型是 float 字符串），
 		// 解析失败再走字符串日期解析（兼容财务手打 "2024/7/3" 的情况）
-		statDate, ok := parseExcelDateCell(strings.TrimSpace(row[4]))
+		statDate, ok := parseExcelDateCell(strings.TrimSpace(row[dateCol]))
 		if !ok {
 			rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Status: "failed", Message: "日期格式应为 YYYY-MM-DD 或 Excel 日期单元格"})
 			continue
 		}
 		var explicitDramaID uint64
-		if len(row) >= 6 {
-			if idStr := strings.TrimSpace(row[5]); idStr != "" {
+	if len(row) >= idCol+1 {
+		if idStr := strings.TrimSpace(row[idCol]); idStr != "" {
 				// Excel 中数字单元格读出来可能是 "42" 或 "42.0"，TrimRight 一下小数点尾巴
 				if dot := strings.IndexByte(idStr, '.'); dot >= 0 {
 					tail := strings.TrimRight(idStr[dot+1:], "0")
@@ -266,7 +256,7 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 				}
 				v, eID := strconv.ParseUint(idStr, 10, 64)
 				if eID != nil || v == 0 {
-					rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, StatDate: statDate, Status: "failed", Message: "F 列 短剧ID 不合法"})
+					rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, StatDate: statDate, Status: "failed", Message: "短剧ID 不合法"})
 					continue
 				}
 				explicitDramaID = v
@@ -342,14 +332,14 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 				return msg
 			}
 
-			// 剧目匹配：F 列 dramaID 优先 → 否则按名称且要求唯一。
+			// 剧目匹配：dramaID 优先 → 否则按名称且要求唯一。
 			var drama model.Drama
 			if pr.explicitDramaID != 0 {
 				if err := tx.Select("id", "title", "creator_id").
 					Where("id = ?", pr.explicitDramaID).First(&drama).Error; err != nil {
 					if isNotFound(err) {
 						report.Status = "failed"
-						report.Message = fmt.Sprintf("F 列 短剧ID=%d 不存在，已跳过", pr.explicitDramaID)
+						report.Message = fmt.Sprintf("短剧ID=%d 不存在，已跳过", pr.explicitDramaID)
 						rowReports = append(rowReports, report)
 						continue
 					}
@@ -376,7 +366,7 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 						ids = append(ids, strconv.FormatUint(d.ID, 10))
 					}
 					report.Status = "failed"
-					report.Message = fmt.Sprintf("短剧名称不唯一（匹配到 %d 部，ID=[%s]），请在 F 列填写「短剧ID」定位", len(dramas), strings.Join(ids, ","))
+					report.Message = fmt.Sprintf("短剧名称不唯一（匹配到 %d 部，ID=[%s]），请填写「短剧ID」列定位", len(dramas), strings.Join(ids, ","))
 					rowReports = append(rowReports, report)
 					continue
 				}
