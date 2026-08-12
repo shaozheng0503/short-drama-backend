@@ -1302,8 +1302,8 @@ func (s *Server) adminMarkWithdrawalPaid(c *gin.Context) {
 				var inv model.Invoice
 				if err := s.db.First(&inv, *wNow.InvoiceID).Error; err == nil && inv.SettlementID > 0 {
 					var stNow model.Settlement
-					if err := s.db.First(&stNow, inv.SettlementID).Error; err == nil && stNow.Status != model.SettlementStatusSettled {
-						s.recordTransition("settlement", inv.SettlementID, stNow.Status, model.SettlementStatusSettled, "admin", &aid, "结算单完结（打款完成）", map[string]interface{}{
+					if err := s.db.First(&stNow, inv.SettlementID).Error; err == nil && stNow.Status != model.SettlementStatusPaid {
+						s.recordTransition("settlement", inv.SettlementID, stNow.Status, model.SettlementStatusPaid, "admin", &aid, "结算单完结（打款完成）", map[string]interface{}{
 							"withdrawal_id": id,
 						})
 					}

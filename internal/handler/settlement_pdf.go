@@ -69,12 +69,12 @@ func (s *Server) renderSettlementPDF(
 	pdf.CellFormat(0, 6, "结算月份："+st.Period, "", 1, "L", false, 0, "")
 	pdf.CellFormat(0, 6, "合同编号："+st.ContractNo, "", 1, "L", false, 0, "")
 	pdf.CellFormat(0, 6, "创作者 ID："+fmt.Sprintf("%d", st.CreatorID), "", 1, "L", false, 0, "")
-	if st.Status == model.SettlementStatusSettled {
-		pdf.CellFormat(0, 6, "状态：已结算", "", 1, "L", false, 0, "")
-	} else if st.Status == model.SettlementStatusVoid {
-		pdf.CellFormat(0, 6, "状态：已作废", "", 1, "L", false, 0, "")
+	if st.Status == model.SettlementStatusPaid {
+		pdf.CellFormat(0, 6, "状态：已付款（paid）", "", 1, "L", false, 0, "")
+	} else if st.Status == model.SettlementStatusInvoiced {
+		pdf.CellFormat(0, 6, "状态：已开票待付款（invoiced）", "", 1, "L", false, 0, "")
 	} else {
-		pdf.CellFormat(0, 6, "状态：未结算", "", 1, "L", false, 0, "")
+		pdf.CellFormat(0, 6, "状态："+st.Status, "", 1, "L", false, 0, "")
 	}
 	pdf.Ln(3)
 

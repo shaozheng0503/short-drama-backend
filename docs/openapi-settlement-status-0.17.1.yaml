@@ -35,7 +35,7 @@ components:
   schemas:
     SettlementStatus:
       type: string
-      description: 创作者结算单状态
+      description: 创作者结算单状态码
       enum:
       - unsettled
       - settled
@@ -44,15 +44,28 @@ components:
         unsettled: 未结算（结算单已生成，待财务确认结清）
         settled: 已结算（财务确认结清，终态）
         void: 已作废（财务手动关账，非正常流程）
+    SettlementStatusLabel:
+      type: string
+      description: 创作者结算单状态中文标签
+      enum:
+      - 未结算
+      - 已结算
+      - 已作废
     DistributorSettlementStatus:
       type: string
-      description: 发行商结算单状态
+      description: 发行商结算单状态码
       enum:
       - unsettled
       - settled
       x-enum-descriptions:
         unsettled: 未结算（结算单已生成，待确认结清）
         settled: 已结算（已确认结清，终态）
+    DistributorSettlementStatusLabel:
+      type: string
+      description: 发行商结算单状态中文标签
+      enum:
+      - 未结算
+      - 已结算
     CloseSettlementRequest:
       type: object
       required:
@@ -122,6 +135,8 @@ paths:
         description: 结算单状态
         schema:
           $ref: '#/components/schemas/SettlementStatus'
+          status_label:
+            $ref: '#/components/schemas/SettlementStatusLabel'
       - name: creator_id
         in: query
         description: 创作者 ID
@@ -189,6 +204,8 @@ paths:
                               type: integer
                             status:
                               $ref: '#/components/schemas/SettlementStatus'
+                              status_label:
+                                $ref: '#/components/schemas/SettlementStatusLabel'
                             opened_at:
                               type: string
                               format: date-time
@@ -241,6 +258,8 @@ paths:
                         type: integer
                       status:
                         $ref: '#/components/schemas/SettlementStatus'
+                        status_label:
+                          $ref: '#/components/schemas/SettlementStatusLabel'
         '409':
           description: 状态冲突（已结算/已作废/有活跃提现）
   /v1/admin/distributor-settlements:
@@ -259,6 +278,8 @@ paths:
         in: query
         schema:
           $ref: '#/components/schemas/DistributorSettlementStatus'
+          status_label:
+            $ref: '#/components/schemas/DistributorSettlementStatusLabel'
       - name: distributor_id
         in: query
         schema:
@@ -316,6 +337,8 @@ paths:
                               type: integer
                             status:
                               $ref: '#/components/schemas/DistributorSettlementStatus'
+                              status_label:
+                                $ref: '#/components/schemas/DistributorSettlementStatusLabel'
                             opened_at:
                               type: string
                               format: date-time
@@ -364,6 +387,8 @@ paths:
                         type: integer
                       status:
                         $ref: '#/components/schemas/DistributorSettlementStatus'
+                        status_label:
+                          $ref: '#/components/schemas/DistributorSettlementStatusLabel'
         '409':
           description: 状态冲突
   /v1/publisher/settlements:
@@ -382,6 +407,8 @@ paths:
         in: query
         schema:
           $ref: '#/components/schemas/DistributorSettlementStatus'
+          status_label:
+            $ref: '#/components/schemas/DistributorSettlementStatusLabel'
       - name: page
         in: query
         schema:
@@ -431,6 +458,8 @@ paths:
                         type: integer
                       status:
                         $ref: '#/components/schemas/DistributorSettlementStatus'
+                        status_label:
+                          $ref: '#/components/schemas/DistributorSettlementStatusLabel'
         '409':
           description: 仅未结算状态可提交打款信息
   /v1/creator/settlements:
@@ -449,6 +478,8 @@ paths:
         in: query
         schema:
           $ref: '#/components/schemas/SettlementStatus'
+          status_label:
+            $ref: '#/components/schemas/SettlementStatusLabel'
       - name: page
         in: query
         schema:

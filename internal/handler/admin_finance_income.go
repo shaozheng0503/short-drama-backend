@@ -425,10 +425,16 @@ func (s *Server) adminIncomePeriodSummary(c *gin.Context) {
 
 	settlementStatuses := make([]gin.H, 0, len(cycleKeys))
 	for ck := range cycleKeys {
+		// 财务周期汇总使用简化视图：将底层 5 个状态映射为 3 个汇总桶
+		// unsettled = draft + open + invoiced（未完结）
+		// settled   = paid（已付款，终态）
+		// void      = void（作废）
 		var unsettledCount, settledCount, voidCount int64
-		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, "unsettled").Count(&unsettledCount)
-		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, "settled").Count(&settledCount)
-		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, "void").Count(&voidCount)
+		s.db.Table("settlements").Where("cycle_key = ? AND status IN ?", ck, []string{
+			model.SettlementStatusDraft, model.SettlementStatusOpen, model.SettlementStatusInvoiced,
+		}).Count(&unsettledCount)
+		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, model.SettlementStatusPaid).Count(&settledCount)
+		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, model.SettlementStatusVoid).Count(&voidCount)
 		settlementStatuses = append(settlementStatuses, gin.H{
 			"cycle_key":         ck,
 			"unsettled_count":   unsettledCount,

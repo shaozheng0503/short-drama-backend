@@ -679,21 +679,26 @@ func (TaxBracket) TableName() string { return "tax_brackets" }
 
 // === 结算单 & 发票（2026-07-01 创作者结算+发票功能）===
 
-// Settlement 状态（2026-08-12 简化：只有未结算和已结算两个状态）：
-//   - unsettled ：未结算（结算单已生成，待财务确认结清）
-//   - settled   ：已结算（财务确认结清，终态）
-//   - void      ：作废（财务手动关账，非正常流程）
+// Settlement 状态：
+//   - draft      ：草稿，cron 自动生成中
+//   - open       ：待上传发票（创作者可下载对账单、上传发票、发起提现）
+//   - invoiced   ：发票已上传/审核中（提现可走，但等发票审核完才打款）
+//   - paid       ：已打款（结算单生命周期结束）
+//   - void       ：作废（财务手动关账）
 // 数据源：CreatorStatsDaily（按月汇总 income_cents）+ ChannelIncomeDaily（第三方渠道）
 const (
-	SettlementStatusUnsettled = "unsettled" // 未结算
-	SettlementStatusSettled   = "settled"   // 已结算
-	SettlementStatusVoid      = "void"      // 作废
+	SettlementStatusDraft    = "draft"
+	SettlementStatusOpen     = "open"
+	SettlementStatusInvoiced = "invoiced"
+	SettlementStatusPaid     = "paid"
+	SettlementStatusVoid     = "void"
 )
 
-// 发行商结算单状态（2026-08-12 简化：只有未结算和已结算两个状态）
+// 发行商结算单状态（发行商向平台打款模型）
 const (
-	DistSettlementUnsettled = "unsettled" // 未结算
-	DistSettlementSettled   = "settled"   // 已结算
+	DistSettlementPendingPayment    = "pending_payment"     // 待发行商打款
+	DistSettlementPaymentSubmitted  = "payment_submitted"   // 已打款/待确认
+	DistSettlementSettled           = "settled"             // 已到账（终态）
 )
 
 // Settlement —— 创作者结算单（按月 × 合同 × 创作者 一条）。
@@ -715,9 +720,9 @@ type Settlement struct {
 	GrossCents    int64      `gorm:"column:gross_cents;default:0" json:"gross_cents"`            // 订单总流水
 	PlatformCents int64      `gorm:"column:platform_cents;default:0" json:"platform_cents"`      // 平台抽成
 	NetCents      int64      `gorm:"column:net_cents;default:0" json:"net_cents"`                // 创作者净收入
-	Status        string     `gorm:"column:status;size:20;default:unsettled;index" json:"status"`
-	OpenedAt      *time.Time `gorm:"column:opened_at" json:"opened_at"`      // 生成时间
-	ClosedAt      *time.Time `gorm:"column:closed_at" json:"closed_at"`      // settled / void 时间
+	Status        string     `gorm:"column:status;size:20;default:open;index" json:"status"`
+	OpenedAt      *time.Time `gorm:"column:opened_at" json:"opened_at"`      // 进入 open 状态的时间
+	ClosedAt      *time.Time `gorm:"column:closed_at" json:"closed_at"`      // paid / void 时间
 	Remark        string     `gorm:"column:remark;size:255" json:"remark"`
 	CreatedAt     time.Time  `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt     time.Time  `gorm:"column:updated_at" json:"updated_at"`
@@ -1194,7 +1199,7 @@ type DistributorSettlement struct {
 	DeductedDepositCents int64      `gorm:"column:deducted_deposit_cents;default:0" json:"deducted_deposit_cents"` // 抵扣的押金
 	WithdrawableCents    int64      `gorm:"column:withdrawable_cents;default:0" json:"withdrawable_cents"`         // 兼容旧字段
 	PayableCents         int64      `gorm:"column:payable_cents;default:0" json:"payable_cents"`                   // 发行商应付平台金额 = gross - deducted_deposit
-	Status        string     `gorm:"column:status;size:20;default:unsettled;index" json:"status"`
+	Status        string     `gorm:"column:status;size:20;default:pending_payment;index" json:"status"`
 	OpenedAt      *time.Time `gorm:"column:opened_at" json:"opened_at"`
 	ClosedAt      *time.Time `gorm:"column:closed_at" json:"closed_at"`
 	// 打款信息（发行商提交）

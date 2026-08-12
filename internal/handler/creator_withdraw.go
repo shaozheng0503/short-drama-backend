@@ -113,7 +113,7 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 		if st.CreatorID != cid {
 			return errSettlementNotOwned
 		}
-		if st.Status == model.SettlementStatusSettled || st.Status == model.SettlementStatusVoid {
+		if st.Status == model.SettlementStatusPaid || st.Status == model.SettlementStatusVoid {
 			return errSettlementClosed
 		}
 
@@ -165,7 +165,12 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 			newInvoicePtr = &newInvoice
 		}
 
-		// 2026-08-12 简化状态：提现不再改变结算单状态，结算单只有 unsettled/settled
+		// settlement open → invoiced
+		if st.Status == model.SettlementStatusOpen {
+			if err := tx.Model(&st).Update("status", model.SettlementStatusInvoiced).Error; err != nil {
+				return err
+			}
+		}
 
 		// 扣 balance，加 frozen
 		if err := tx.Model(&model.Creator{}).Where("id = ?", cid).

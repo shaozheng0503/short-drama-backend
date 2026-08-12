@@ -22,10 +22,12 @@ func (s *Server) publisherSettlementSummary(c *gin.Context) {
 		return
 	}
 
-	// 未结清应付合计 = 所有 unsettled 状态结算单的 payable_cents 之和
+	// 未结清应付合计 = 所有非 settled 状态结算单的 payable_cents 之和
 	var outstandingPayable int64
 	s.db.Model(&model.DistributorSettlement{}).
-		Where("distributor_id = ? AND status = ?", id, model.DistSettlementUnsettled).
+		Where("distributor_id = ? AND status IN ?", id, []string{
+			model.DistSettlementPendingPayment, model.DistSettlementPaymentSubmitted,
+		}).
 		Select("COALESCE(SUM(payable_cents),0)").Scan(&outstandingPayable)
 
 	response.OK(c, gin.H{
@@ -150,11 +152,12 @@ func (s *Server) publisherSubmitRemittance(c *gin.Context) {
 			Where("id = ? AND distributor_id = ?", sid, id).First(&st).Error; err != nil {
 			return fmt.Errorf("结算单不存在")
 		}
-		// 事务内重新校验状态：简化后只有 unsettled/settled，settled 不可再提交打款信息
-		if st.Status != model.DistSettlementUnsettled {
-			return fmt.Errorf("仅未结算状态可提交打款信息，当前状态: %s", st.Status)
+		// 事务内重新校验状态：并发场景下另一个请求可能已把它改成 payment_submitted
+		if st.Status != model.DistSettlementPendingPayment {
+			return fmt.Errorf("仅待打款状态可提交，当前状态: %s", st.Status)
 		}
 		return tx.Model(&st).Updates(map[string]interface{}{
+			"status":                  model.DistSettlementPaymentSubmitted,
 			"transaction_no":          req.TransactionNo,
 			"paid_at":                 paidAt,
 			"payment_proof_file_key":  req.ProofFileKey,

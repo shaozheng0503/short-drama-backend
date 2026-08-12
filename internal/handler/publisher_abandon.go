@@ -140,9 +140,9 @@ func (s *Server) publisherCreateAbandon(c *gin.Context) {
 	// 检查是否有未完成的结算单
 	var pendingSettlements int64
 	s.db.Model(&model.DistributorSettlement{}).
-		Where("distributor_id = ? AND status = ?",
+		Where("distributor_id = ? AND status IN ?",
 			distID,
-			model.DistSettlementUnsettled).
+			[]string{model.DistSettlementPendingPayment, model.DistSettlementPaymentSubmitted}).
 		Count(&pendingSettlements)
 	if pendingSettlements > 0 {
 		response.Conflict(c, "存在未完成的结算单，请先完成结算后再申请放弃认领")

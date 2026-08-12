@@ -146,7 +146,7 @@ func (s *Server) runSettlementForCycle(cycleKey, startStr, endStr string) (int, 
 			GrossCents:    grossCents,
 			PlatformCents: platformCents,
 			NetCents:      a.IncomeCents,
-			Status:        model.SettlementStatusUnsettled,
+			Status:        model.SettlementStatusOpen,
 			OpenedAt:      &openedAt,
 			Remark:        "auto-cron-half-month",
 		}
@@ -167,7 +167,7 @@ func (s *Server) runSettlementForCycle(cycleKey, startStr, endStr string) (int, 
 			}
 			created++
 			// 2026-07-06 加 P1-5：时间线（系统事件）
-			s.recordTransition("settlement", st.ID, "", model.SettlementStatusUnsettled, "system", nil, "系统算账生成结算单（半月度）", map[string]interface{}{
+			s.recordTransition("settlement", st.ID, "", model.SettlementStatusOpen, "system", nil, "系统算账生成结算单（半月度）", map[string]interface{}{
 				"cycle_key":    cycleKey,
 				"period_range": periodRange,
 				"net_cents":    st.NetCents,
@@ -263,7 +263,7 @@ func (s *Server) recalcOpenSettlementsForDateRange(tx *gorm.DB, statDates []stri
 		}
 
 		for _, st := range settlements {
-			if st.Status != model.SettlementStatusUnsettled {
+			if st.Status != model.SettlementStatusOpen {
 				blocked++
 				continue
 			}
@@ -287,7 +287,7 @@ func (s *Server) recalcOpenSettlementsForDateRange(tx *gorm.DB, statDates []stri
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, st.ID).Error; err != nil {
 				return supplemented, blocked, err
 			}
-			if locked.Status != model.SettlementStatusUnsettled {
+			if locked.Status != model.SettlementStatusOpen {
 				blocked++
 				continue
 			}
@@ -308,7 +308,7 @@ func (s *Server) recalcOpenSettlementsForDateRange(tx *gorm.DB, statDates []stri
 				return supplemented, blocked, err
 			}
 
-			s.recordTransition("settlement", locked.ID, model.SettlementStatusUnsettled, model.SettlementStatusUnsettled, "system", nil,
+			s.recordTransition("settlement", locked.ID, model.SettlementStatusOpen, model.SettlementStatusOpen, "system", nil,
 				fmt.Sprintf("收入补录：净额 %d→%d（差额 %d）", oldNet, newNetCents, newNetCents-oldNet),
 				map[string]interface{}{
 					"cycle_key":      cycleKey,
@@ -346,7 +346,7 @@ func (s *Server) recalcOpenSettlementsForDateRange(tx *gorm.DB, statDates []stri
 		}
 
 		for _, dst := range distSettlements {
-			if dst.Status != model.DistSettlementUnsettled {
+			if dst.Status != model.DistSettlementPendingPayment {
 				blocked++
 				continue
 			}
@@ -370,7 +370,7 @@ func (s *Server) recalcOpenSettlementsForDateRange(tx *gorm.DB, statDates []stri
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, dst.ID).Error; err != nil {
 				return supplemented, blocked, err
 			}
-			if locked.Status != model.DistSettlementUnsettled {
+			if locked.Status != model.DistSettlementPendingPayment {
 				blocked++
 				continue
 			}
@@ -399,7 +399,7 @@ func (s *Server) recalcOpenSettlementsForDateRange(tx *gorm.DB, statDates []stri
 				return supplemented, blocked, err
 			}
 
-			s.recordTransition("distributor_settlement", locked.ID, model.DistSettlementUnsettled, model.DistSettlementUnsettled, "system", nil,
+			s.recordTransition("distributor_settlement", locked.ID, model.DistSettlementPendingPayment, model.DistSettlementPendingPayment, "system", nil,
 				fmt.Sprintf("收入补录：总额 %d→%d（差额 %d）", oldGross, newGrossCents, newGrossCents-oldGross),
 				map[string]interface{}{
 					"cycle_key":        cycleKey,
