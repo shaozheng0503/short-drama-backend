@@ -1,0 +1,308 @@
+openapi: 3.0.3
+info:
+  title: 短剧平台 - 结算系统改造 API（0.17.0）
+  description: |
+    本文档覆盖 2026-08-12 结算系统改造的接口变更，可直接导入 Apifox 覆盖对应接口。
+
+    ## 变更摘要
+    1. 新增 POST /v1/admin/distributor-settlements/generate —— 手动生成发行商结算单（原 cron 自动执行已停用）
+    2. 新增 GET /v1/admin/finance/income/period-summary —— 周期收益汇总查询
+    3. 收益导入模板变更为单 Sheet 7 列格式（创作者分成比例 + 发行商分成比例）
+    4. 收益导入后自动补录 open 状态的创作者结算单和 pending_payment 状态的发行商结算单
+  version: 0.17.0
+  contact:
+    name: Drama Platform API
+servers:
+- url: https://api.langzhi.top
+  description: 生产环境
+- url: https://api-dev.langzhi.top
+  description: 沙箱环境
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    DistributorSettlementGenerateRequest:
+      type: object
+      description: 发行商结算单生成请求（二选一：cycle_key 或 period+half）
+      properties:
+        cycle_key:
+          type: string
+          description: 周期标识，格式 YYYY-MM-H1/H2（如 2026-08-H1 表示 8 月上半月）
+          example: "2026-08-H1"
+        period:
+          type: string
+          description: 周期月份，格式 YYYY-MM（与 half 配合使用）
+          example: "2026-08"
+        half:
+          type: string
+          description: 半月标记（H1=1-15日，H2=16-月末）
+          enum: ["H1", "H2"]
+    DistributorSettlementGenerateResponse:
+      type: object
+      description: 发行商结算单生成结果
+      properties:
+        code:
+          type: integer
+          example: 0
+        message:
+          type: string
+          example: ok
+        data:
+          type: object
+          properties:
+            cycle_key:
+              type: string
+              description: 周期标识
+              example: "2026-08-H1"
+            period_range:
+              type: string
+              description: 周期日期范围
+              example: "2026-08-01 ~ 2026-08-15"
+            created:
+              type: integer
+              description: 新生成的结算单数量
+              example: 3
+            skipped:
+              type: integer
+              description: 跳过的数量（已存在或无收益）
+              example: 1
+            message:
+              type: string
+              description: 结果描述
+              example: "成功生成 3 笔发行商结算单（跳过 1 笔已存在）"
+    PeriodSummaryResponse:
+      type: object
+      description: 周期收益汇总
+      properties:
+        code:
+          type: integer
+          example: 0
+        message:
+          type: string
+          example: ok
+        data:
+          type: object
+          properties:
+            start:
+              type: string
+              format: date
+              description: 查询起始日期
+              example: "2026-08-01"
+            end:
+              type: string
+              format: date
+              description: 查询结束日期
+              example: "2026-08-15"
+            daily:
+              type: array
+              description: 每日汇总列表
+              items:
+                type: object
+                properties:
+                  stat_date:
+                    type: string
+                    format: date
+                    description: 统计日期
+                    example: "2026-08-01"
+                  creator_gross_cents:
+                    type: integer
+                    format: int64
+                    description: 创作者侧总收益（分）
+                    example: 50000
+                  creator_income_cents:
+                    type: integer
+                    format: int64
+                    description: 创作者实得收益（分）
+                    example: 35000
+                  creator_channel_count:
+                    type: integer
+                    description: 创作者侧渠道数
+                    example: 3
+                  creator_drama_count:
+                    type: integer
+                    description: 创作者侧短剧数
+                    example: 5
+                  distributor_gross_cents:
+                    type: integer
+                    format: int64
+                    description: 发行商侧总收益（分）
+                    example: 50000
+                  distributor_income_cents:
+                    type: integer
+                    format: int64
+                    description: 发行商实得收益（分，55%）
+                    example: 27500
+                  distributor_platform_count:
+                    type: integer
+                    description: 发行商侧平台数
+                    example: 2
+                  distributor_drama_count:
+                    type: integer
+                    description: 发行商侧短剧数
+                    example: 3
+            totals:
+              type: object
+              description: 周期合计
+              properties:
+                creator_gross_cents:
+                  type: integer
+                  format: int64
+                  description: 创作者侧总收益合计（分）
+                  example: 750000
+                creator_income_cents:
+                  type: integer
+                  format: int64
+                  description: 创作者实得收益合计（分）
+                  example: 525000
+                distributor_gross_cents:
+                  type: integer
+                  format: int64
+                  description: 发行商侧总收益合计（分）
+                  example: 750000
+                distributor_income_cents:
+                  type: integer
+                  format: int64
+                  description: 发行商实得收益合计（分）
+                  example: 412500
+            settlement_status:
+              type: object
+              description: 该周期结算单状态
+              properties:
+                cycle_keys:
+                  type: array
+                  items:
+                    type: string
+                  example: ["2026-08-H1"]
+                creator_settlements:
+                  type: integer
+                  description: 创作者结算单数
+                  example: 5
+                creator_settlement_status:
+                  type: string
+                  description: 创作者结算单状态（none/open/invoiced/paid）
+                  example: "open"
+                distributor_settlements:
+                  type: integer
+                  description: 发行商结算单数
+                  example: 3
+                distributor_settlement_status:
+                  type: string
+                  description: 发行商结算单状态（none/pending_payment/payment_submitted/settled）
+                  example: "pending_payment"
+paths:
+  /v1/admin/distributor-settlements/generate:
+    post:
+      tags:
+        - Admin - 发行商结算
+      summary: 手动生成发行商结算单
+      description: |
+        按半月周期（H1: 1-15日，H2: 16-月末）生成发行商结算单。
+
+        **背景**：原 cron 自动生成已停用，改为手动触发，与创作者结算单生成对称。
+
+        **逻辑**：
+        1. 汇总 distributor_income_daily 表中该周期的各发行商收益
+        2. 对每个发行商查重（同 distributor_id + cycle_key 不重复创建）
+        3. 计算分成：发行商 55%，平台 45%
+        4. 抵扣冻结押金（如有）
+        5. 返回创建/跳过数量
+
+        **权限**：需要 PermFinance 权限
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DistributorSettlementGenerateRequest'
+            examples:
+              byCycleKey:
+                summary: 通过 cycle_key 生成
+                value:
+                  cycle_key: "2026-08-H1"
+              byPeriodHalf:
+                summary: 通过 period + half 生成
+                value:
+                  period: "2026-08"
+                  half: "H1"
+      responses:
+        '200':
+          description: 生成成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DistributorSettlementGenerateResponse'
+        '400':
+          description: 参数错误
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: -1
+                  message:
+                    type: string
+                    example: "请提供 cycle_key 或 period+half"
+        '401':
+          description: 未登录
+        '403':
+          description: 无权限
+  /v1/admin/finance/income/period-summary:
+    get:
+      tags:
+        - Admin - 财务收益
+      summary: 周期收益汇总查询
+      description: |
+        查询指定日期范围内的收益汇总，包括创作者侧和发行商侧的每日收益数据，
+        以及该周期结算单的生成状态。用于财务导入收入前确认数据完整性。
+
+        **权限**：需要 PermFinance 权限
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: start
+          in: query
+          required: true
+          description: 起始日期（YYYY-MM-DD）
+          schema:
+            type: string
+            format: date
+          example: "2026-08-01"
+        - name: end
+          in: query
+          required: true
+          description: 结束日期（YYYY-MM-DD）
+          schema:
+            type: string
+            format: date
+          example: "2026-08-15"
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PeriodSummaryResponse'
+        '400':
+          description: 参数错误
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: -1
+                  message:
+                    type: string
+                    example: "start 和 end 必填（格式 YYYY-MM-DD）"
+        '401':
+          description: 未登录
+        '403':
+          description: 无权限
