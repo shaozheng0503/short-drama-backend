@@ -201,6 +201,7 @@ func (s *Server) creatorListSettlements(c *gin.Context) {
 			"settlement_no": r.SettlementNo,
 			"cycle_key":     r.CycleKey,
 			"status":        r.Status,
+			"status_label":  settlementStatusLabel(r.Status),
 			"gross_cents":   r.GrossCents,
 			"net_cents":     r.NetCents,
 		})
@@ -417,6 +418,7 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		"gross_cents":    st.GrossCents,
 		"net_cents":      st.NetCents,
 		"status":         st.Status,
+		"status_label":   settlementStatusLabel(st.Status),
 		"remark":         st.Remark,
 		"created_at":     st.CreatedAt,
 		"closed_at":      st.ClosedAt,

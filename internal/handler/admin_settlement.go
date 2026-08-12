@@ -19,6 +19,32 @@ import (
 
 // 0.14.0 删除 Admin 发票列表/详情/审核接口（发票跟提现绑定，通过提现记录查看）
 
+// settlementStatusLabel 将创作者结算单状态码转为中文标签
+func settlementStatusLabel(status string) string {
+	switch status {
+	case model.SettlementStatusUnsettled:
+		return "未结算"
+	case model.SettlementStatusSettled:
+		return "已结算"
+	case model.SettlementStatusVoid:
+		return "已作废"
+	default:
+		return status
+	}
+}
+
+// distSettlementStatusLabel 将发行商结算单状态码转为中文标签
+func distSettlementStatusLabel(status string) string {
+	switch status {
+	case model.DistSettlementUnsettled:
+		return "未结算"
+	case model.DistSettlementSettled:
+		return "已结算"
+	default:
+		return status
+	}
+}
+
 // === Admin 侧：结算单 ===
 
 // adminListSettlements —— GET /v1/admin/settlements
@@ -79,6 +105,7 @@ func (s *Server) adminListSettlements(c *gin.Context) {
 			"creator_name":  creatorNameMap[r.CreatorID],
 			"cycle_key":     r.CycleKey,
 			"status":        r.Status,
+			"status_label":  settlementStatusLabel(r.Status),
 			"gross_cents":   r.GrossCents,
 			"net_cents":     r.NetCents,
 		})
@@ -154,6 +181,7 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 		"gross_cents":   st.GrossCents,
 		"net_cents":     st.NetCents,
 		"status":        st.Status,
+		"status_label":  settlementStatusLabel(st.Status),
 		"remark":        st.Remark,
 		"opened_at":     st.OpenedAt,
 		"closed_at":     st.ClosedAt,

@@ -1,0 +1,464 @@
+openapi: 3.0.3
+info:
+  title: 短剧平台 - 结算单状态简化 API（0.17.1）
+  description: |
+    本文档覆盖 2026-08-12 结算单状态简化的接口变更，可直接导入 Apifox 覆盖对应接口。
+
+    ## 变更摘要
+    1. 创作者结算单状态从 5 个（draft/open/invoiced/paid/void）简化为 3 个（unsettled/settled/void）
+       - 正常流程只有两个状态：unsettled（未结算）→ settled（已结算）
+       - void（作废）为管理操作，非正常流程
+    2. 发行商结算单状态从 3 个（pending_payment/payment_submitted/settled）简化为 2 个（unsettled/settled）
+    3. 上传发票不再改变结算单状态
+    4. 创作者提现不再改变结算单状态
+    5. 发行商打款提交不再改变结算单状态（仅记录打款信息）
+    6. POST /v1/admin/settlements/:id/close 的 mark_paid 动作现在将状态设为 settled
+    7. POST /v1/admin/distributor-settlements/:id/confirm-receipt 现在从 unsettled 直接改为 settled
+
+    ## 状态枚举
+    - 创作者结算单 status: unsettled / settled / void
+    - 发行商结算单 status: unsettled / settled
+  version: 0.17.1
+  contact:
+    name: Drama Platform API
+servers:
+- url: https://api.langzhi.top
+  description: 生产环境
+- url: https://api-dev.langzhi.top
+  description: 沙箱环境
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    SettlementStatus:
+      type: string
+      description: 创作者结算单状态
+      enum:
+      - unsettled
+      - settled
+      - void
+      x-enum-descriptions:
+        unsettled: 未结算（结算单已生成，待财务确认结清）
+        settled: 已结算（财务确认结清，终态）
+        void: 已作废（财务手动关账，非正常流程）
+    DistributorSettlementStatus:
+      type: string
+      description: 发行商结算单状态
+      enum:
+      - unsettled
+      - settled
+      x-enum-descriptions:
+        unsettled: 未结算（结算单已生成，待确认结清）
+        settled: 已结算（已确认结清，终态）
+    CloseSettlementRequest:
+      type: object
+      required:
+      - action
+      properties:
+        action:
+          type: string
+          enum:
+          - mark_paid
+          - void
+          description: |
+            mark_paid：结算单 → settled（已结算）
+            void：作废
+        remark:
+          type: string
+          description: 关账备注
+    ConfirmReceiptRequest:
+      type: object
+      required:
+      - action
+      properties:
+        action:
+          type: string
+          enum:
+          - confirm
+          - reject
+          description: |
+            confirm：结算单 → settled（已结算）
+            reject：退回（保持 unsettled，回滚押金抵扣）
+        remark:
+          type: string
+          description: 退回时必填，退回原因
+    RemittanceRequest:
+      type: object
+      required:
+      - transaction_no
+      - paid_at
+      properties:
+        transaction_no:
+          type: string
+          description: 银行流水号
+        paid_at:
+          type: string
+          format: date-time
+          description: 实际打款时间（RFC3339，如 2026-07-16T15:00:00+08:00）
+        proof_file_key:
+          type: string
+          description: 打款凭证 COS key
+        remark:
+          type: string
+          description: 打款备注
+paths:
+  /v1/admin/settlements:
+    get:
+      tags:
+      - Admin - 创作者结算
+      summary: 创作者结算单列表
+      description: |
+        财务/超管查看所有结算单，支持按状态筛选。
+
+        **状态枚举变更**：unsettled（未结算）/ settled（已结算）/ void（已作废）
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: status
+        in: query
+        description: 结算单状态
+        schema:
+          $ref: '#/components/schemas/SettlementStatus'
+      - name: creator_id
+        in: query
+        description: 创作者 ID
+        schema:
+          type: integer
+      - name: period
+        in: query
+        description: 周期月份（YYYY-MM）
+        schema:
+          type: string
+      - name: keyword
+        in: query
+        description: 关键词（结算单号/备注）
+        schema:
+          type: string
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: integer
+                            settlement_no:
+                              type: string
+                            creator_id:
+                              type: integer
+                            cycle_key:
+                              type: string
+                              example: "2026-08-H1"
+                            period:
+                              type: string
+                              example: "2026-08"
+                            period_range:
+                              type: string
+                              example: "2026-08-01 ~ 2026-08-15"
+                            gross_cents:
+                              type: integer
+                            platform_cents:
+                              type: integer
+                            net_cents:
+                              type: integer
+                            status:
+                              $ref: '#/components/schemas/SettlementStatus'
+                            opened_at:
+                              type: string
+                              format: date-time
+                            closed_at:
+                              type: string
+                              format: date-time
+                              nullable: true
+                      total:
+                        type: integer
+                      page:
+                        type: integer
+                      page_size:
+                        type: integer
+  /v1/admin/settlements/:id/close:
+    post:
+      tags:
+      - Admin - 创作者结算
+      summary: 手动关账（结算/作废）
+      description: |
+        财务手动关账结算单。
+
+        **状态变更**：
+        - mark_paid：unsettled → settled（已结算）
+        - void：unsettled → void（作废，需先驳回关联提现）
+
+        **权限**：需要 PermFinance 权限
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloseSettlementRequest'
+      responses:
+        '200':
+          description: 关账成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      status:
+                        $ref: '#/components/schemas/SettlementStatus'
+        '409':
+          description: 状态冲突（已结算/已作废/有活跃提现）
+  /v1/admin/distributor-settlements:
+    get:
+      tags:
+      - Admin - 发行商结算
+      summary: 发行商结算单列表
+      description: |
+        查看所有发行商结算单，支持按状态筛选。
+
+        **状态枚举变更**：unsettled（未结算）/ settled（已结算）
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: status
+        in: query
+        schema:
+          $ref: '#/components/schemas/DistributorSettlementStatus'
+      - name: distributor_id
+        in: query
+        schema:
+          type: integer
+      - name: cycle_key
+        in: query
+        schema:
+          type: string
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: integer
+                            settlement_no:
+                              type: string
+                            distributor_id:
+                              type: integer
+                            cycle_key:
+                              type: string
+                            period_range:
+                              type: string
+                            gross_cents:
+                              type: integer
+                            platform_cents:
+                              type: integer
+                            net_cents:
+                              type: integer
+                            payable_cents:
+                              type: integer
+                            status:
+                              $ref: '#/components/schemas/DistributorSettlementStatus'
+                            opened_at:
+                              type: string
+                              format: date-time
+                            closed_at:
+                              type: string
+                              format: date-time
+                              nullable: true
+                      total:
+                        type: integer
+  /v1/admin/distributor-settlements/:id/confirm-receipt:
+    post:
+      tags:
+      - Admin - 发行商结算
+      summary: 确认到账/退回
+      description: |
+        管理员确认发行商结算单到账或退回。
+
+        **状态变更**：
+        - confirm：unsettled → settled（已结算）
+        - reject：保持 unsettled，回滚押金抵扣
+
+        **权限**：需要 PermFinance 权限
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmReceiptRequest'
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      status:
+                        $ref: '#/components/schemas/DistributorSettlementStatus'
+        '409':
+          description: 状态冲突
+  /v1/publisher/settlements:
+    get:
+      tags:
+      - Publisher - 发行商结算
+      summary: 发行商结算单列表
+      description: |
+        发行商查看自己的结算单。
+
+        **状态枚举变更**：unsettled（未结算）/ settled（已结算）
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: status
+        in: query
+        schema:
+          $ref: '#/components/schemas/DistributorSettlementStatus'
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+      responses:
+        '200':
+          description: 查询成功
+  /v1/publisher/settlements/:id/remittance:
+    post:
+      tags:
+      - Publisher - 发行商结算
+      summary: 提交打款信息
+      description: |
+        发行商提交打款信息（银行流水号、打款凭证等）。
+
+        **状态变更**：不改变结算单状态（2026-08-12 简化）
+        仅记录打款信息，结算单状态仍为 unsettled，等管理员确认到账后变为 settled。
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemittanceRequest'
+      responses:
+        '200':
+          description: 提交成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      status:
+                        $ref: '#/components/schemas/DistributorSettlementStatus'
+        '409':
+          description: 仅未结算状态可提交打款信息
+  /v1/creator/settlements:
+    get:
+      tags:
+      - Creator - 创作者结算
+      summary: 创作者结算单列表
+      description: |
+        创作者查看自己的结算单。
+
+        **状态枚举变更**：unsettled（未结算）/ settled（已结算）/ void（已作废）
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: status
+        in: query
+        schema:
+          $ref: '#/components/schemas/SettlementStatus'
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+      responses:
+        '200':
+          description: 查询成功

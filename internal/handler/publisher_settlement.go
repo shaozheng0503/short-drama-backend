@@ -56,6 +56,7 @@ func (s *Server) publisherListSettlements(c *gin.Context) {
 			"cycle_key":              r.CycleKey,
 			"period_range":           r.PeriodRange,
 			"status":                 r.Status,
+			"status_label":           distSettlementStatusLabel(r.Status),
 			"gross_cents":            r.GrossCents,
 			"deducted_deposit_cents": r.DeductedDepositCents,
 			"payable_cents":          r.PayableCents,
