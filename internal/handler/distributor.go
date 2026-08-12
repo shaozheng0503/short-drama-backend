@@ -11,6 +11,7 @@ import (
 	"ai-drama-platform/internal/sms"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
@@ -66,6 +67,85 @@ func (s *Server) distributorLogin(c *gin.Context) {
 		"token":       token,
 		"distributor": distributorBriefView(dist),
 	})
+}
+
+// ============================================================
+// 发行商 密码登录（支付宝审核需要）
+// ============================================================
+
+type distributorPasswordLoginRequest struct {
+	Phone    string `json:"phone" binding:"required"`
+	Password string `json:"password" binding:"required"`
+}
+
+// POST /v1/distributor/auth/login-password
+func (s *Server) distributorPasswordLogin(c *gin.Context) {
+	var req distributorPasswordLoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "phone 与 password 必填")
+		return
+	}
+	if !sms.ValidPhone(req.Phone) {
+		response.InvalidParam(c, "手机号格式不正确")
+		return
+	}
+
+	var dist model.Distributor
+	if err := s.db.Where("phone = ?", req.Phone).First(&dist).Error; err != nil {
+		if isNotFound(err) {
+			response.InvalidParam(c, "账号或密码错误")
+			return
+		}
+		response.ServerError(c, "登录失败")
+		return
+	}
+	if dist.Status == model.StatusBanned {
+		response.Forbidden(c, "账号已被封禁")
+		return
+	}
+	if dist.PasswordHash == "" {
+		response.InvalidParam(c, "该账号未设置密码，请先用短信验证码登录后设置密码")
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(dist.PasswordHash), []byte(req.Password)); err != nil {
+		response.InvalidParam(c, "账号或密码错误")
+		return
+	}
+
+	token, _, err := middleware.IssueToken(s.cfg, middleware.SubjectDistributor, dist.ID)
+	if err != nil {
+		response.ServerError(c, "签发 token 失败")
+		return
+	}
+
+	response.OK(c, gin.H{
+		"token":       token,
+		"distributor": distributorBriefView(&dist),
+	})
+}
+
+// POST /v1/distributor/auth/set-password（需已登录）
+func (s *Server) distributorSetPassword(c *gin.Context) {
+	id := middleware.CurrentID(c)
+	var req struct {
+		Password string `json:"password" binding:"required,min=6"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "密码至少 6 位")
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), s.cfg.BcryptCost)
+	if err != nil {
+		response.ServerError(c, "密码加密失败")
+		return
+	}
+	if err := s.db.Model(&model.Distributor{}).Where("id = ?", id).
+		Update("password_hash", string(hash)).Error; err != nil {
+		response.ServerError(c, "设置密码失败")
+		return
+	}
+	response.OK(c, gin.H{"message": "密码设置成功"})
 }
 
 func (s *Server) findOrCreateDistributor(phone string) (*model.Distributor, error) {

@@ -63,18 +63,23 @@ func channelToPlatform(channel string) string {
 }
 
 // adminDownloadIncomeTemplate —— GET /v1/admin/finance/income/template.xlsx
-// 生成「短剧名称 + 渠道 + 总收益 + 分成比例 + 日期 + 短剧ID(选填)」六列收益导入模板。
+// 生成双 Sheet 收益导入模板：
+//   - Sheet1「创作者收入分成」：6 列（短剧名称|渠道|总收益|分成比例|日期|短剧ID），财务填写
+//   - Sheet2「发行商分成参考」：只读参考，说明系统自动按 55% 生成发行商收益 + 渠道映射
+//
 // 分成比例(D 列)：支持 50 / 50% / 0.5 三种写法，均表示 50%；留空则按该渠道的全局配置比例。
 // 短剧ID(F 列)用于解决名称重复时的歧义；不填则按名称匹配，名称唯一才能定位。
 func (s *Server) adminDownloadIncomeTemplate(c *gin.Context) {
 	xl := excelize.NewFile()
 	defer xl.Close()
 
-	sheet := "Sheet1"
+	// ---- Sheet1：创作者收入分成 ----
+	sheet1 := "创作者收入分成"
+	xl.SetSheetName(xl.GetSheetName(0), sheet1)
 	headers := []string{"短剧名称", "渠道", "总收益", "分成比例(如50或50%或0.5,留空按配置)", "日期", "短剧ID(选填,名称重复时必填)"}
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
-		_ = xl.SetCellValue(sheet, cell, h)
+		_ = xl.SetCellValue(sheet1, cell, h)
 	}
 	samples := [][]interface{}{
 		{"总裁的逆袭新娘", "抖音", 123.45, "50%", "2026-05-26", ""},
@@ -83,14 +88,40 @@ func (s *Server) adminDownloadIncomeTemplate(c *gin.Context) {
 	for r, row := range samples {
 		for col, v := range row {
 			cell, _ := excelize.CoordinatesToCellName(col+1, r+2)
-			_ = xl.SetCellValue(sheet, cell, v)
+			_ = xl.SetCellValue(sheet1, cell, v)
 		}
 	}
-	_ = xl.SetColWidth(sheet, "A", "A", 28)
-	_ = xl.SetColWidth(sheet, "B", "C", 16)
-	_ = xl.SetColWidth(sheet, "D", "D", 30)
-	_ = xl.SetColWidth(sheet, "E", "E", 16)
-	_ = xl.SetColWidth(sheet, "F", "F", 30)
+	_ = xl.SetColWidth(sheet1, "A", "A", 28)
+	_ = xl.SetColWidth(sheet1, "B", "C", 16)
+	_ = xl.SetColWidth(sheet1, "D", "D", 30)
+	_ = xl.SetColWidth(sheet1, "E", "E", 16)
+	_ = xl.SetColWidth(sheet1, "F", "F", 30)
+
+	// ---- Sheet2：发行商分成参考（只读） ----
+	sheet2 := "发行商分成参考"
+	xl.NewSheet(sheet2)
+	_ = xl.SetCellValue(sheet2, "A1", "说明：导入 Sheet1 后，系统自动按 55% 比例为认领该剧该平台的发行商生成收益记录")
+	_ = xl.SetCellValue(sheet2, "A3", "渠道→平台映射：")
+	_ = xl.SetCellValue(sheet2, "A4", "抖音")
+	_ = xl.SetCellValue(sheet2, "B4", "→ douyin")
+	_ = xl.SetCellValue(sheet2, "A5", "快手")
+	_ = xl.SetCellValue(sheet2, "B5", "→ kuaishou")
+	_ = xl.SetCellValue(sheet2, "A6", "视频号/微信视频号")
+	_ = xl.SetCellValue(sheet2, "B6", "→ wechat_video")
+	_ = xl.SetCellValue(sheet2, "A7", "B站/哔哩哔哩")
+	_ = xl.SetCellValue(sheet2, "B7", "→ bilibili")
+	_ = xl.SetCellValue(sheet2, "A9", "分成比例：固定 55%（shareBP=5500）")
+	_ = xl.SetCellValue(sheet2, "A11", "示例：")
+	_ = xl.SetCellValue(sheet2, "A12", "总收益")
+	_ = xl.SetCellValue(sheet2, "B12", "发行商实得(55%)")
+	_ = xl.SetCellValue(sheet2, "C12", "创作者实得(按Sheet1比例)")
+	_ = xl.SetCellValue(sheet2, "A13", 100.00)
+	_ = xl.SetCellValue(sheet2, "B13", 55.00)
+	_ = xl.SetCellValue(sheet2, "C13", 50.00)
+	_ = xl.SetCellValue(sheet2, "A15", "注意：本 Sheet 仅供参考，请勿填写或修改。导入时只读 Sheet1。")
+	_ = xl.SetColWidth(sheet2, "A", "A", 32)
+	_ = xl.SetColWidth(sheet2, "B", "B", 24)
+	_ = xl.SetColWidth(sheet2, "C", "C", 28)
 
 	var buf bytes.Buffer
 	if err := xl.Write(&buf); err != nil {
@@ -277,6 +308,7 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 	duplicateRows := 0
 	failedRows := 0
 	var totalDelta int64
+	var supplementedSettlements, blockedSettlements int
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		for _, pr := range parsed {
 			// 解析比例：行内优先；行内留空则查渠道配置；都没有回落 100% 并 warning。
@@ -452,8 +484,27 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 
 		rowReports = append(rowReports, report)
 	}
-	return nil
-})
+
+		// ---- 2026-08-12 收入补录：重算受影响的 open 状态结算单 ----
+		if !dryRun {
+			statDateSet := map[string]struct{}{}
+			for _, pr := range parsed {
+				statDateSet[pr.statDate] = struct{}{}
+			}
+			statDates := make([]string, 0, len(statDateSet))
+			for ds := range statDateSet {
+				statDates = append(statDates, ds)
+			}
+			sup, blk, err := s.recalcOpenSettlementsForDateRange(tx, statDates)
+			if err != nil {
+				return err
+			}
+			supplementedSettlements = sup
+			blockedSettlements = blk
+		}
+
+		return nil
+	})
 	if err != nil {
 		response.ServerError(c, "导入失败，已回滚")
 		return
@@ -469,18 +520,20 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 	}
 
 	result := gin.H{
-		"batch_no":           batchNo,
-		"dry_run":            dryRun,
-		"processed_rows":     len(rowReports),
-		"imported_rows":      createdRows + updatedRows,
-		"created_rows":       createdRows,
-		"updated_rows":       updatedRows,
-		"unchanged_rows":     unchangedRows,
-		"duplicate_rows":     duplicateRows,
-		"failed_rows":        failedRows,
-		"income_delta_cents": totalDelta,
-		"row_reports":        rowReports,
-		"errors":             incomeImportErrors(rowReports),
+		"batch_no":                   batchNo,
+		"dry_run":                    dryRun,
+		"processed_rows":             len(rowReports),
+		"imported_rows":              createdRows + updatedRows,
+		"created_rows":               createdRows,
+		"updated_rows":               updatedRows,
+		"unchanged_rows":             unchangedRows,
+		"duplicate_rows":             duplicateRows,
+		"failed_rows":                failedRows,
+		"income_delta_cents":         totalDelta,
+		"row_reports":                rowReports,
+		"errors":                     incomeImportErrors(rowReports),
+		"supplemented_settlements":   supplementedSettlements,
+		"blocked_settlements":        blockedSettlements,
 	}
 	// dry_run 只试算不落库，也不记录批次。
 	if dryRun {

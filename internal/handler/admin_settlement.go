@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"ai-drama-platform/internal/model"
@@ -160,8 +161,89 @@ func (s *Server) adminGetSettlement(c *gin.Context) {
 	})
 }
 
-// adminGenerateSettlements —— 已废弃，2026-07-28 邱嘉诚要求删除
-// 保留注释标记位置
+// adminGenerateSettlements —— POST /v1/admin/settlements/generate
+// 2026-08-12 恢复：停 cron 自动执行后，改为财务确认收入导入完成后手动触发生成。
+// 请求体：
+//   {"cycle_key": "2026-08-H1"}          // 直接指定 cycle_key
+//   {"period": "2026-08", "half": "H1"}    // 或者 period + half 组合
+type adminGenerateSettlementsRequest struct {
+	CycleKey string `json:"cycle_key"` // 例如 "2026-08-H1"
+	Period   string `json:"period"`    // 例如 "2026-08"，与 half 配合使用
+	Half     string `json:"half"`      // "H1" 或 "H2"
+}
+
+func (s *Server) adminGenerateSettlements(c *gin.Context) {
+	var req adminGenerateSettlementsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParam(c, "请提供 cycle_key 或 period+half")
+		return
+	}
+
+	cycleKey := req.CycleKey
+	if cycleKey == "" {
+		if req.Period == "" || req.Half == "" {
+			response.InvalidParam(c, "请提供 cycle_key 或 period+half")
+			return
+		}
+		half := req.Half
+		if half != "H1" && half != "H2" {
+			response.InvalidParam(c, "half 只能是 H1 或 H2")
+			return
+		}
+		cycleKey = req.Period + "-" + half
+	}
+
+	// 解析 cycleKey → 日期范围
+	// cycleKey 格式：YYYY-MM-H1 / YYYY-MM-H2
+	// H1: 1日~15日, H2: 16日~月末
+	yearStr := cycleKey[:4]
+	monthStr := cycleKey[5:7]
+	halfStr := cycleKey[8:]
+	year, err := strconv.Atoi(yearStr)
+	if err != nil {
+		response.InvalidParam(c, "cycle_key 格式不合法，应为 YYYY-MM-H1/H2")
+		return
+	}
+	month := time.January
+	for i := 1; i <= 12; i++ {
+		if fmt.Sprintf("%02d", i) == monthStr {
+			month = time.Month(i)
+			break
+		}
+	}
+	if month < 1 || month > 12 {
+		response.InvalidParam(c, "cycle_key 月份不合法")
+		return
+	}
+	if halfStr != "H1" && halfStr != "H2" {
+		response.InvalidParam(c, "cycle_key 半月标记不合法，应为 H1 或 H2")
+		return
+	}
+
+	firstOfMonth := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC)
+	var startDate, endDate time.Time
+	if halfStr == "H1" {
+		startDate = firstOfMonth
+		endDate = firstOfMonth.AddDate(0, 0, 14) // 15日
+	} else {
+		startDate = firstOfMonth.AddDate(0, 0, 15) // 16日
+		endDate = firstOfMonth.AddDate(0, 1, -1)    // 月末
+	}
+	startStr := startDate.Format("2006-01-02")
+	endStr := endDate.AddDate(0, 0, 1).Format("2006-01-02") // 半开区间
+
+	count, err := s.runSettlementForCycle(cycleKey, startStr, endStr)
+	if err != nil {
+		response.ServerError(c, fmt.Sprintf("生成结算单失败：%v", err))
+		return
+	}
+	response.OK(c, gin.H{
+		"cycle_key":  cycleKey,
+		"period_range": startStr + " ~ " + endStr,
+		"created":    count,
+		"message":    fmt.Sprintf("成功生成 %d 笔结算单", count),
+	})
+}
 
 type adminCloseSettlementRequest struct {
 	Action string `json:"action" binding:"required"` // "mark_paid" / "void"

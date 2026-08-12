@@ -1037,6 +1037,7 @@ const (
 type Distributor struct {
 	ID                   uint64    `gorm:"primaryKey;column:id" json:"id"`
 	Phone                string    `gorm:"column:phone;size:20;uniqueIndex" json:"phone"`
+	PasswordHash         string    `gorm:"column:password_hash;size:255" json:"-"`
 	Name                 string    `gorm:"column:name;size:64" json:"name"`
 	Nickname             string    `gorm:"column:nickname;size:64" json:"nickname"`
 	AvatarURL            string    `gorm:"column:avatar_url;size:512" json:"avatar_url"`

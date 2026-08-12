@@ -2,7 +2,9 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+	"time"
 
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
@@ -333,4 +335,120 @@ func int64FromAny(v interface{}) int64 {
 	default:
 		return 0
 	}
+}
+
+// adminIncomePeriodSummary —— GET /v1/admin/finance/income/period-summary?start=2026-08-01&end=2026-08-15
+// 2026-08-12 新增：财务导入收入前查看某周期的汇总，判断是否可以生成结算单。
+// 返回每日创作者收入、发行商收入、渠道数、短剧数，以及该周期结算单状态。
+func (s *Server) adminIncomePeriodSummary(c *gin.Context) {
+	startStr := strings.TrimSpace(c.Query("start"))
+	endStr := strings.TrimSpace(c.Query("end"))
+	if startStr == "" || endStr == "" {
+		response.InvalidParam(c, "start 和 end 必填（格式 YYYY-MM-DD）")
+		return
+	}
+
+	// --- 创作者收入按天汇总 ---
+	type creatorDailyAgg struct {
+		StatDate     string
+		GrossCents   int64
+		IncomeCents  int64
+		ChannelCount int64
+		DramaCount   int64
+	}
+	var creatorAggs []creatorDailyAgg
+	s.db.Table("channel_income_daily").
+		Select("stat_date, COALESCE(SUM(gross_cents),0) AS gross_cents, COALESCE(SUM(income_cents),0) AS income_cents, COUNT(DISTINCT channel) AS channel_count, COUNT(DISTINCT drama_id) AS drama_count").
+		Where("stat_date >= ? AND stat_date <= ?", startStr, endStr).
+		Group("stat_date").
+		Order("stat_date asc").
+		Scan(&creatorAggs)
+
+	// --- 发行商收入按天汇总 ---
+	type distDailyAgg struct {
+		StatDate     string
+		GrossCents   int64
+		IncomeCents  int64
+		PlatformCount int64
+		DramaCount   int64
+	}
+	var distAggs []distDailyAgg
+	s.db.Table("distributor_income_daily").
+		Select("stat_date, COALESCE(SUM(gross_cents),0) AS gross_cents, COALESCE(SUM(income_cents),0) AS income_cents, COUNT(DISTINCT platform) AS platform_count, COUNT(DISTINCT drama_id) AS drama_count").
+		Where("stat_date >= ? AND stat_date <= ?", startStr, endStr).
+		Group("stat_date").
+		Order("stat_date asc").
+		Scan(&distAggs)
+
+	distMap := map[string]distDailyAgg{}
+	for _, d := range distAggs {
+		distMap[d.StatDate] = d
+	}
+
+	// --- 合并每日数据 ---
+	dailyList := make([]gin.H, 0, len(creatorAggs))
+	var totalCreatorGross, totalCreatorIncome int64
+	var totalDistGross, totalDistIncome int64
+	for _, ca := range creatorAggs {
+		da := distMap[ca.StatDate]
+		dailyList = append(dailyList, gin.H{
+			"stat_date":            ca.StatDate,
+			"creator_gross_cents":  ca.GrossCents,
+			"creator_income_cents": ca.IncomeCents,
+			"creator_channel_count": ca.ChannelCount,
+			"creator_drama_count":  ca.DramaCount,
+			"distributor_gross_cents":  da.GrossCents,
+			"distributor_income_cents": da.IncomeCents,
+			"distributor_platform_count": da.PlatformCount,
+			"distributor_drama_count": da.DramaCount,
+		})
+		totalCreatorGross += ca.GrossCents
+		totalCreatorIncome += ca.IncomeCents
+		totalDistGross += da.GrossCents
+		totalDistIncome += da.IncomeCents
+	}
+
+	// --- 检查结算单状态 ---
+	// 根据日期范围推断 cycle_key
+	startDate, _ := time.Parse("2006-01-02", startStr)
+	endDate, _ := time.Parse("2006-01-02", endStr)
+	cycleKeys := map[string]struct{}{}
+	for d := startDate; !d.After(endDate); d = d.AddDate(0, 0, 1) {
+		day := d.Day()
+		half := "H1"
+		if day > 15 {
+			half = "H2"
+		}
+		ck := fmt.Sprintf("%04d-%02d-%s", d.Year(), int(d.Month()), half)
+		cycleKeys[ck] = struct{}{}
+	}
+
+	settlementStatuses := make([]gin.H, 0, len(cycleKeys))
+	for ck := range cycleKeys {
+		var openCount, invoicedCount, paidCount, voidCount int64
+		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, "open").Count(&openCount)
+		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, "invoiced").Count(&invoicedCount)
+		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, "paid").Count(&paidCount)
+		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, "void").Count(&voidCount)
+		settlementStatuses = append(settlementStatuses, gin.H{
+			"cycle_key":      ck,
+			"open_count":     openCount,
+			"invoiced_count": invoicedCount,
+			"paid_count":     paidCount,
+			"void_count":     voidCount,
+		})
+	}
+
+	response.OK(c, gin.H{
+		"start": startStr,
+		"end":   endStr,
+		"daily": dailyList,
+		"totals": gin.H{
+			"creator_gross_cents":      totalCreatorGross,
+			"creator_income_cents":     totalCreatorIncome,
+			"distributor_gross_cents":  totalDistGross,
+			"distributor_income_cents": totalDistIncome,
+		},
+		"settlement_statuses": settlementStatuses,
+	})
 }

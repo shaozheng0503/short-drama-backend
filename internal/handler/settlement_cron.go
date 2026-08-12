@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"ai-drama-platform/internal/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // 2026-07-06 改：结算周期由「月度」改为「半月度」（吴建棉 7/3 群确认）。
@@ -28,9 +30,7 @@ func (s *Server) startSettlementCron(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
-		log.Printf("[bg] settlement cron started (每月 1 号 02:00 算上月 H2，每月 16 号 02:00 算本月 H1)")
-		// 启动期先补一遍（容器被重启也不漏）
-		s.maybeRunHalfMonthSettlement(time.Now())
+		log.Printf("[bg] settlement cron started (auto-run disabled 2026-08-12, waiting for manual trigger via POST /v1/admin/settlements/generate)")
 		for {
 			select {
 			case <-ctx.Done():
@@ -74,13 +74,9 @@ func (s *Server) maybeRunHalfMonthSettlement(now time.Time) {
 	// 查询范围：[startDate, endDate+1)（半开区间）
 	startStr := startDate.Format("2006-01-02")
 	endStr := endDate.AddDate(0, 0, 1).Format("2006-01-02")
-	log.Printf("[bg] half-month settlement tick cycle=%s range=[%s, %s)", cycleKey, startStr, endStr)
-	count, err := s.runSettlementForCycle(cycleKey, startStr, endStr)
-	if err != nil {
-		log.Printf("[bg] half-month settlement FAILED cycle=%s err=%v", cycleKey, err)
-		return
-	}
-	log.Printf("[bg] half-month settlement done cycle=%s count=%d", cycleKey, count)
+	// 2026-08-12 改：停 cron 自动执行，改为财务手动触发 POST /v1/admin/settlements/generate
+	// 原因：cron 在 02:00 自动跑，如果财务还没导入完收入，结算金额会偏低且无法补录
+	log.Printf("[bg] half-month settlement tick cycle=%s range=[%s, %s) — cron auto-run disabled, waiting for manual trigger", cycleKey, startStr, endStr)
 }
 
 // runSettlementForCycle 跑一次半月结算——和原 runSettlementForPeriod 思路一致，
@@ -182,4 +178,147 @@ func (s *Server) runSettlementForCycle(cycleKey, startStr, endStr string) (int, 
 		}
 	}
 	return created, nil
+}
+
+// recalcOpenSettlementsForDateRange 重算指定日期范围内受影响的 open 状态结算单。
+// 2026-08-12 新增：财务补导收入后，已生成的 open 结算单金额会偏低，需按最新 creator_stats_daily 重新汇总。
+// 对于非 open 状态（invoiced/paid/void）的结算单，不更新，计入 blocked。
+// 返回 (已补录结算单数, 被阻塞结算单数, error)
+func (s *Server) recalcOpenSettlementsForDateRange(tx *gorm.DB, statDates []string) (int, int, error) {
+	if len(statDates) == 0 {
+		return 0, 0, nil
+	}
+
+	// 去重并计算受影响的 cycle_keys 及其日期范围
+	cycleKeySet := map[string]struct{}{}
+	cycleDateRange := map[string][2]string{} // cycleKey → [startStr, endStr)
+	for _, ds := range statDates {
+		if len(ds) < 10 {
+			continue
+		}
+		year, err1 := strconv.Atoi(ds[:4])
+		month, err2 := strconv.Atoi(ds[5:7])
+		day, err3 := strconv.Atoi(ds[8:10])
+		if err1 != nil || err2 != nil || err3 != nil {
+			continue
+		}
+		var half string
+		var startDate, endDate time.Time
+		firstOfMonth := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+		if day <= 15 {
+			half = "H1"
+			startDate = firstOfMonth
+			endDate = firstOfMonth.AddDate(0, 0, 14) // 15日
+		} else {
+			half = "H2"
+			startDate = firstOfMonth.AddDate(0, 0, 15) // 16日
+			endDate = firstOfMonth.AddDate(0, 1, -1)    // 月末
+		}
+		cycleKey := fmt.Sprintf("%04d-%02d-%s", year, month, half)
+		if _, exists := cycleKeySet[cycleKey]; exists {
+			continue
+		}
+		cycleKeySet[cycleKey] = struct{}{}
+		startStr := startDate.Format("2006-01-02")
+		endStr := endDate.AddDate(0, 0, 1).Format("2006-01-02") // 半开区间
+		cycleDateRange[cycleKey] = [2]string{startStr, endStr}
+	}
+
+	supplemented := 0
+	blocked := 0
+	now := time.Now()
+
+	creatorShareRate := s.cfg.CreatorShareRate
+	if creatorShareRate <= 0 || creatorShareRate > 1 {
+		creatorShareRate = 0.7
+	}
+
+	for cycleKey := range cycleKeySet {
+		dateRange := cycleDateRange[cycleKey]
+		startStr, endStr := dateRange[0], dateRange[1]
+
+		// 查找该周期的所有结算单
+		var settlements []model.Settlement
+		if err := tx.Where("cycle_key = ?", cycleKey).Find(&settlements).Error; err != nil {
+			return supplemented, blocked, err
+		}
+		if len(settlements) == 0 {
+			continue // 该周期还没有结算单，无需补录
+		}
+
+		// 重新聚合 creator_stats_daily
+		type creatorAgg struct {
+			CreatorID   uint64
+			IncomeCents int64
+			PlayCount   int64
+		}
+		var aggs []creatorAgg
+		tx.Table("creator_stats_daily").
+			Select("creator_id, COALESCE(SUM(income_cents),0) AS income_cents, COALESCE(SUM(play_count),0) AS play_count").
+			Where("stat_date >= ? AND stat_date < ?", startStr, endStr).
+			Group("creator_id").Scan(&aggs)
+		aggMap := map[uint64]creatorAgg{}
+		for _, a := range aggs {
+			aggMap[a.CreatorID] = a
+		}
+
+		for _, st := range settlements {
+			if st.Status != model.SettlementStatusOpen {
+				blocked++
+				continue
+			}
+
+			a, ok := aggMap[st.CreatorID]
+			if !ok {
+				continue // 该创作者在此周期暂无收益数据
+			}
+
+			newGrossCents := int64(float64(a.IncomeCents) / creatorShareRate)
+			newPlatformCents := newGrossCents - a.IncomeCents
+			newNetCents := a.IncomeCents
+
+			// 金额未变化则跳过
+			if st.GrossCents == newGrossCents && st.NetCents == newNetCents && st.PlatformCents == newPlatformCents {
+				continue
+			}
+
+			// 行锁重校验
+			var locked model.Settlement
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, st.ID).Error; err != nil {
+				return supplemented, blocked, err
+			}
+			if locked.Status != model.SettlementStatusOpen {
+				blocked++
+				continue
+			}
+
+			oldNet := locked.NetCents
+			supplementTag := "；supplemented-" + now.Format("200601021504")
+			newRemark := locked.Remark
+			if !strings.Contains(newRemark, "supplemented-") {
+				newRemark = newRemark + supplementTag
+			}
+
+			if err := tx.Model(&locked).Updates(map[string]interface{}{
+				"gross_cents":    newGrossCents,
+				"platform_cents": newPlatformCents,
+				"net_cents":      newNetCents,
+				"remark":         newRemark,
+			}).Error; err != nil {
+				return supplemented, blocked, err
+			}
+
+			s.recordTransition("settlement", locked.ID, model.SettlementStatusOpen, model.SettlementStatusOpen, "system", nil,
+				fmt.Sprintf("收入补录：净额 %d→%d（差额 %d）", oldNet, newNetCents, newNetCents-oldNet),
+				map[string]interface{}{
+					"cycle_key":      cycleKey,
+					"old_net_cents":  oldNet,
+					"new_net_cents":  newNetCents,
+					"delta_cents":    newNetCents - oldNet,
+				})
+			supplemented++
+		}
+	}
+
+	return supplemented, blocked, nil
 }

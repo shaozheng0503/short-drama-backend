@@ -329,9 +329,11 @@ func (s *Server) Router() *gin.Engine {
 	// === Distributor（发行商，0.15.0）===
 	distributor := v1.Group("/distributor")
 	distributor.POST("/auth/login", s.distributorLogin)
+	distributor.POST("/auth/login-password", s.distributorPasswordLogin)
 	distAuth := distributor.Group("")
 	distAuth.Use(middleware.RequireDistributor(s.cfg))
 	distAuth.Use(s.requireActiveDistributor())
+	distAuth.POST("/auth/set-password", s.distributorSetPassword)
 	distAuth.GET("/me", s.distributorMe)
 	distAuth.PUT("/me", s.distributorUpdateMe)
 	distAuth.GET("/verification/status", s.distributorVerificationStatus)
@@ -342,9 +344,11 @@ func (s *Server) Router() *gin.Engine {
 	// === Publisher（发行商 /publisher，0.15.0）===
 	pub := v1.Group("/publisher")
 	pub.POST("/auth/login", s.distributorLogin) // 复用 distributor 登录
+	pub.POST("/auth/login-password", s.distributorPasswordLogin)
 	pubAuth := pub.Group("")
 	pubAuth.Use(middleware.RequireDistributor(s.cfg))
 	pubAuth.Use(s.requireActiveDistributor())
+	pubAuth.POST("/auth/set-password", s.distributorSetPassword)
 	pubAuth.GET("/me", s.distributorMe)
 	pubAuth.PUT("/me", s.distributorUpdateMe)
 	pubAuth.GET("/profile/verification", s.distributorVerificationStatus)
@@ -489,7 +493,8 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.GET("/settlements", s.adminListSettlements)
 	adminAuth.GET("/settlements/:id", s.adminGetSettlement)
 	adminAuth.GET("/settlements/:id/download.pdf", s.adminDownloadSettlementPDF) // 财务 PDF 对账单
-	// 2026-07-28 删除 POST /settlements/generate（邱嘉诚要求，前端已移除）
+	// 2026-08-12 恢复：停 cron 自动执行后，改为财务手动触发生成结算单
+	adminAuth.POST("/settlements/generate", s.requirePermission(model.PermFinance), s.adminGenerateSettlements)
 	adminAuth.POST("/settlements/:id/close", s.requirePermission(model.PermFinance), s.adminCloseSettlement)
 
 	// App 付费收入（平台自有支付分账）：按短剧聚合的毛收入/净收入，订单中心+收益汇总（财务角色）
@@ -500,6 +505,7 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.GET("/finance/income/template.xlsx", s.requirePermission(model.PermFinance), s.adminDownloadIncomeTemplate)
 	adminAuth.GET("/finance/income/imports", s.requirePermission(model.PermFinance), s.adminListIncomeImports)
 	adminAuth.GET("/finance/income/imports/:batch_no", s.requirePermission(model.PermFinance), s.adminGetIncomeImport)
+	adminAuth.GET("/finance/income/period-summary", s.requirePermission(model.PermFinance), s.adminIncomePeriodSummary)
 	adminAuth.POST("/finance/income/import", s.requirePermission(model.PermFinance), s.adminImportDailyIncome)
 	adminAuth.GET("/finance/channel-incomes", s.requirePermission(model.PermFinance), s.adminListChannelIncomes)
 	adminAuth.PUT("/finance/channel-incomes/:id", s.requirePermission(model.PermFinance), s.adminUpdateChannelIncome)
