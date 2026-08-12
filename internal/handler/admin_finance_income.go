@@ -425,17 +425,15 @@ func (s *Server) adminIncomePeriodSummary(c *gin.Context) {
 
 	settlementStatuses := make([]gin.H, 0, len(cycleKeys))
 	for ck := range cycleKeys {
-		var openCount, invoicedCount, paidCount, voidCount int64
-		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, "open").Count(&openCount)
-		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, "invoiced").Count(&invoicedCount)
-		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, "paid").Count(&paidCount)
+		var unsettledCount, settledCount, voidCount int64
+		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, "unsettled").Count(&unsettledCount)
+		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, "settled").Count(&settledCount)
 		s.db.Table("settlements").Where("cycle_key = ? AND status = ?", ck, "void").Count(&voidCount)
 		settlementStatuses = append(settlementStatuses, gin.H{
-			"cycle_key":      ck,
-			"open_count":     openCount,
-			"invoiced_count": invoicedCount,
-			"paid_count":     paidCount,
-			"void_count":     voidCount,
+			"cycle_key":         ck,
+			"unsettled_count":   unsettledCount,
+			"settled_count":     settledCount,
+			"void_count":        voidCount,
 		})
 	}
 

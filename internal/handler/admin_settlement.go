@@ -252,7 +252,7 @@ type adminCloseSettlementRequest struct {
 
 // adminCloseSettlement —— POST /v1/admin/settlements/:id/close
 // 财务手动关账：
-//   - mark_paid：结算单 → paid（已打款）；同时把关联 invoice（approved）的 settlement 标 paid
+//   - mark_paid：结算单 → settled（已结算）
 //   - void：作废（一般不出现，预留）
 func (s *Server) adminCloseSettlement(c *gin.Context) {
 	id := parseUint(c.Param("id"))
@@ -268,7 +268,7 @@ func (s *Server) adminCloseSettlement(c *gin.Context) {
 	var newStatus string
 	switch req.Action {
 	case "mark_paid":
-		newStatus = model.SettlementStatusPaid
+		newStatus = model.SettlementStatusSettled
 	case "void":
 		newStatus = model.SettlementStatusVoid
 	default:
@@ -282,16 +282,16 @@ func (s *Server) adminCloseSettlement(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&st, id).Error; err != nil {
 			return err
 		}
-		if st.Status == model.SettlementStatusPaid {
-			return fmt.Errorf("结算单已 paid，不能重复关账")
+		if st.Status == model.SettlementStatusSettled {
+			return fmt.Errorf("结算单已结算，不能重复关账")
 		}
 		if st.Status == model.SettlementStatusVoid {
-			return fmt.Errorf("结算单已 void，不能关账")
+			return fmt.Errorf("结算单已作废，不能关账")
 		}
-		// void 安全检查：如果结算单已进入 invoiced 阶段（创作者已发起提现，
-		// 余额已从 balance 扣到 frozen），直接 void 会导致冻结余额永久无法释放。
+		// void 安全检查：结算单可能有活跃提现（余额已从 balance 扣到 frozen），
+		// 直接 void 会导致冻结余额永久无法释放。
 		// 必须先驳回关联提现（退回冻结→余额）再 void。
-		if req.Action == "void" && st.Status == model.SettlementStatusInvoiced {
+		if req.Action == "void" {
 			var activeWithdrawalCount int64
 			tx.Model(&model.Withdrawal{}).
 				Where("invoice_id IN (?) AND status IN ?",

@@ -775,7 +775,7 @@ func (s *Server) adminGenerateDistributorSettlements(c *gin.Context) {
 			GrossCents:    gross,
 			PlatformCents: platformCents,
 			NetCents:      netCents,
-			Status:        model.DistSettlementPendingPayment,
+			Status:        model.DistSettlementUnsettled,
 			OpenedAt:      &now,
 		}
 
@@ -863,8 +863,8 @@ func (s *Server) adminConfirmDistributorSettlement(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&st, sid).Error; err != nil {
 			return err
 		}
-		if st.Status != model.DistSettlementPaymentSubmitted {
-			return fmt.Errorf("仅已打款待确认状态可操作，当前状态: %s", st.Status)
+		if st.Status != model.DistSettlementUnsettled {
+			return fmt.Errorf("仅未结算状态可操作，当前状态: %s", st.Status)
 		}
 
 		switch req.Action {
@@ -901,7 +901,7 @@ func (s *Server) adminConfirmDistributorSettlement(c *gin.Context) {
 				}
 			}
 			return tx.Model(&st).Updates(map[string]interface{}{
-				"status":                model.DistSettlementPendingPayment,
+				"status":                model.DistSettlementUnsettled,
 				"receipt_reject_reason": req.Remark,
 			}).Error
 		default:

@@ -632,7 +632,7 @@ func (s *Server) creatorCreateInvoice(c *gin.Context) {
 		}
 		return
 	}
-	if st.Status == model.SettlementStatusPaid || st.Status == model.SettlementStatusVoid {
+	if st.Status == model.SettlementStatusSettled || st.Status == model.SettlementStatusVoid {
 		response.Conflict(c, "结算单已 "+st.Status+"，不能再上传发票")
 		return
 	}
@@ -654,10 +654,7 @@ func (s *Server) creatorCreateInvoice(c *gin.Context) {
 		response.ServerError(c, "提交发票失败")
 		return
 	}
-	// 顺带把结算单 status 推到 invoiced（仅当之前是 open）
-	if st.Status == model.SettlementStatusOpen {
-		s.db.Model(&st).Update("status", model.SettlementStatusInvoiced)
-	}
+	// 2026-08-12 简化状态：上传发票不再改变结算单状态，结算单只有 unsettled/settled
 	response.OK(c, gin.H{
 		"id":            inv.ID,
 		"invoice_no":    inv.InvoiceNo,
@@ -678,15 +675,7 @@ func (s *Server) creatorCreateInvoice(c *gin.Context) {
 		"amount_cents":  inv.AmountCents,
 		"settlement_id": inv.SettlementID,
 	})
-	// 关联的 settlement 状态变化：open → invoiced（如果之前是 open）
-	if inv.SettlementID > 0 {
-		var stNow model.Settlement
-		if err := s.db.First(&stNow, inv.SettlementID).Error; err == nil && stNow.Status == model.SettlementStatusOpen {
-			s.recordTransition("settlement", inv.SettlementID, model.SettlementStatusOpen, model.SettlementStatusInvoiced, "creator", &actorID, "创作者上传发票，结算单进入待提现状态", map[string]interface{}{
-				"invoice_id": inv.ID,
-			})
-		}
-	}
+	// 2026-08-12 简化状态：上传发票不再改变结算单状态，无需记录状态转换
 }
 
 // creatorListInvoices —— GET /v1/creator/invoices
