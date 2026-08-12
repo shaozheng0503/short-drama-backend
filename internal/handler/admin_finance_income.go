@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -423,6 +424,13 @@ func (s *Server) adminIncomePeriodSummary(c *gin.Context) {
 		cycleKeys[ck] = struct{}{}
 	}
 
+	// 排序 cycle_key 确保输出有序
+	sortedCycles := make([]string, 0, len(cycleKeys))
+	for ck := range cycleKeys {
+		sortedCycles = append(sortedCycles, ck)
+	}
+	sort.Strings(sortedCycles)
+
 	// periodStatus 计算整体周期状态（简化视图）
 	//   not_generated: 结算单总数 = 0（尚未生成）
 	//   pending:       有未结算，无已结算
@@ -442,8 +450,8 @@ func (s *Server) adminIncomePeriodSummary(c *gin.Context) {
 		return "partial"
 	}
 
-	settlementStatuses := make([]gin.H, 0, len(cycleKeys))
-	for ck := range cycleKeys {
+	settlementStatuses := make([]gin.H, 0, len(sortedCycles))
+	for _, ck := range sortedCycles {
 		// --- 创作者结算单 ---
 		// 财务周期汇总使用简化视图：将底层 5 个状态映射为 3 个汇总桶
 		// unsettled = draft + open + invoiced（未完结）
