@@ -1,0 +1,142 @@
+openapi: 3.0.3
+info:
+  title: 短剧平台 - GroMore 广告收益自动入账 API（0.19.3）
+  description: |
+    本文档覆盖 2026-08-25 上线的「GroMore 回调广告收益自动入账」功能，可直接导入 Apifox 覆盖对应接口。
+
+    ## 功能说明
+    GroMore 激励视频服务端回调透传 `ecpm` 参数（本次展示的 eCPM）。
+    平台自动换算单次收益并写入当日剧集收入，无需人工对账：
+    - 渠道固定为「狼之短剧」，`batch_no=ad_auto`（与 App 内购 `app_auto` 区分）
+    - 管理端「剧集收入」页当日数据实时可见
+    - 创作者分成与 App 内购同口径（当前 50%），实时入创作者余额 + 当日统计
+    - 结算任务自动纳入（消费 channel_income_daily.gross_cents）
+
+    ## 换算规则
+    单次收益（分）= ecpm × 单位系数 ÷ 1000，四舍五入取整
+    | CSJ_ECPM_UNIT | 单位口径 | 公式 | 示例 |
+    |---|---|---|---|
+    | fen（默认） | 穿山甲 SDK getEcpm() 口径（分） | ecpm ÷ 1000 | ecpm=3000 → 3 分 |
+    | yuan | 元 | ecpm × 100 ÷ 1000 | ecpm=30 → 3 分 |
+
+    ## 可靠性设计
+    - 幂等：复用 ticket 状态机（pending→rewarded 单向）+ trans_id 唯一索引，重复回调不重复记账
+    - 容错：ecpm 缺失/null/非法值只跳过记账（仅日志），不影响解锁发奖
+    - 收益侧失败不回滚解锁：解锁是主流程，收益只是记账
+    - 单位可配置：官方文档未明确服务端回调 ecpm 单位，做成环境变量防止单位误判造成 100 倍金额错误
+
+    ## 上线状态（2026-08-25）
+    生产已部署并验证：模拟回调 ecpm=3000 → 毛收入 3 分 + 创作者分成 1 分正确落账；
+    重复回调金额不变（幂等）。
+    单位环境变量 CSJ_ECPM_UNIT 当前为 fen（分口径），已在生产 .env 配置。
+    **注意：待线上第一单真实回调后，核对管理端剧集收入页金额量级；若明显偏小约 100 倍，
+    将 CSJ_ECPM_UNIT 改为 yuan 并重启服务。**
+
+  version: 0.19.3
+  contact:
+    name: Drama Platform API
+servers:
+- url: https://api.langzhi.top
+  description: 生产环境
+- url: https://api-dev.langzhi.top
+  description: 沙箱环境
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+paths:
+  /v1/webhooks/csj/reward:
+    get:
+      tags:
+      - Webhooks - 穿山甲/GroMore
+      summary: 穿山甲/GroMore 激励视频服务端奖励验证回调
+      description: |
+        穿山甲或 GroMore 服务器调用（非 App）。协议要点：
+        - 签名：`sign = sha256(SecurityKey + ":" + trans_id)` hex 小写
+          （GroMore 的 m-key 与穿山甲 SecurityKey 签名算法一致，同一套验签）
+        - `user_id` 为 App 请求广告时透传的 ticket_id
+        - GroMore 聚合时额外携带 mediation_rit（代码位）/ prime_rit（广告位）/ adn_name / ecpm
+          （mediation_rit/prime_rit/adn_name 忽略；ecpm 参与收益入账，见下）
+        - ecpm（string，无数据时 null/空）：本次展示的 eCPM。
+          单次收益（分）= ecpm ÷ 1000（CSJ_ECPM_UNIT=fen，默认）或 ecpm × 100 ÷ 1000（yuan）。
+          收益自动写入 channel_income_daily（channel=狼之短剧，batch_no=ad_auto），
+          与 App 内购（app_auto）同口径参与创作者分成与结算。
+          ecpm 缺失/非法时跳过记账（仅日志），不影响解锁发奖。
+        - 响应同时兼容两种协议（冗余字段）：
+          `{"isValid": true, "is_verify": true, "reason": 0}`
+          穿山甲直营读 isValid；GroMore 读 is_verify + reason
+
+        平台处理：验签 → 定位 ticket → 行锁 + trans_id 幂等 → episode_unlocks 落库 → ticket 置 rewarded → ecpm 收益入账。
+        永久性失败（验签失败/凭证不存在）返回 200 + false 停止重试；
+        瞬时故障（DB 抖动）返回 500 触发平台重试。
+      parameters:
+      - name: user_id
+        in: query
+        required: true
+        schema:
+          type: string
+        description: 透传的 ticket_id
+      - name: trans_id
+        in: query
+        required: true
+        schema:
+          type: string
+        description: 平台侧唯一流水号（幂等键；GroMore 下由 GroMore 生成）
+      - name: reward_name
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 奖励名称
+      - name: reward_amount
+        in: query
+        required: false
+        schema:
+          type: integer
+        description: 奖励数量
+      - name: extra
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 附加信息（JSON 字符串）
+      - name: sign
+        in: query
+        required: true
+        schema:
+          type: string
+        description: sha256(SecurityKey + ":" + trans_id) hex 小写
+      - name: ecpm
+        in: query
+        required: false
+        schema:
+          type: string
+        description: |
+          GroMore 聚合下发的本次展示 eCPM（无数据时 null/空）。
+          单次收益（分）= ecpm ÷ 1000（fen，默认）或 ecpm × 100 ÷ 1000（yuan）。
+          服务端自动入账当日 channel_income_daily（狼之短剧渠道，batch_no=ad_auto），
+          创作者分成与内购同口径；缺失/非法不阻塞解锁。
+      responses:
+        '200':
+          description: 业务已接收（或永久性失败不再重试）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  isValid:
+                    type: boolean
+                    description: 穿山甲直营协议字段
+                    example: true
+                  is_verify:
+                    type: boolean
+                    description: GroMore 聚合协议字段
+                    example: true
+                  reason:
+                    type: integer
+                    description: GroMore 失败原因码（0=成功）
+                    example: 0
+        '500':
+          description: 瞬时故障，平台将重试
