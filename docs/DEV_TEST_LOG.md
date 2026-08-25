@@ -789,6 +789,72 @@
   - `POST /v1/admin/contracts/:id/cancel`
 - OpenAPI 已同步上述全部接口
 
+### 3.43 创作者地区字段 region（2026-08-25）
+
+> 目标：创作者账号设置支持填写所在地区（精确到市），管理端同步可见可改。
+
+- 数据库：`creators.region varchar(64)`，AutoMigrate 自动建列，存量为空字符串
+- 创作者端：
+  - `GET /v1/creator/account` 响应新增 `region`
+  - `PUT /v1/creator/account` 请求体可选 `region`（最长 64 字符，空串清除，不传不更新）
+  - `GET /v1/creator/me` 顶层 + `account_info` 内均新增 `region`
+  - `POST /v1/creator/auth/login` 响应 creator 对象新增 `region`
+- 管理端：
+  - `GET /v1/admin/creators` 列表项新增 `region`
+  - `GET /v1/admin/creators/:id` 详情新增 `region`（creatorFullView）
+  - `PUT /v1/admin/creators/:id` 请求体可选 `region`（同校验规则）
+- 校验：仅长度校验（≤64 字符），不做行政区划强校验，由前端省市区选择器保证格式（如 `广东省深圳市`）
+- OpenAPI：`docs/openapi-creator-region-0.19.1.yaml`（可导入 Apifox 覆盖）
+- 部署：沙箱 + 生产均已 reload 上线（2026-08-25 16:06/16:07），`/ready` 通过，生产备份 `drama-api.bak.20260825160707`
+
+### 3.44 地区管理员 region_admin（2026-08-25）
+
+> 目标：超管可按市创建地区管理员（账号+密码+备注），仅可查看本地区创作者及其作品（不含视频），无审核及其他一切权限。
+
+- 数据库：`admins.region varchar(64)` + `admins.remark varchar(255)`，AutoMigrate 自动建列；角色枚举新增 `region_admin`（不做种子补齐，超管手工创建）
+- 权限围栏（`auth_status.go` `restrictRegionAdmin`，挂在 `requireActiveAdmin` 之后、`auditMiddleware` 之前）：
+  - 白名单 `regionAdminAllowedActions`（路径前缀 + HTTP 方法双维匹配）：POST `/v1/admin/auth/refresh`、GET `/v1/admin/me`、GET `/v1/admin/creators*`、GET `/v1/admin/dramas*`
+  - 显式排除 `regionAdminBannedPaths`：`GET /v1/admin/creators/template.xlsx`（前缀误命中防范）
+  - 其余一切请求 403 `40301 地区管理员仅可查看本地区创作者及其作品（只读）`
+- 数据范围（列表+详情双保险）：
+  - `GET /v1/admin/creators`：强制 `WHERE region = ?`（超管可用 `region` 参数 ILIKE 模糊筛选，地区管理员强制覆盖）
+  - `GET /v1/admin/creators/:id`、`/v1/admin/dramas/:id`、`/v1/admin/dramas/:id/episodes`：非本地区 → 404（不暴露存在性）
+  - `GET /v1/admin/dramas`：`creator_id IN (子查询本地区创作者)` 子查询过滤
+  - 剧集视图 `episodeAdminViewFor`：地区管理员 `video_url`、`vod_file_id` 置空（`adminListEpisodes`、`adminGetDrama` 均已替换）
+- 管理员 CRUD（`admin_account.go`）：
+  - `POST /v1/admin/admins` 新增 `role`/`region`/`remark`；region_admin 必填 region（≤64 字）、禁止携带 permissions
+  - `PUT /v1/admin/admins/:id` 支持改 `region`/`remark`（region 不可清空）
+  - `GET /v1/admin/admins` 支持 `role` 精确 + `region` ILIKE 筛选，返回 `region`/`remark`
+- 单测：`region_admin_test.go` ~50 组路径/方法组合全过（含 template.xlsx 排除）
+- 端到端验证（沙箱 18090，2026-08-25）：
+  - 超管创建 `bengbu_admin`（region=安徽省蚌埠市）成功
+  - 登录 → 创作者列表仅见本地区（插桩上海创作者 999 不出现、详情 404）
+  - 作品列表/详情/剧集正常，剧集 `video_url`/`vod_file_id` 为空（超管对照组正常返回）
+  - dashboard / admins / approve / template.xlsx 等 10+ 路径全部 403
+- OpenAPI：`docs/openapi-region-admin-0.19.2.yaml`；角色权威说明见 `docs/ADMIN_ROLES.md` §5
+- 部署：沙箱 + 生产均已上线（2026-08-25 17:02/17:03），`/ready` 通过，`admins.region`/`admins.remark` 迁移确认
+
+### 3.45 GroMore 回调广告收益自动入账（2026-08-25）
+
+> 目标：GroMore 激励视频服务端回调透传的 `ecpm` 参数自动换算成单次收益，写入当日剧集收入的「狼之短剧」渠道，与内购同口径参与创作者分成。
+
+- 配置：`CSJ_ECPM_UNIT`（fen=分 默认 / yuan=元）。穿山甲 SDK `getEcpm()` 文档口径为分，故默认分；若实测回调金额明显偏小约 100 倍改 yuan。单位错判会导致 100 倍金额错误，故做成可配置。
+- 换算：单次收益（分）= ecpm ÷ 1000（fen）或 ecpm × 100 ÷ 1000（yuan），四舍五入；解析失败/null/非正值跳过记账只记日志，不影响解锁。
+- 入账（`ad_unlock.go` `recordAdIncome`，事务内，与 `MarkOrderPaid` 同模式）：
+  - `channel_income_daily`：channel=狼之短剧、`batch_no=ad_auto`，唯一键 (drama_id, channel, stat_date) 冲突累加 → 管理端「剧集收入」页直接可见
+  - 创作者分成与内购同口径（`CREATOR_SHARE_RATE`，当前 50%）：`creators.total_income_cents`/`balance_cents` 行锁累加 + `creator_stats_daily` 当日聚合
+  - 结算 cron 消费 `channel_income_daily.gross_cents`，广告收益自动纳入创作者结算
+- 幂等：复用 ticket 状态机（pending→rewarded 单向）+ trans_id 唯一索引，重复回调不重复记账
+- 收益侧失败不回滚解锁：解锁是主流程，收益只是记账（失败仅日志）
+- 单测：`ad_unlock_test.go` 17 组 ecpm 换算用例全过（分/元单位、四舍五入、null/非法值兜底）
+- 端到端验证（生产 43.143.212.37，2026-08-25 17:47）：
+  - 插桩 pending ticket（drama=151 归屿、creator=126 王星星）→ 模拟回调 `ecpm=3000`
+  - `channel_income_daily`：gross=3分 / income=1分（50%）/ channel=狼之短剧 / batch_no=ad_auto ✓
+  - 创作者余额 0→1 分、`creator_stats_daily` 当日 income=1 分 ✓
+  - 重复回调：返回成功但金额不变（幂等）✓
+  - 测试数据已清理（ticket/unlock/income/stats/余额全部还原）
+- 部署：生产已上线（2026-08-25 17:46，零停机 reload），`/ready` 通过
+
 ### 3.25 第四轮代码 Bug 修复与优化
 
 > 重点：支付回调 HTTP 语义、金额/渠道校验、账号封禁即时生效、SMS 防刷、并发下单、运营校验补全。

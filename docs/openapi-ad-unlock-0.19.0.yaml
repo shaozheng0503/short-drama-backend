@@ -1,0 +1,393 @@
+openapi: 3.0.3
+info:
+  title: 短剧平台 - 穿山甲看广告解锁 API（0.19.0）
+  description: |
+    本文档覆盖 2026-08-24 新增的「看广告解锁剧集」功能，可直接导入 Apifox 覆盖对应接口。
+
+    ## 功能说明
+    用户观看穿山甲激励视频后解锁付费剧集。管理员需逐剧开启 `ad_unlock_enabled` 开关后，
+    用户才可对该剧使用看广告解锁（默认关闭：有的剧只能付费）。
+
+    ## 完整链路
+    1. App 调用「创建广告解锁凭证」接口，拿到 `ticket_id` 与穿山甲参数（app_id / code_id）
+    2. App 用穿山甲 SDK 播放激励视频，`user_id` 透传字段填 `ticket_id`
+    3. 用户看完广告后，穿山甲服务器回调本平台 `GET /v1/webhooks/csj/reward`
+    4. 平台验签（sha256(SecurityKey + ":" + trans_id)）→ 幂等校验 → 解锁落库
+    5. App 轮询「查询解锁结果」接口，`unlocked=true` 后走现有播放地址接口
+
+    ## 与付费解锁的关系
+    | | 付费解锁（已有） | 看广告解锁（本功能） |
+    |---|---|---|
+    | 凭证 | order_no | ticket_id + 穿山甲 trans_id |
+    | 发奖信号 | 支付成功 | 穿山甲 S2S 回调验签成功 |
+    | 解锁结果 | episode_unlocks | episode_unlocks（同一张表）|
+    | 播放 | 现有播放接口 | 现有播放接口 |
+
+    ## 幂等与安全设计
+    - 三层幂等：trans_id 唯一索引 + ticket 状态机 + episode_unlocks OnConflict
+    - 签名算法：`sign = sha256(SecurityKey + ":" + trans_id)` hex 小写，恒时比较防时序攻击
+    - 回调失败语义：200 + isValid=false（验签失败/不存在）停止穿山甲重试；500 触发重试
+
+    ## 同期其他更新（2026-08-24）
+    剧集提审/上架门槛：提交审核、创作者上架、管理员上架时要求
+    角色 ≥2 个、权属文件 ≥4 张，不达标返回 400 + 具体提示（含当前数量）。
+    草稿保存不受限。相关接口：POST /v1/creator/dramas/{id}/submit、
+    POST /v1/creator/dramas/{id}/publish、PUT /v1/admin/dramas/{id}/publish。
+    App 侧剧详情/列表新增 `ad_unlock_enabled` 字段，管理端列表同步返回。
+
+  version: 0.19.0
+  contact:
+    name: Drama Platform API
+servers:
+- url: https://api.langzhi.top
+  description: 生产环境
+- url: https://api-dev.langzhi.top
+  description: 沙箱环境
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+paths:
+  /v1/app/ad-unlock/tickets:
+    post:
+      tags:
+      - App - 看广告解锁
+      summary: 创建广告解锁凭证
+      description: |
+        App 选定未解锁剧集后调用。前置校验：
+        - 剧已上架、集已就绪且属于该剧
+        - admin 已开启该剧 `ad_unlock_enabled`
+        - 该集非免费集且用户未解锁
+        已解锁时直接返回 `already_unlocked: true`（不再发凭证）。
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [drama_id, episode_id]
+              properties:
+                drama_id:
+                  type: integer
+                  example: 1
+                episode_id:
+                  type: integer
+                  example: 7
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      ticket_id:
+                        type: string
+                        description: 本次解锁唯一凭证，透传给穿山甲 SDK 的 user_id 字段
+                        example: AD20260824170837531814364
+                      drama_id:
+                        type: integer
+                      episode_id:
+                        type: integer
+                      status:
+                        type: string
+                        description: 初始 pending
+                        example: pending
+                      expire_at:
+                        type: string
+                        format: date-time
+                        description: 凭证有效期（默认 10 分钟）
+                      csj_app_id:
+                        type: string
+                        description: 穿山甲 AppId（SDK init 用）
+                        example: "5872528"
+                      csj_code_id:
+                        type: string
+                        description: 穿山甲激励视频代码位 ID（AdSlot.setCodeId 用）
+                        example: "104425897"
+                      reward_name:
+                        type: string
+                        description: 奖励名称（SDK 奖励传入）
+                        example: 解锁本集
+                      reward_amount:
+                        type: integer
+                        description: 奖励数量（SDK 奖励传入）
+                        example: 1
+        '403':
+          description: |
+            业务拒绝：
+            - 40301 该剧未开启看广告解锁（admin 开关）
+            - 40301 该集为免费集 / 已解锁（already_unlocked）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 40301
+                  message:
+                    type: string
+                    example: 该剧未开启看广告解锁
+
+  /v1/app/ad-unlock/tickets/{ticket_id}:
+    get:
+      tags:
+      - App - 看广告解锁
+      summary: 查询解锁结果
+      description: |
+        App 在广告关闭后轮询。状态机：
+        pending（等待回调）→ rewarded（已发奖）/ expired（超时）。
+        `unlocked=true` 后 App 走现有播放地址接口。
+        注：该集若已通过付费解锁，同样返回 unlocked=true。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: ticket_id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      ticket_id:
+                        type: string
+                      status:
+                        type: string
+                        description: pending / rewarded / expired
+                        example: rewarded
+                      unlocked:
+                        type: boolean
+                        description: 该集是否已解锁（含付费解锁）
+                      drama_id:
+                        type: integer
+                      episode_id:
+                        type: integer
+                      trans_id:
+                        type: string
+                        description: 穿山甲回调流水号（发奖后才有）
+                      rewarded_at:
+                        type: string
+                        format: date-time
+                      expire_at:
+                        type: string
+                        format: date-time
+
+  /v1/admin/dramas:
+    get:
+      tags:
+      - Admin - 短剧管理
+      summary: 剧集列表（本更新新增字段）
+      description: |
+        管理端剧集列表接口（分页）。本次更新：列表项新增 `ad_unlock_enabled` 字段，
+        与剧集详情一致，管理后台列表页可直接展示/筛选该剧是否开启看广告解锁。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          example: 1
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          example: 20
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                      list:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: integer
+                            title:
+                              type: string
+                            publish_status:
+                              type: string
+                            ad_unlock_enabled:
+                              type: boolean
+                              description: 看广告解锁开关（2026-08-24 列表新增）
+                              example: false
+                            created_at:
+                              type: string
+                              format: date-time
+
+  /v1/admin/dramas/{id}/ad-unlock:
+    put:
+      tags:
+      - Admin - 短剧管理
+      summary: 设置看广告解锁开关
+      description: |
+        管理员逐剧开启/关闭看广告解锁权限。默认关闭——只有付费。
+        开启后 App 侧剧详情/列表返回 `ad_unlock_enabled: true`，
+        管理端剧列表同样返回该字段（2026-08-24 起）。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ad_unlock_enabled]
+              properties:
+                ad_unlock_enabled:
+                  type: boolean
+                  example: true
+      responses:
+        '200':
+          description: 成功（返回更新后的短剧详情）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    description: 短剧详情（含 ad_unlock_enabled）
+
+  /v1/webhooks/csj/reward:
+    get:
+      tags:
+      - Webhooks - 穿山甲/GroMore
+      summary: 穿山甲/GroMore 激励视频服务端奖励验证回调
+      description: |
+        穿山甲或 GroMore 服务器调用（非 App）。协议要点：
+        - 签名：`sign = sha256(SecurityKey + ":" + trans_id)` hex 小写
+          （GroMore 的 m-key 与穿山甲 SecurityKey 签名算法一致，同一套验签）
+        - `user_id` 为 App 请求广告时透传的 ticket_id
+        - GroMore 聚合时额外携带 mediation_rit（代码位）/ prime_rit（广告位）/ adn_name / ecpm
+          （mediation_rit/prime_rit/adn_name 忽略；ecpm 参与收益入账，见下）
+        - ecpm（string，无数据时 null/空）：本次展示的 eCPM。
+          单次收益（分）= ecpm ÷ 1000（CSJ_ECPM_UNIT=fen，默认，SDK getEcpm() 口径）
+          或 ecpm × 100 ÷ 1000（CSJ_ECPM_UNIT=yuan）。
+          收益自动写入 channel_income_daily（channel=狼之短剧，batch_no=ad_auto），
+          与 App 内购（batch_no=app_auto）同口径参与创作者分成与结算；
+          管理端「剧集收入」页当日数据直接可见。
+          ecpm 缺失/非法时跳过记账（仅日志），不影响解锁发奖。
+        - 响应同时兼容两种协议（冗余字段）：
+          `{"isValid": true, "is_verify": true, "reason": 0}`
+          穿山甲直营读 isValid；GroMore 读 is_verify + reason（格式不对会导致 GroMore 客户端 is_verify=false）
+
+        平台处理：验签 → 定位 ticket → 行锁 + trans_id 幂等 → episode_unlocks 落库 → ticket 置 rewarded → ecpm 收益入账。
+        永久性失败（验签失败/凭证不存在）返回 200 + false 停止重试；
+        瞬时故障（DB 抖动）返回 500 触发平台重试。
+      parameters:
+      - name: user_id
+        in: query
+        required: true
+        schema:
+          type: string
+        description: 透传的 ticket_id
+      - name: trans_id
+        in: query
+        required: true
+        schema:
+          type: string
+        description: 平台侧唯一流水号（幂等键；GroMore 下由 GroMore 生成）
+      - name: reward_name
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 奖励名称
+      - name: reward_amount
+        in: query
+        required: false
+        schema:
+          type: integer
+        description: 奖励数量
+      - name: extra
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 附加信息（JSON 字符串）
+      - name: sign
+        in: query
+        required: true
+        schema:
+          type: string
+        description: sha256(SecurityKey + ":" + trans_id) hex 小写
+      - name: ecpm
+        in: query
+        required: false
+        schema:
+          type: string
+        description: |
+          GroMore 聚合下发的本次展示 eCPM（无数据时 null/空）。
+          单次收益（分）= ecpm ÷ 1000（默认单位分）；
+          服务端自动入账当日 channel_income_daily（狼之短剧渠道），
+          缺失/非法不阻塞解锁。
+      responses:
+        '200':
+          description: 业务已接收（或永久性失败不再重试）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  isValid:
+                    type: boolean
+                    description: 穿山甲直营协议字段
+                    example: true
+                  is_verify:
+                    type: boolean
+                    description: GroMore 聚合协议字段
+                    example: true
+                  reason:
+                    type: integer
+                    description: GroMore 失败原因码（0=成功）
+                    example: 0
+        '500':
+          description: 瞬时故障，平台将重试

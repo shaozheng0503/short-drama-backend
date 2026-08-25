@@ -158,7 +158,27 @@ type Config struct {
 	PlatformBankName    string // 开户行（如"招商银行海口分行"）
 	PlatformBankAccount string // 银行账号
 	PlatformAddress     string // 注册地址
-	PlatformPhone       string // 公司电话
+	PlatformPhone        string // 公司电话
+
+	// === 穿山甲（CSJ/Pangle）激励视频 —— 看广告解锁 ===
+	// AppId：媒体平台创建应用得到（SDK init 用）
+	// SecurityKey：服务端奖励验证密钥（仅后端验签用，严禁下发 App）
+	// CodeID：激励视频代码位 ID（App 请求广告 AdSlot.setCodeId 用）
+	// AdUnlockTicketTTL：ticket 有效期（默认 10 分钟）
+	CSJAppID            string
+	CSJSecurityKey      string
+	CSJCodeID           string
+	CSJRewardName       string        // 奖励名称，透传给 SDK 展示（如「解锁本集」）
+	CSJRewardAmount     int           // 奖励数量（默认 1）
+	AdUnlockTicketTTL   time.Duration // ticket 有效期
+	AdUnlockDevMode     bool          // true=跳过验签（仅本地联调，生产严禁开启）
+	AdUnlockCallbackURL string        // 配置在穿山甲代码位上的回调地址（仅日志/文档展示用）
+
+	// GroMore 服务端回调 ecpm 参数的单位（单次有效展示的价格 = ecpm / 1000）。
+	// 穿山甲 SDK getEcpm() 文档口径为「分」，故默认 "fen"（分）；
+	// 若实测回调值明显偏小（如 0.5 表示 5 分），改为 "yuan"（元）。
+	// 收益（分） = ecpm × 单位换算系数 ÷ 1000；解析失败不影响解锁。
+	CSJEcpmUnit string
 }
 
 func Load() Config {
@@ -202,7 +222,10 @@ func Load() Config {
 		SMSSendIPBurst:       getEnvInt("SMS_SEND_IP_BURST", 3),
 
 		AdminInitUsername: getEnv("ADMIN_INIT_USERNAME", "郎志"), // 2026-07-02 会议：吴总要求 admin 账号改为郎志（默认；老 admin 账号保留不删）
-		AdminInitPassword: getEnv("ADMIN_INIT_PASSWORD", "admin123"),
+		// 2026-08-19 安全加固：默认值由 "admin123" 改为空。未显式配置时禁用初始账号种子
+		// （ensureInitialAdmin/ensureRoleAdmins 对空密码直接跳过），避免弱密码兜底。
+		// 全新重建数据库时，临时在 .env 设置 ADMIN_INIT_PASSWORD 引导账号，完成后移除。
+		AdminInitPassword: getEnv("ADMIN_INIT_PASSWORD", ""),
 
 		BcryptCost: getEnvInt("BCRYPT_COST", 10),
 
@@ -288,6 +311,23 @@ func Load() Config {
 		PlatformBankAccount: getEnv("PLATFORM_BANK_ACCOUNT", ""),
 		PlatformAddress:     getEnv("PLATFORM_ADDRESS", ""),
 		PlatformPhone:       getEnv("PLATFORM_PHONE", ""),
+
+		// === 穿山甲激励视频 —— 看广告解锁 ===
+		// 用户 2026-08-24 提供：AppId=5872528，SecurityKey=hXuiZY5wprr4sIvS-Gm0ifSNLPiBItPeG5YiGsAiuV8=，代码位 ID=344494
+		// SecurityKey 仅后端持有用于验签；App 侧只拿 AppId + CodeID。
+		CSJAppID:          getEnv("CSJ_APP_ID", "5872528"),
+		CSJSecurityKey:    getEnv("CSJ_SECURITY_KEY", ""),
+		CSJCodeID:         getEnv("CSJ_CODE_ID", "344494"),
+		CSJRewardName:     getEnv("CSJ_REWARD_NAME", "解锁本集"),
+		CSJRewardAmount:   getEnvInt("CSJ_REWARD_AMOUNT", 1),
+		AdUnlockTicketTTL: time.Duration(getEnvInt("AD_UNLOCK_TICKET_TTL_SECONDS", 600)) * time.Second,
+		AdUnlockDevMode:   getEnvBool("AD_UNLOCK_DEV_MODE", false),
+		AdUnlockCallbackURL: getEnv(
+			"AD_UNLOCK_CALLBACK_URL",
+			"https://api.langzhi.top/v1/webhooks/csj/reward",
+		),
+		// 默认 "fen"：SDK getEcpm() 口径；非 "yuan" 一律按分处理
+		CSJEcpmUnit: getEnv("CSJ_ECPM_UNIT", "fen"),
 	}
 }
 
