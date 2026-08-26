@@ -1,0 +1,530 @@
+openapi: 3.0.3
+info:
+  title: 短剧平台 - 地区管理员 API（0.19.2）
+  description: |
+    本文档覆盖 2026-08-25 新增的「地区管理员」功能，可直接导入 Apifox 覆盖对应接口。
+
+    ## 功能说明
+    超级管理员可按市创建「地区管理员」，指定账号密码与备注。地区管理员为**只读角色**：
+    仅可查看本地区创作者及其作品（短剧/剧集元信息，**不含视频地址**），无审核权限、无任何写权限、无其他所有权限。
+
+    ## 角色定义
+    - `admins.role` 新增取值 `region_admin`（地区管理员）
+    - `admins` 表新增字段：`region`（地区，省+市，最长 64 字）、`remark`（备注，最长 255 字）
+    - 地区管理员不设初始账号，由超管在后台手工创建
+
+    ## 权限围栏（后端已强制）
+    白名单（仅这些放行，其余一律 403 `40301`）：
+    | 方法 | 路径 |
+    |---|---|
+    | POST | /v1/admin/auth/refresh |
+    | GET | /v1/admin/me |
+    | GET | /v1/admin/creators（含 /{id}） |
+    | GET | /v1/admin/dramas（含 /{id}、/{id}/episodes） |
+
+    - `GET /v1/admin/creators/template.xlsx` 显式排除
+    - 数据范围强制限定本地区：列表过滤、详情越权返回 404
+    - 剧集的 `video_url`、`vod_file_id` 对地区管理员强制置空
+
+    ## 涉及接口
+    | 接口 | 变化 |
+    |---|---|
+    | POST /v1/admin/admins | 请求体新增 `role`/`region`/`remark`，支持创建地区管理员 |
+    | PUT /v1/admin/admins/{id} | 请求体新增 `region`/`remark` |
+    | GET /v1/admin/admins | 新增 `role`/`region` 筛选参数；列表项新增 `role`/`region`/`remark` |
+    | GET /v1/admin/admins/{id} | 详情新增 `role`/`region`/`remark` |
+    | GET /v1/admin/me | 响应新增 `region`（仅地区管理员非空） |
+    | GET /v1/admin/creators | 超管新增 `region` 筛选参数（模糊，省/市均可）；地区管理员强制限定本地区 |
+    | GET /v1/admin/creators/{id} | 地区管理员访问非本地区创作者返回 404 |
+    | GET /v1/admin/dramas | 地区管理员强制限定本地区创作者的作品 |
+    | GET /v1/admin/dramas/{id} | 地区管理员访问非本地区作品返回 404 |
+    | GET /v1/admin/dramas/{id}/episodes | 地区管理员响应中 `video_url`/`vod_file_id` 置空 |
+
+  version: 0.19.2
+  contact:
+    name: Drama Platform API
+servers:
+- url: https://api.langzhi.top
+  description: 生产环境
+- url: https://api-dev.langzhi.top
+  description: 沙箱环境
+paths:
+  /v1/admin/admins:
+    get:
+      tags:
+      - Admin - 管理员账号
+      summary: 管理员列表（支持角色/地区筛选）
+      description: |
+        新增 `role`、`region` 筛选参数；列表项新增 `role`、`region`、`remark` 字段。
+
+        - `role`：精确匹配（`admin` / `finance` / `auditor` / `region_admin`）
+        - `region`：模糊匹配（ILIKE），传省（如 `广东`）或市（如 `深圳`）均可
+        - 仅超管可调用；地区管理员调用本接口直接 403
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+      - name: keyword
+        in: query
+        schema:
+          type: string
+        description: 用户名模糊搜索
+      - name: role
+        in: query
+        schema:
+          type: string
+          enum: [admin, finance, auditor, region_admin]
+        description: 角色精确筛选（新）
+      - name: region
+        in: query
+        schema:
+          type: string
+        description: 地区模糊筛选（新），省/市均可，如 `广东`、`深圳市`
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AdminItem'
+    post:
+      tags:
+      - Admin - 管理员账号
+      summary: 创建管理员（支持地区管理员）
+      description: |
+        请求体新增 `role`、`region`、`remark` 字段。
+
+        - `role` 可空（默认普通管理员）；传 `region_admin` 时创建地区管理员
+        - `region`：地区管理员必填，省+市（如 `安徽省蚌埠市`），最长 64 字
+        - `remark`：备注，最长 255 字
+        - 地区管理员不允许携带 `permissions`（该角色无细粒度权限）
+        - 仅超管可调用
+      security:
+      - BearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  example: bengbu_admin
+                password:
+                  type: string
+                  example: Bengbu@2026
+                role:
+                  type: string
+                  enum: [admin, region_admin]
+                  description: 传 region_admin 创建地区管理员（新）
+                region:
+                  type: string
+                  example: 安徽省蚌埠市
+                  description: 地区（省+市），地区管理员必填（新）
+                remark:
+                  type: string
+                  example: 蚌埠地区管理员
+                  description: 备注，最长 255 字（新）
+                permissions:
+                  type: array
+                  items:
+                    type: string
+                  description: 细粒度权限；地区管理员必须为空或不传
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    $ref: '#/components/schemas/AdminItem'
+        '400':
+          description: 参数错误（如地区管理员缺 region、携带 permissions 等）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrResp'
+  /v1/admin/admins/{id}:
+    get:
+      tags:
+      - Admin - 管理员账号
+      summary: 管理员详情
+      description: 详情新增 `role`、`region`、`remark` 字段。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    $ref: '#/components/schemas/AdminDetail'
+    put:
+      tags:
+      - Admin - 管理员账号
+      summary: 编辑管理员（支持改地区/备注）
+      description: |
+        请求体新增 `region`、`remark` 字段（均可选，不传不更新）。
+
+        - `region`：修改地区（不可传空清除，地区管理员必须保留地区）
+        - `remark`：修改备注
+        - 仅超管可调用
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                region:
+                  type: string
+                  example: 安徽省蚌埠市
+                  description: 新地区（新）
+                remark:
+                  type: string
+                  example: 蚌埠地区管理员（新）
+                  description: 新备注（新）
+                permissions:
+                  type: array
+                  items:
+                    type: string
+                  description: 权限列表；地区管理员必须为空
+                status:
+                  type: string
+                  enum: [active, disabled]
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    $ref: '#/components/schemas/AdminDetail'
+  /v1/admin/me:
+    get:
+      tags:
+      - Admin - 账号
+      summary: 当前管理员信息
+      description: 响应新增 `region` 字段（仅地区管理员非空，其他角色为空字符串）。前端可据此判断 `role === 'region_admin'` 做只读展示。
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      username:
+                        type: string
+                      role:
+                        type: string
+                        example: region_admin
+                      region:
+                        type: string
+                        example: 安徽省蚌埠市
+                        description: 地区（新，仅地区管理员非空）
+                      permissions:
+                        type: array
+                        items:
+                          type: string
+  /v1/admin/creators:
+    get:
+      tags:
+      - Admin - 创作者管理
+      summary: 创作者列表
+      description: |
+        - 超管：新增 `region` 筛选参数（ILIKE 模糊，省/市均可）
+        - 地区管理员：强制限定本地区，`region` 参数被忽略；无权限调用本接口以外的写操作
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: page
+        in: query
+        schema:
+          type: integer
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+      - name: region
+        in: query
+        schema:
+          type: string
+        description: 地区筛选（新）；地区管理员传了也会被强制本地区覆盖
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                      list:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: integer
+                            nickname:
+                              type: string
+                            region:
+                              type: string
+                              example: 安徽省蚌埠市
+                              description: 所在地区
+  /v1/admin/creators/{id}:
+    get:
+      tags:
+      - Admin - 创作者管理
+      summary: 创作者详情
+      description: 地区管理员访问非本地区创作者返回 404（不暴露存在性）。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: 成功
+        '404':
+          description: 创作者不存在或不在本地区（地区管理员）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 40401
+                  message:
+                    type: string
+                    example: 创作者不存在
+  /v1/admin/dramas:
+    get:
+      tags:
+      - Admin - 作品管理
+      summary: 作品列表
+      description: 地区管理员强制限定为本地区创作者的作品。
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: 成功
+  /v1/admin/dramas/{id}:
+    get:
+      tags:
+      - Admin - 作品管理
+      summary: 作品详情
+      description: 地区管理员访问非本地区作品返回 404；detail 内剧集的 `video_url`/`vod_file_id` 置空。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: 成功
+        '404':
+          description: 作品不存在或不在本地区（地区管理员）
+  /v1/admin/dramas/{id}/episodes:
+    get:
+      tags:
+      - Admin - 作品管理
+      summary: 剧集列表
+      description: |
+        地区管理员响应中 `video_url`、`vod_file_id` 强制置空（只可看元信息，不可见视频）。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: integer
+                            episode_no:
+                              type: integer
+                            title:
+                              type: string
+                            duration_seconds:
+                              type: integer
+                            video_url:
+                              type: string
+                              description: 地区管理员恒为空字符串
+                            vod_file_id:
+                              type: string
+                              description: 地区管理员恒为空字符串
+        '403':
+          description: 地区管理员无权限（非白名单路径或方法）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegionForbidden'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    AdminItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        role:
+          type: string
+          enum: [admin, finance, auditor, region_admin]
+          description: 角色（新）
+        region:
+          type: string
+          example: 安徽省蚌埠市
+          description: 地区（新，仅地区管理员非空）
+        remark:
+          type: string
+          example: 蚌埠地区管理员
+          description: 备注（新）
+        status:
+          type: string
+          enum: [active, disabled]
+        permissions:
+          type: array
+          items:
+            type: string
+    AdminDetail:
+      type: object
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        role:
+          type: string
+          description: 角色（新）
+        region:
+          type: string
+          description: 地区（新）
+        remark:
+          type: string
+          description: 备注（新）
+        status:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+    ErrResp:
+      type: object
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+    RegionForbidden:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 40301
+        message:
+          type: string
+          example: 地区管理员仅可查看本地区创作者及其作品（只读）
+        data:
+          type: object
+          nullable: true
