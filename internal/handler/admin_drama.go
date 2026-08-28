@@ -841,15 +841,16 @@ func (s *Server) recomputeDramaAuditTx(tx *gorm.DB, drama *model.Drama, reviewer
 			updates["status"] = model.DramaStatusAwaitingPublish
 		}
 	case model.DramaAuditRejected:
-		// 只有两个维度都审完才推进 status；单维度驳回时保持 reviewing，
-		// 等管理员把另一维度也审完再统一收敛状态。
-		if content != model.DramaAuditPending && video != model.DramaAuditPending {
-			switch drama.Status {
-			case model.DramaStatusPublished:
-				updates["status"] = model.DramaStatusOffline
-			case model.DramaStatusAwaitingPublish, model.DramaStatusReviewing:
-				updates["status"] = model.DramaStatusDraft
-			}
+		// 任一维度驳回即回退 status（published→offline，其余→draft），让创作者能从
+		// draft 的"修改/重新提审"入口改后重提。之前等两维度审完才回退，单维度驳回时
+		// status 卡在 reviewing，前端不显示修改按钮、提审接口也只收 draft/offline，
+		// 创作者被卡死（2026-08-28 项目组反馈）。未审完的另一维度管理员仍可继续审
+		// （adminAuditDrama 无状态限制），创作者重提时两维度会统一重置 pending。
+		switch drama.Status {
+		case model.DramaStatusPublished:
+			updates["status"] = model.DramaStatusOffline
+		case model.DramaStatusAwaitingPublish, model.DramaStatusReviewing:
+			updates["status"] = model.DramaStatusDraft
 		}
 	}
 	if err := tx.Model(&model.Drama{}).Where("id = ?", drama.ID).Updates(updates).Error; err != nil {

@@ -260,14 +260,21 @@ func (s *Server) creatorListDramas(c *gin.Context) {
 		if cats == nil {
 			cats = []gin.H{} // 前端遍历友好：永远是数组，不出现 null
 		}
-		// 草稿状态：审核维度显示 not_submitted，避免前端误显示"审核中"
+		// 草稿状态：审核维度显示 not_submitted，避免前端误显示"审核中"；
+		// 但 rejected 保留——驳回后 status 回 draft，盖掉会导致创作者看不到驳回原因。
 		auditStatus := d.AuditStatus
 		contentAuditStatus := d.ContentAuditStatus
 		videoAuditStatus := d.VideoAuditStatus
 		if d.Status == model.DramaStatusDraft {
-			auditStatus = "not_submitted"
-			contentAuditStatus = "not_submitted"
-			videoAuditStatus = "not_submitted"
+			if auditStatus != model.DramaAuditRejected {
+				auditStatus = "not_submitted"
+			}
+			if contentAuditStatus != model.DramaAuditRejected {
+				contentAuditStatus = "not_submitted"
+			}
+			if videoAuditStatus != model.DramaAuditRejected {
+				videoAuditStatus = "not_submitted"
+			}
 		}
 		list = append(list, gin.H{
 			"id":                   d.ID,

@@ -155,12 +155,20 @@ func ensureIndexes(db *gorm.DB) error {
 	`).Error; err != nil {
 		return err
 	}
-	// 分批审核迁移：新加的资料/视频维度列对存量初始为空，按当前 audit_status 回填一次，
-	// 保证已通过的存量剧在"派生总状态"下仍为 approved（不被误判回退）。仅填空值行，幂等。
-	if err := db.Exec(`UPDATE dramas SET content_audit_status = audit_status WHERE content_audit_status = '' AND audit_status <> ''`).Error; err != nil {
+	// 分批审核迁移：新加的资料/视频维度列对存量初始为空（'' 或 NULL，旧行经 gorm 零值写入可能是 NULL），
+	// 按当前 audit_status 回填一次，保证已通过的存量剧在"派生总状态"下仍为 approved（不被误判回退）。
+	// 仅填空值行，幂等。NULL 会被后端 norm() 当作 pending 处理，故必须一并回填。
+	if err := db.Exec(`UPDATE dramas SET content_audit_status = audit_status WHERE (content_audit_status IS NULL OR content_audit_status = '') AND audit_status <> ''`).Error; err != nil {
 		return err
 	}
-	if err := db.Exec(`UPDATE dramas SET video_audit_status = audit_status WHERE video_audit_status = '' AND audit_status <> ''`).Error; err != nil {
+	if err := db.Exec(`UPDATE dramas SET video_audit_status = audit_status WHERE (video_audit_status IS NULL OR video_audit_status = '') AND audit_status <> ''`).Error; err != nil {
+		return err
+	}
+	// 兜底：audit_status 也为空的极端行，两维度统一置 pending（与模型 default 一致）。
+	if err := db.Exec(`UPDATE dramas SET content_audit_status = 'pending' WHERE content_audit_status IS NULL OR content_audit_status = ''`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`UPDATE dramas SET video_audit_status = 'pending' WHERE video_audit_status IS NULL OR video_audit_status = ''`).Error; err != nil {
 		return err
 	}
 	// 观看历史「一剧一条」迁移：删除旧的 (user,episode) 唯一索引，对存量去重（每个 user+drama 仅留最近一条），

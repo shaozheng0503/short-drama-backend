@@ -101,13 +101,18 @@ func dramaCardView(d model.Drama, freeEpisodes int) gin.H {
 }
 
 func dramaAdminView(d model.Drama, categoryName, creatorName string) gin.H {
-	// 草稿状态：审核维度统一显示 not_submitted，避免前端把 pending 误显示为"审核中"
+	// 草稿状态：审核维度统一显示 not_submitted，避免前端把 pending 误显示为"审核中"；
+	// 但 rejected 要保留——驳回后 status 回退到 draft，若被盖掉创作者/管理员就看不到驳回原因了。
 	auditStatus := d.AuditStatus
 	contentAuditStatus := d.ContentAuditStatus
 	videoAuditStatus := d.VideoAuditStatus
-	if d.Status == model.DramaStatusDraft {
+	if d.Status == model.DramaStatusDraft && auditStatus != model.DramaAuditRejected {
 		auditStatus = "not_submitted"
+	}
+	if d.Status == model.DramaStatusDraft && contentAuditStatus != model.DramaAuditRejected {
 		contentAuditStatus = "not_submitted"
+	}
+	if d.Status == model.DramaStatusDraft && videoAuditStatus != model.DramaAuditRejected {
 		videoAuditStatus = "not_submitted"
 	}
 	view := gin.H{
