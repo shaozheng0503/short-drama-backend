@@ -243,6 +243,10 @@ func (s *Server) Router() *gin.Engine {
 	appAuth.GET("/orders/:order_no", s.appGetOrder)
 	appAuth.POST("/episodes/:id/unlock", s.appUnlockEpisode)
 
+	// === App：看广告解锁（穿山甲激励视频） ===
+	appAuth.POST("/ad-unlock/tickets", s.appCreateAdUnlockTicket)          // 创建广告解锁凭证（App 透传 ticket_id 给穿山甲 SDK）
+	appAuth.GET("/ad-unlock/tickets/:ticket_id", s.appGetAdUnlockTicket)   // 广告关闭后轮询解锁结果
+
 	// === Creator ===
 	creator := v1.Group("/creator")
 	creator.POST("/auth/login", s.creatorLogin)
@@ -397,6 +401,9 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth := admin.Group("")
 	adminAuth.Use(middleware.RequireAdmin(s.cfg))
 	adminAuth.Use(s.requireActiveAdmin())
+	// 地区管理员围栏：只读白名单（列表/详情），其余全部 403。放在 requireActiveAdmin 之后
+	//（region 已写入 context），放在 auditMiddleware 之前（拒绝的请求不产生审计噪音）。
+	adminAuth.Use(s.restrictRegionAdmin())
 	adminAuth.Use(s.auditMiddleware())
 	adminAuth.POST("/auth/refresh", s.adminRefreshToken) // 滑动续期：换新 token，避免常用管理员被踢
 	adminAuth.GET("/me", s.adminMe)
@@ -434,6 +441,7 @@ func (s *Server) Router() *gin.Engine {
 	adminAuth.POST("/dramas/:id/audit", s.requirePermission(model.PermContentAudit), s.adminAuditDrama) // 分批审核：按维度(content/video)通过/驳回
 	adminAuth.POST("/dramas/:id/sendback", s.requirePermission(model.PermContentAudit), s.adminSendbackDrama) // 打回已上架剧集
 	adminAuth.PUT("/dramas/:id/distributable", s.adminSetDistributable)                                // 开关发行商认领
+	adminAuth.PUT("/dramas/:id/ad-unlock", s.adminSetAdUnlockEnabled)                                  // 开关看广告解锁（默认关，admin 逐剧开启）
 
 	adminAuth.GET("/dramas/:id/episodes", s.adminListEpisodes)
 	adminAuth.POST("/dramas/:id/episodes", s.adminCreateEpisode)
@@ -570,6 +578,7 @@ func (s *Server) Router() *gin.Engine {
 	webhooks.POST("/wechat/pay", s.webhookWechatPay)
 	webhooks.POST("/alipay/pay", s.webhookAlipayPay)
 	webhooks.POST("/vod", s.webhookVOD)
+	webhooks.GET("/csj/reward", s.webhookCSJReward) // 穿山甲激励视频服务端奖励验证（GET，验签 sha256(key:trans_id)）
 
 	// === Dev-only：一键模拟支付成功 + 一键灌 mock 数据，PAYMENT_DEV_MODE=true 才挂载 ===
 	if s.cfg.PaymentDevMode {

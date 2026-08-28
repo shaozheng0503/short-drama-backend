@@ -159,7 +159,8 @@ func dramaAdminView(d model.Drama, categoryName, creatorName string) gin.H {
 		"favorite_count":        d.FavoriteCount,
 		"share_count":           d.ShareCount,
 		"published_at":          d.PublishedAt,
-		"distributable":         d.Distributable == nil || *d.Distributable, // 是否开放发行商认领
+		"distributable":         d.Distributable == nil || *d.Distributable,      // 是否开放发行商认领
+		"ad_unlock_enabled":     d.AdUnlockEnabled != nil && *d.AdUnlockEnabled, // 看广告解锁（admin 手动开启，默认关）
 		"created_at":            d.CreatedAt,
 		"updated_at":            d.UpdatedAt,
 	}
@@ -181,6 +182,18 @@ func episodeAdminView(e model.Episode) gin.H {
 		"created_at":       e.CreatedAt,
 		"updated_at":       e.UpdatedAt,
 	}
+}
+
+// episodeAdminViewFor 上下文感知版剧集视图：
+// 地区管理员看不到视频地址（video_url / vod_file_id 均抹掉）——
+// 2026-08-25 需求「查看其发布作品（不包括视频）」。
+func episodeAdminViewFor(c *gin.Context, e model.Episode) gin.H {
+	view := episodeAdminView(e)
+	if adminIsRegionAdmin(c) {
+		view["video_url"] = ""
+		view["vod_file_id"] = ""
+	}
+	return view
 }
 
 func episodeAppView(e model.Episode, freeEpisodes int, unlocked, liked bool, commentCount int64) gin.H {

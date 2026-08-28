@@ -1,0 +1,395 @@
+openapi: 3.0.3
+info:
+  title: 短剧平台 - 结算单字段修正 API（0.18.4）
+  description: |
+    本文档覆盖 2026-08-14 结算单金额字段修正，可直接导入 Apifox 覆盖对应接口。
+
+    ## 变更摘要（0.18.3 → 0.18.4）
+
+    ### 1. 预览接口字段改名：tax_cents → platform_cents
+    GET /v1/creator/settlement/preview —— 原来的 `tax_cents` 字段实际是平台抽成而非个税，
+    改名为 `platform_cents`，避免前端误解。
+
+    ### 2. 结算单列表/详情新增 platform_cents
+    GET /v1/creator/settlements（列表）
+    GET /v1/creator/settlements/:id（详情）
+    —— 新增 `platform_cents` 字段（平台抽成），与预览接口保持一致。
+
+    ### 3. creator_party 新增 platform_cents
+    提现详情中的 `creator_party` 对象新增 `platform_cents` 字段。
+
+    ### 4. Excel/PDF 对账单标签修正
+    GET /v1/creator/settlements/:id/download（Excel）
+    GET /v1/creator/settlements/:id/download.pdf（PDF）
+    —— 「税率（元）」标签改为「平台抽成（元）」。
+
+    ## 金额字段含义说明
+    | 字段 | 含义 | 所属层级 |
+    |------|------|----------|
+    | gross_cents | 总流水（渠道总收入） | 结算单 |
+    | platform_cents | 平台抽成 = gross - income | 结算单 |
+    | net_cents | 创作者分成（税前，平台抽成后） | 结算单 |
+    | tax_cents | 代扣个税（个人按阶梯算，机构不扣） | 提现 |
+    | net_cents | 实际到账（税后）= amount - tax | 提现 |
+
+    注意：结算单的 `net_cents` 是税前创作者分成，提现的 `net_cents` 是税后实际到账，两者不同。
+
+    ## 影响接口列表
+    - GET /v1/creator/settlement/preview（tax_cents → platform_cents）
+    - GET /v1/creator/settlements（新增 platform_cents）
+    - GET /v1/creator/settlements/:id（新增 platform_cents）
+    - GET /v1/creator/withdrawals/:id（creator_party 新增 platform_cents）
+
+  version: 0.18.4
+  contact:
+    name: Drama Platform API
+servers:
+- url: https://api.langzhi.top
+  description: 生产环境
+- url: https://api-dev.langzhi.top
+  description: 沙箱环境
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+paths:
+  /v1/creator/settlement/preview:
+    get:
+      tags:
+      - Creator - 结算单
+      summary: 创作者结算预览（实时快照）
+      description: |
+        按剧聚合的实时收益预览，不入库。最终结算金额以系统生成的结算单为准。
+        0.18.4 变更：`tax_cents` 字段改名为 `platform_cents`（实际是平台抽成，非个税）。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: period
+        in: query
+        required: true
+        schema:
+          type: string
+          example: "2026-08"
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      creator_id:
+                        type: integer
+                      creator_type:
+                        type: string
+                        description: personal / organization
+                      is_stored:
+                        type: boolean
+                        description: 是否已有入库结算单
+                      source:
+                        type: string
+                        description: preview / stored+preview
+                      period:
+                        type: string
+                      transfer_type:
+                        type: string
+                        description: public(对公) / private(对私)
+                      min_withdrawal_cents:
+                        type: integer
+                      summary:
+                        type: object
+                        properties:
+                          income_cents:
+                            type: integer
+                            description: 创作者分成合计（税前）
+                          withdrawable_cents:
+                            type: integer
+                          withdrawn_cents:
+                            type: integer
+                          creator_share_rate:
+                            type: number
+                            format: float
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            drama_id:
+                              type: integer
+                            drama_title:
+                              type: string
+                            gross_cents:
+                              type: integer
+                              description: 总流水（渠道总收入）
+                            platform_cents:
+                              type: integer
+                              description: 平台抽成 = gross_cents - income_cents（原 tax_cents，0.18.4 改名）
+                            income_cents:
+                              type: integer
+                              description: 创作者分成（税前，平台抽成后）
+                            withdrawable_cents:
+                              type: integer
+                            withdrawn_cents:
+                              type: integer
+                            play_count:
+                              type: integer
+
+  /v1/creator/settlements:
+    get:
+      tags:
+      - Creator - 结算单
+      summary: 创作者结算单列表
+      description: |
+        0.18.4 新增 platform_cents 字段（平台抽成）。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: integer
+                            settlement_no:
+                              type: string
+                            cycle_key:
+                              type: string
+                            status:
+                              type: string
+                              description: 结算单原始状态（open/invoiced/paid/void）
+                            status_label:
+                              type: string
+                            display_status:
+                              type: string
+                              description: |
+                                综合展示状态（前端用这个）：
+                                open(待开票) / invoiced(已开票) / withdraw_pending(提现审核中) /
+                                withdraw_approved(审核通过待打款) / withdraw_rejected(提现已驳回) /
+                                paid(已付款) / void(已作废)
+                            display_status_label:
+                              type: string
+                            gross_cents:
+                              type: integer
+                              description: 总流水（渠道总收入）
+                            platform_cents:
+                              type: integer
+                              description: 平台抽成（0.18.4 新增）
+                            net_cents:
+                              type: integer
+                              description: 创作者分成（税前）
+                            withdrawal_status:
+                              type: string
+                            withdrawal_status_label:
+                              type: string
+                      page:
+                        type: integer
+                      page_size:
+                        type: integer
+                      total:
+                        type: integer
+
+  /v1/creator/settlements/{id}:
+    get:
+      tags:
+      - Creator - 结算单
+      summary: 创作者结算单详情
+      description: |
+        0.18.4 新增 platform_cents 字段（平台抽成）。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      settlement_no:
+                        type: string
+                      creator_id:
+                        type: integer
+                      period:
+                        type: string
+                      cycle_key:
+                        type: string
+                      period_range:
+                        type: string
+                      gross_cents:
+                        type: integer
+                        description: 总流水（渠道总收入）
+                      platform_cents:
+                        type: integer
+                        description: 平台抽成（0.18.4 新增）
+                      net_cents:
+                        type: integer
+                        description: 创作者分成（税前）
+                      status:
+                        type: string
+                      status_label:
+                        type: string
+                      display_status:
+                        type: string
+                      display_status_label:
+                        type: string
+                      withdrawal_status:
+                        type: string
+                      withdrawal_status_label:
+                        type: string
+                      remark:
+                        type: string
+                      created_at:
+                        type: string
+                        format: date-time
+                      closed_at:
+                        type: string
+                        format: date-time
+                      drama_summary:
+                        type: array
+                      withdrawals:
+                        type: array
+                      platform_company:
+                        type: object
+                      creator_party:
+                        type: object
+                        properties:
+                          creator_name:
+                            type: string
+                          creator_type:
+                            type: string
+                          income_type:
+                            type: string
+                          bank_name:
+                            type: string
+                          bank_no_masked:
+                            type: string
+                          gross_cents:
+                            type: integer
+                            description: 总流水
+                          platform_cents:
+                            type: integer
+                            description: 平台抽成（0.18.4 新增）
+                          net_cents:
+                            type: integer
+                            description: 创作者分成（税前）
+                          cycle_key:
+                            type: string
+
+  /v1/creator/withdrawals/{id}:
+    get:
+      tags:
+      - Creator - 提现
+      summary: 提现详情
+      description: |
+        0.18.4：creator_party 新增 platform_cents 字段。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      gross_cents:
+                        type: integer
+                        description: 提现金额
+                      net_cents:
+                        type: integer
+                        description: 实际到账（税后）= amount - tax
+                      tax_cents:
+                        type: integer
+                        description: 代扣个税
+                      status:
+                        type: string
+                      settlement_id:
+                        type: integer
+                      cycle_key:
+                        type: string
+                      period:
+                        type: string
+                      period_range:
+                        type: string
+                      creator_party:
+                        type: object
+                        properties:
+                          creator_name:
+                            type: string
+                          creator_type:
+                            type: string
+                          income_type:
+                            type: string
+                          bank_name:
+                            type: string
+                          bank_no_masked:
+                            type: string
+                          gross_cents:
+                            type: integer
+                            description: 总流水
+                          platform_cents:
+                            type: integer
+                            description: 平台抽成（0.18.4 新增）
+                          net_cents:
+                            type: integer
+                            description: 创作者分成（税前）
+                          cycle_key:
+                            type: string

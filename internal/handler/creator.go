@@ -106,6 +106,7 @@ func creatorBriefView(cr model.Creator) gin.H {
 		"nickname":             cr.Nickname,
 		"avatar_url":           creatorAvatarURL(cr),
 		"account_uid":          cr.AccountUID,
+		"region":               cr.Region,
 		"identity_mid":         cr.IdentityMID,
 		"identity_role":        cr.IdentityRole,
 		"creator_type":         cr.CreatorType,
@@ -131,6 +132,7 @@ func creatorDetailView(cr model.Creator) gin.H {
 		"nickname":             cr.Nickname,
 		"avatar_url":           creatorAvatarURL(cr),
 		"account_uid":          cr.AccountUID,
+		"region":               cr.Region,
 		"creator_type":         cr.CreatorType,
 		"org_name":             cr.OrgName,
 		"org_credit_code":      cr.OrgCreditCode,
@@ -150,6 +152,7 @@ func creatorDetailView(cr model.Creator) gin.H {
 			"nickname":    cr.Nickname,
 			"account_uid": cr.AccountUID,
 			"login_phone": sms.MaskPhone(cr.Phone),
+			"region":      cr.Region,
 		},
 		"real_name_info": gin.H{
 			"real_name":           cr.Name,

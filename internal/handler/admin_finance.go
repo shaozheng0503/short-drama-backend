@@ -94,6 +94,12 @@ func (s *Server) adminListCreators(c *gin.Context) {
 		like := "%" + v + "%"
 		q = q.Where("name ILIKE ? OR phone ILIKE ?", like, like)
 	}
+	// 2026-08-25 加：region 筛选（超管按省/市筛）；地区管理员强制限定本地区（不可越权看其他地区）。
+	if scope := regionScope(c); scope != "" {
+		q = q.Where("region = ?", scope)
+	} else if v := strings.TrimSpace(c.Query("region")); v != "" {
+		q = q.Where("region ILIKE ?", "%"+v+"%")
+	}
 	var total int64
 	q.Count(&total)
 	orderClause := "created_at desc"
@@ -138,6 +144,7 @@ func (s *Server) adminListCreators(c *gin.Context) {
 			"nickname":             nickname,
 			"avatar_url":           creatorAvatarURL(cr),
 			"account_uid":          uid,
+			"region":               cr.Region,
 			"creator_type":         cr.CreatorType,
 			"org_name":             cr.OrgName,
 			"org_credit_code":      cr.OrgCreditCode,
@@ -207,6 +214,11 @@ func (s *Server) adminGetCreator(c *gin.Context) {
 		response.InvalidParam(c, "id 不合法")
 		return
 	}
+	// 2026-08-25 加：地区管理员只能看本地区创作者（越权访问返回 404，不暴露存在性）。
+	if !s.regionAdminCanSeeCreator(c, id) {
+		response.NotFound(c, "创作者不存在")
+		return
+	}
 	var cr model.Creator
 	if err := s.db.First(&cr, id).Error; err != nil {
 		if isNotFound(err) {
@@ -231,6 +243,7 @@ type adminUpdateCreatorRequest struct {
 	Name               *string `json:"name"`
 	Nickname           *string `json:"nickname"`
 	AvatarURL          *string `json:"avatar_url"`
+	Region             *string `json:"region"`
 	AccountUID         *string `json:"account_uid"`
 	CreatorType        *string `json:"creator_type"`
 	OrgName            *string `json:"org_name"`
@@ -273,6 +286,14 @@ func (s *Server) adminUpdateCreator(c *gin.Context) {
 	}
 	if req.AvatarURL != nil {
 		updates["avatar_url"] = *req.AvatarURL
+	}
+	if req.Region != nil {
+		region := strings.TrimSpace(*req.Region)
+		if runeLen(region) > creatorRegionMaxRune {
+			response.InvalidParam(c, "region 过长（最长 64 个字符）")
+			return
+		}
+		updates["region"] = region
 	}
 	if req.AccountUID != nil {
 		updates["account_uid"] = *req.AccountUID
@@ -1297,16 +1318,15 @@ func (s *Server) adminMarkWithdrawalPaid(c *gin.Context) {
 				"transaction_no": transactionNo,
 				"paid_at":        wNow.PaidAt,
 			})
-			// 关联的 settlement：invoiced → paid（如果未变）
-			if wNow.InvoiceID != nil {
-				var inv model.Invoice
-				if err := s.db.First(&inv, *wNow.InvoiceID).Error; err == nil && inv.SettlementID > 0 {
-					var stNow model.Settlement
-					if err := s.db.First(&stNow, inv.SettlementID).Error; err == nil && stNow.Status != model.SettlementStatusPaid {
-						s.recordTransition("settlement", inv.SettlementID, stNow.Status, model.SettlementStatusPaid, "admin", &aid, "结算单完结（打款完成）", map[string]interface{}{
-							"withdrawal_id": id,
-						})
-					}
+			// 关联的 settlement：invoiced → paid（打款完成时联动）
+			// 0.18.2 修复：不再依赖 InvoiceID 查 settlement，直接用 Withdrawal.SettlementID
+			if wNow.SettlementID > 0 {
+				var stNow model.Settlement
+				if err := s.db.First(&stNow, wNow.SettlementID).Error; err == nil && stNow.Status != model.SettlementStatusPaid && stNow.Status != model.SettlementStatusVoid {
+					s.db.Model(&stNow).Update("status", model.SettlementStatusPaid)
+					s.recordTransition("settlement", stNow.ID, stNow.Status, model.SettlementStatusPaid, "admin", &aid, "结算单完结（打款完成）", map[string]interface{}{
+						"withdrawal_id": id,
+					})
 				}
 			}
 		}

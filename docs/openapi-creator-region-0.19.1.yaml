@@ -1,0 +1,335 @@
+openapi: 3.0.3
+info:
+  title: 短剧平台 - 创作者地区字段 API（0.19.1）
+  description: |
+    本文档覆盖 2026-08-25 新增的「创作者所在地区」功能，可直接导入 Apifox 覆盖对应接口。
+
+    ## 功能说明
+    创作者可在账号设置中填写所在地区（精确到市），管理端同步可见与可改。
+
+    ## 字段定义
+    - 字段名：`region`
+    - 格式：省 + 市，如 `广东省深圳市`（后端不做行政区划强校验，由前端省市区选择器保证）
+    - 长度：最长 64 字符；传空字符串可清除；不传该字段不更新
+    - 存量创作者该字段为空字符串，前端注意判空展示
+
+    ## 涉及接口
+    | 接口 | 变化 |
+    |---|---|
+    | GET /v1/creator/account | 响应新增 `region` |
+    | PUT /v1/creator/account | 请求体可传 `region` |
+    | GET /v1/creator/me | 响应新增 `region`（顶层 + account_info 内） |
+    | POST /v1/creator/auth/login | 响应 creator 对象新增 `region` |
+    | GET /v1/admin/creators | 列表项新增 `region` |
+    | GET /v1/admin/creators/{id} | 详情新增 `region` |
+    | PUT /v1/admin/creators/{id} | 请求体可传 `region` |
+
+  version: 0.19.1
+  contact:
+    name: Drama Platform API
+servers:
+- url: https://api.langzhi.top
+  description: 生产环境
+- url: https://api-dev.langzhi.top
+  description: 沙箱环境
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+paths:
+  /v1/creator/account:
+    get:
+      tags:
+      - Creator - 账号
+      summary: 查询账号信息
+      description: 响应新增 region 字段。存量创作者为空字符串。
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      account_uid:
+                        type: string
+                        example: C20260824001
+                      nickname:
+                        type: string
+                        example: 创作者小邱
+                      avatar_url:
+                        type: string
+                      login_phone:
+                        type: string
+                        description: 脱敏手机号
+                        example: "138****8000"
+                      region:
+                        type: string
+                        description: 所在地区（省+市，精确到市），存量为空字符串
+                        example: 广东省深圳市
+    put:
+      tags:
+      - Creator - 账号
+      summary: 更新账号信息
+      description: |
+        新增可选字段 region（省+市）。传空字符串清除；不传不更新；超 64 字符返回 400。
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nickname:
+                  type: string
+                  description: 1~50 字符
+                avatar_url:
+                  type: string
+                  description: 最长 512
+                region:
+                  type: string
+                  description: 所在地区（省+市），最长 64 字符；传空串清除
+                  example: 广东省深圳市
+            example:
+              region: 广东省深圳市
+      responses:
+        '200':
+          description: 成功（返回更新后的完整账号信息，含 region）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      account_uid:
+                        type: string
+                      nickname:
+                        type: string
+                      avatar_url:
+                        type: string
+                      login_phone:
+                        type: string
+                      region:
+                        type: string
+                        example: 广东省深圳市
+        '400':
+          description: region 过长（>64 字符）
+
+  /v1/creator/me:
+    get:
+      tags:
+      - Creator - 账号
+      summary: 当前创作者详情
+      description: 顶层新增 region；account_info 对象内也新增 region。
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      nickname:
+                        type: string
+                      region:
+                        type: string
+                        description: 所在地区（省+市）
+                        example: 广东省深圳市
+                      account_info:
+                        type: object
+                        properties:
+                          avatar_url:
+                            type: string
+                          nickname:
+                            type: string
+                          account_uid:
+                            type: string
+                          login_phone:
+                            type: string
+                          region:
+                            type: string
+                            example: 广东省深圳市
+
+  /v1/creator/auth/login:
+    post:
+      tags:
+      - Creator - 认证
+      summary: 创作者登录
+      description: 响应 creator 对象新增 region 字段。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, code]
+              properties:
+                phone:
+                  type: string
+                code:
+                  type: string
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      token:
+                        type: string
+                      creator:
+                        type: object
+                        properties:
+                          id:
+                            type: integer
+                          nickname:
+                            type: string
+                          region:
+                            type: string
+                            example: 广东省深圳市
+                          verify_status:
+                            type: string
+
+  /v1/admin/creators:
+    get:
+      tags:
+      - Admin - 创作者管理
+      summary: 创作者列表
+      description: 列表项新增 region 字段。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: integer
+                            nickname:
+                              type: string
+                            region:
+                              type: string
+                              description: 所在地区（省+市），存量为空字符串
+                              example: 广东省深圳市
+                            verify_status:
+                              type: string
+
+  /v1/admin/creators/{id}:
+    get:
+      tags:
+      - Admin - 创作者管理
+      summary: 创作者详情
+      description: 详情新增 region（顶层 + account_info 内）。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      region:
+                        type: string
+                        example: 广东省深圳市
+    put:
+      tags:
+      - Admin - 创作者管理
+      summary: 更新创作者
+      description: 请求体新增可选字段 region（最长 64 字符，传空串清除）。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                region:
+                  type: string
+                  description: 所在地区（省+市），最长 64 字符
+                  example: 广东省深圳市
+      responses:
+        '200':
+          description: 成功（返回更新后详情，含 region）

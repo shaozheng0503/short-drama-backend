@@ -14,6 +14,7 @@ import (
 type creatorAccountRequest struct {
 	Nickname  *string `json:"nickname"`
 	AvatarURL *string `json:"avatar_url"`
+	Region    *string `json:"region"`
 }
 
 func (s *Server) creatorGetAccount(c *gin.Context) {
@@ -28,6 +29,7 @@ func (s *Server) creatorGetAccount(c *gin.Context) {
 		"nickname":    creator.Nickname,
 		"avatar_url":  creatorAvatarURL(creator),
 		"login_phone": smsMaskCreatorPhone(creator.Phone),
+		"region":      creator.Region,
 	})
 }
 
@@ -53,6 +55,14 @@ func (s *Server) creatorUpdateAccount(c *gin.Context) {
 			return
 		}
 		updates["avatar_url"] = *req.AvatarURL
+	}
+	if req.Region != nil {
+		region := strings.TrimSpace(*req.Region)
+		if runeLen(region) > creatorRegionMaxRune {
+			response.InvalidParam(c, "region 过长（最长 64 个字符）")
+			return
+		}
+		updates["region"] = region
 	}
 	if len(updates) > 0 {
 		if err := s.db.Model(&model.Creator{}).Where("id = ?", cid).Updates(updates).Error; err != nil {

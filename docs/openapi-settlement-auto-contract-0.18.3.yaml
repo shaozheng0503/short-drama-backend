@@ -1,0 +1,445 @@
+openapi: 3.0.3
+info:
+  title: 短剧平台 - 结算单/提现/发行商结算修复 API（0.18.3）
+  description: |
+    本文档覆盖 2026-08-13 下午全部修复，可直接导入 Apifox 覆盖对应接口。
+
+    ## 变更摘要（0.18.0 → 0.18.3）
+
+    ### 1. 创作者结算单生成：无合同时自动创建（0.18.1）
+    POST /v1/admin/settlements/generate —— 创作者无合同记录时不再静默跳过，
+    改为自动创建 pending 状态的默认合同。
+
+    ### 2. 创作者+发行商结算单合并生成（0.18.1）
+    POST /v1/admin/settlements/generate —— 现在同时生成创作者和发行商两种结算单。
+    响应新增 distributor_created / distributor_skipped / distributor_message 字段。
+
+    ### 3. 发行商结算单 payable 计算修复（0.18.2）
+    POST /v1/admin/settlements/generate
+    POST /v1/admin/distributor-settlements/generate
+    —— payable_cents 原来用 gross - deposit（总收入-押金），导致发行商被要求付几乎全部收入。
+    修复为 platform_cents - deposit（平台应收45%-押金），55%发行商分成生效。
+
+    ### 4. 结算单状态联动修复（0.18.2）
+    Withdrawal 模型新增 settlement_id 字段（AutoMigrate 自动建列）。
+    打款完成时 settlement status 从 invoiced → paid，不再依赖 InvoiceID。
+    个人创作者（无发票）的结算单也能正常联动到 paid。
+
+    ### 5. 提现详情字段补全（0.18.2）
+    GET /v1/creator/withdrawals/:id —— 个人创作者无发票时，
+    settlement_id / cycle_key / period / period_range / creator_party / tax_cents 等字段
+    原来全部缺失（通过 InvoiceID 查结算单，无发票则跳过）。
+    修复后用 Withdrawal.SettlementID 直接查，所有字段正常返回。
+    withdrawalView 新增 settlement_id 和 tax_cents 字段。
+
+    ### 6.5 结算单详情接口 withdrawal_status 补全（0.18.3）
+    GET /v1/creator/settlements/:id —— 详情接口补返 withdrawal_status + withdrawal_status_label，
+    与列表接口保持一致。
+
+    ### 6. 结算单展示状态联动（0.18.2）
+    GET /v1/creator/settlements（列表）和 GET /v1/creator/settlements/:id（详情）
+    新增 display_status / display_status_label 字段。
+    综合状态 = 结算单状态 + 提现状态联动，前端直接用 display_status 展示：
+    - open → 待开票
+    - invoiced + 提现 pending → withdraw_pending（提现审核中）
+    - invoiced + 提现 approved → withdraw_approved（审核通过待打款）
+    - invoiced + 提现 rejected → withdraw_rejected（提现已驳回，可重新提现）
+    - invoiced（无提现）→ 已开票
+    - paid → 已付款
+    - void → 已作废
+
+    ## 影响接口列表
+    - POST /v1/admin/settlements/generate（响应格式变更）
+    - POST /v1/admin/distributor-settlements/generate（payable 计算修复）
+    - GET /v1/creator/withdrawals（列表项新增 settlement_id, tax_cents）
+    - GET /v1/creator/withdrawals/:id（详情新增 settlement_id, cycle_key, period, period_range, creator_party, tax_cents）
+    - POST /v1/admin/withdrawals/:id/mark-paid（打款时联动结算单 status → paid）
+    - GET /v1/creator/settlements（列表新增 display_status, display_status_label, withdrawal_status）
+    - GET /v1/creator/settlements/:id（详情新增 display_status, display_status_label, withdrawal_status, withdrawal_status_label）
+
+    ## 数据库变更
+    - withdrawals 表新增 settlement_id 列（bigint, nullable, 有索引）
+    - AutoMigrate 自动执行，无需手动 DDL
+
+  version: 0.18.3
+  contact:
+    name: Drama Platform API
+servers:
+- url: https://api.langzhi.top
+  description: 生产环境
+- url: https://api-dev.langzhi.top
+  description: 沙箱环境
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+paths:
+  /v1/admin/settlements/generate:
+    post:
+      tags:
+      - Admin - 结算单生成
+      summary: 手动生成结算单（创作者 + 发行商）
+      description: |
+        同时生成创作者和发行商两种结算单。创作者无合同时自动创建默认合同。
+        payable_cents = platform_cents (45%) - deducted_deposit_cents。
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cycle_key:
+                  type: string
+                  example: "2026-08-H1"
+      responses:
+        '200':
+          description: 生成成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      cycle_key:
+                        type: string
+                      period_range:
+                        type: string
+                      created:
+                        type: integer
+                        description: 创作者结算单生成数
+                      message:
+                        type: string
+                      distributor_created:
+                        type: integer
+                        description: 发行商结算单生成数
+                      distributor_skipped:
+                        type: integer
+                      distributor_message:
+                        type: string
+
+  /v1/creator/withdrawals:
+    get:
+      tags:
+      - Creator - 提现
+      summary: 提现列表
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: integer
+                            gross_cents:
+                              type: integer
+                            net_cents:
+                              type: integer
+                            tax_cents:
+                              type: integer
+                              description: 个税（新增）
+                            status:
+                              type: string
+                            settlement_id:
+                              type: integer
+                              description: 关联结算单ID（新增）
+                            cycle_key:
+                              type: string
+                            created_at:
+                              type: string
+                              format: date-time
+                            reviewed_at:
+                              type: string
+                              format: date-time
+                            paid_at:
+                              type: string
+                              format: date-time
+
+  /v1/creator/withdrawals/{id}:
+    get:
+      tags:
+      - Creator - 提现
+      summary: 提现详情
+      description: |
+        0.18.2 修复：个人创作者无发票时也能返回完整字段。
+        通过 Withdrawal.SettlementID 直接关联结算单，不再依赖 InvoiceID。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      gross_cents:
+                        type: integer
+                      net_cents:
+                        type: integer
+                      tax_cents:
+                        type: integer
+                        description: 个税（新增）
+                      status:
+                        type: string
+                      settlement_id:
+                        type: integer
+                        description: 关联结算单ID（新增）
+                      cycle_key:
+                        type: string
+                        description: 账期（新增）
+                      period:
+                        type: string
+                        description: 周期 YYYY-MM（新增）
+                      period_range:
+                        type: string
+                        description: 周期日期范围（新增）
+                      created_at:
+                        type: string
+                        format: date-time
+                      reviewed_at:
+                        type: string
+                        format: date-time
+                      paid_at:
+                        type: string
+                        format: date-time
+                      creator_party:
+                        type: object
+                        description: 结算方信息（新增）
+                        properties:
+                          creator_name:
+                            type: string
+                          creator_type:
+                            type: string
+                          income_type:
+                            type: string
+                          bank_name:
+                            type: string
+                          bank_no_masked:
+                            type: string
+                          gross_cents:
+                            type: integer
+                          net_cents:
+                            type: integer
+                          cycle_key:
+                            type: string
+
+  /v1/admin/withdrawals/{id}/mark-paid:
+    post:
+      tags:
+      - Admin - 提现审核
+      summary: 标记提现已打款
+      description: |
+        0.18.2 修复：打款完成时联动更新结算单 status → paid。
+        通过 Withdrawal.SettlementID 直接关联结算单，不再依赖 InvoiceID。
+        个人创作者（无发票）的结算单也能正常联动到 paid。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                transaction_no:
+                  type: string
+                remark:
+                  type: string
+      responses:
+        '200':
+          description: 成功
+
+  /v1/creator/settlements:
+    get:
+      tags:
+      - Creator - 结算单
+      summary: 创作者结算单列表
+      description: |
+        0.18.2 新增 display_status / display_status_label 字段。
+        综合状态 = 结算单状态 + 提现状态联动，前端直接用 display_status 展示。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: integer
+                            settlement_no:
+                              type: string
+                            cycle_key:
+                              type: string
+                            status:
+                              type: string
+                              description: 结算单原始状态（open/invoiced/paid/void）
+                            status_label:
+                              type: string
+                            display_status:
+                              type: string
+                              description: |
+                                综合展示状态（前端用这个）：
+                                open(待开票) / invoiced(已开票) / withdraw_pending(提现审核中) /
+                                withdraw_approved(审核通过待打款) / withdraw_rejected(提现已驳回，可重新提现) /
+                                paid(已付款) / void(已作废)
+                            display_status_label:
+                              type: string
+                            gross_cents:
+                              type: integer
+                            net_cents:
+                              type: integer
+                            withdrawal_status:
+                              type: string
+                            withdrawal_status_label:
+                              type: string
+                      page:
+                        type: integer
+                      page_size:
+                        type: integer
+                      total:
+                        type: integer
+
+  /v1/creator/settlements/{id}:
+    get:
+      tags:
+      - Creator - 结算单
+      summary: 创作者结算单详情
+      description: |
+        0.18.2 新增 display_status / display_status_label 字段。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      settlement_no:
+                        type: string
+                      creator_id:
+                        type: integer
+                      period:
+                        type: string
+                      cycle_key:
+                        type: string
+                      period_range:
+                        type: string
+                      gross_cents:
+                        type: integer
+                      net_cents:
+                        type: integer
+                      status:
+                        type: string
+                      status_label:
+                        type: string
+                      display_status:
+                        type: string
+                        description: |
+                          综合展示状态：open / invoiced / withdraw_pending /
+                          withdraw_approved / withdraw_rejected / paid / void
+                      display_status_label:
+                        type: string
+                      withdrawal_status:
+                        type: string
+                        description: 提现状态（pending/approved/paid/rejected，无提现时为空）
+                      withdrawal_status_label:
+                        type: string
+                        description: 提现状态中文标签
+                      remark:
+                        type: string
+                      created_at:
+                        type: string
+                        format: date-time
+                      closed_at:
+                        type: string
+                        format: date-time
+                      drama_summary:
+                        type: array
+                      withdrawals:
+                        type: array
+                      platform_company:
+                        type: object
+                      creator_party:
+                        type: object

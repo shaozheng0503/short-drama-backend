@@ -144,8 +144,8 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 			return errAmountExceedsDramaBalance
 		}
 
-		// 创建发票（企业必传，个人可不传）
-		if isOrg && req.InvoiceFileURL != "" {
+		// 创建发票（企业必传，个人可选传）
+		if req.InvoiceFileURL != "" && req.InvoiceType != "" {
 			inv := model.Invoice{
 				InvoiceNo:    generateInvoiceBizNo(),
 				SettlementID: req.SettlementID,
@@ -189,6 +189,7 @@ func (s *Server) creatorCreateWithdrawal(c *gin.Context) {
 			WithdrawalNo:        generateWithdrawalNo(),
 			CreatorID:           cid,
 			DramaID:             nil,
+			SettlementID:        req.SettlementID,
 			AmountCents:         amount,
 			CreatorTypeSnapshot: creator.CreatorType,
 			TransferType:        model.TransferTypeOf(creator.CreatorType),
@@ -313,22 +314,31 @@ func (s *Server) creatorListWithdrawals(c *gin.Context) {
 // withdrawalView —— 提现列表项（按邱嘉诚规范精简）
 func (s *Server) withdrawalView(w model.Withdrawal) gin.H {
 	view := gin.H{
-		"id":          w.ID,
-		"gross_cents": w.AmountCents, // 总金额
-		"net_cents":   w.NetCents,    // 税后金额
-		"status":      w.Status,
-		"created_at":  w.CreatedAt,
-		"reviewed_at": w.ReviewedAt,
-		"paid_at":     w.PaidAt,
+		"id":            w.ID,
+		"gross_cents":   w.AmountCents, // 总金额
+		"net_cents":     w.NetCents,    // 税后金额
+		"tax_cents":     w.TaxCents,    // 个税
+		"status":        w.Status,
+		"created_at":    w.CreatedAt,
+		"reviewed_at":   w.ReviewedAt,
+		"paid_at":       w.PaidAt,
+		"settlement_id": w.SettlementID,
 	}
 	// cycle_key 从关联结算单获取
+	var settlementID uint64
 	if w.InvoiceID != nil {
 		var inv model.Invoice
 		if err := s.db.Select("settlement_id").First(&inv, *w.InvoiceID).Error; err == nil && inv.SettlementID > 0 {
-			var cycleKey string
-			s.db.Model(&model.Settlement{}).Select("cycle_key").Where("id = ?", inv.SettlementID).Scan(&cycleKey)
-			view["cycle_key"] = cycleKey
+			settlementID = inv.SettlementID
 		}
+	}
+	if settlementID == 0 {
+		settlementID = w.SettlementID
+	}
+	if settlementID > 0 {
+		var cycleKey string
+		s.db.Model(&model.Settlement{}).Select("cycle_key").Where("id = ?", settlementID).Scan(&cycleKey)
+		view["cycle_key"] = cycleKey
 	}
 	return view
 }
@@ -337,26 +347,38 @@ func (s *Server) withdrawalView(w model.Withdrawal) gin.H {
 func (s *Server) withdrawalDetailView(w model.Withdrawal) gin.H {
 	view := s.withdrawalView(w)
 
-	// 关联结算单 + creator_party
+	// 关联结算单：优先通过 invoice 查，回退到 SettlementID（个人创作者无发票）
 	var st model.Settlement
 	var stFound bool
+	var inv model.Invoice
+	invFound := false
 	if w.InvoiceID != nil {
-		var inv model.Invoice
 		if err := s.db.First(&inv, *w.InvoiceID).Error; err == nil && inv.SettlementID > 0 {
+			invFound = true
 			if err := s.db.First(&st, inv.SettlementID).Error; err == nil {
 				stFound = true
-				view["settlement_id"] = st.ID
-				// invoice
-				view["invoice"] = gin.H{
-					"invoice_type":     inv.InvoiceType,
-					"invoice_file_url": inv.FileURL,
-				}
 			}
 		}
 	}
+	if !stFound && w.SettlementID > 0 {
+		if err := s.db.First(&st, w.SettlementID).Error; err == nil {
+			stFound = true
+		}
+	}
 
-	// creator_party
 	if stFound {
+		view["settlement_id"] = st.ID
+		view["period"] = st.Period
+		view["period_range"] = st.PeriodRange
+		view["cycle_key"] = st.CycleKey
+		// invoice
+		if invFound {
+			view["invoice"] = gin.H{
+				"invoice_type":     inv.InvoiceType,
+				"invoice_file_url": inv.FileURL,
+			}
+		}
+		// creator_party
 		var creator model.Creator
 		if err := s.db.First(&creator, st.CreatorID).Error; err == nil {
 			view["creator_party"] = s.buildCreatorParty(creator, st)

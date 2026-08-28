@@ -1,0 +1,184 @@
+openapi: 3.0.3
+info:
+  title: 短剧平台 - 渠道收益接口改造 API（0.18.5）
+  description: |
+    本文档覆盖 2026-08-14 渠道收益列表接口改造，可直接导入 Apifox 覆盖对应接口。
+
+    ## 变更摘要（0.18.4 → 0.18.5）
+
+    ### GET /v1/admin/finance/channel-incomes 改造
+    原接口只返回创作者分成后收益（income_cents），现新增平台真实收入、发行商收益等字段。
+
+    **每行字段：**
+    - `gross_cents` — 总收益（渠道总流水）
+    - `platform_cents` — 平台真实收入 = 总收益 - 创作者分成 - 发行商实得
+    - `share_ratio_bp` — 创作者分成比例（基点，2000=20%）
+    - `income_cents` — 创作者分成（税前）
+    - `distributor_name` — 发行商名称
+    - `distributor_income_cents` — 发行商实得
+    - `distributor_share_ratio_bp` — 发行商分成比例（基点，5500=55%）
+
+    **响应新增 totals 汇总对象：**
+    - `gross_cents` — 总收益合计
+    - `platform_cents` — 平台真实收入合计
+    - `creator_income_cents` — 创作者分成合计
+    - `distributor_income_cents` — 发行商实得合计
+
+    **金额勾稽关系：**
+    gross_cents = platform_cents + income_cents + distributor_income_cents
+
+    **响应结构变更：**
+    原响应为 `{list, page, page_size, total}`，现新增 `totals` 字段：
+    `{list, page, page_size, total, totals}`
+
+  version: 0.18.5
+  contact:
+    name: Drama Platform API
+servers:
+- url: https://api.langzhi.top
+  description: 生产环境
+- url: https://api-dev.langzhi.top
+  description: 沙箱环境
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+paths:
+  /v1/admin/finance/channel-incomes:
+    get:
+      tags:
+      - Admin - 财务
+      summary: 渠道收益列表
+      description: |
+        0.18.5 改造：新增平台真实收入、发行商收益字段和 totals 汇总。
+        发行商数据通过 drama_id + stat_date 关联 distributor_income_daily 表获取。
+        平台真实收入 = 总收益 - 创作者分成 - 发行商实得。
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+      - name: drama_id
+        in: query
+        schema:
+          type: integer
+      - name: creator_id
+        in: query
+        schema:
+          type: integer
+      - name: channel
+        in: query
+        schema:
+          type: string
+      - name: stat_date_from
+        in: query
+        schema:
+          type: string
+          format: date
+      - name: stat_date_to
+        in: query
+        schema:
+          type: string
+          format: date
+      - name: batch_no
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: integer
+                            drama_id:
+                              type: integer
+                            drama_title:
+                              type: string
+                            channel:
+                              type: string
+                              description: 渠道名称（如 抖音）
+                            stat_date:
+                              type: string
+                              format: date
+                            creator_id:
+                              type: integer
+                            creator_name:
+                              type: string
+                            gross_cents:
+                              type: integer
+                              description: 总收益（渠道总流水）
+                            platform_cents:
+                              type: integer
+                              description: 平台真实收入 = 总收益 - 创作者分成 - 发行商实得
+                            share_ratio_bp:
+                              type: integer
+                              description: 创作者分成比例（基点，2000=20%）
+                            income_cents:
+                              type: integer
+                              description: 创作者分成（税前）
+                            distributor_name:
+                              type: string
+                              description: 发行商名称
+                            distributor_income_cents:
+                              type: integer
+                              description: 发行商实得
+                            distributor_share_ratio_bp:
+                              type: integer
+                              description: 发行商分成比例（基点，5500=55%）
+                            batch_no:
+                              type: string
+                            import_row_no:
+                              type: integer
+                            created_at:
+                              type: string
+                              format: date-time
+                            updated_at:
+                              type: string
+                              format: date-time
+                      page:
+                        type: integer
+                      page_size:
+                        type: integer
+                      total:
+                        type: integer
+                      totals:
+                        type: object
+                        description: 汇总数据
+                        properties:
+                          gross_cents:
+                            type: integer
+                            description: 总收益合计
+                          platform_cents:
+                            type: integer
+                            description: 平台真实收入合计
+                          creator_income_cents:
+                            type: integer
+                            description: 创作者分成合计
+                          distributor_income_cents:
+                            type: integer
+                            description: 发行商实得合计

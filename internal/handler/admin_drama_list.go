@@ -48,6 +48,9 @@ func adminDramaListItemView(
 		"publish_status": publishStatus,
 		"status":         d.Status,
 
+		// 2026-08-24 加：看广告解锁开关（列表也返回，管理端列表可直接展示/筛选）
+		"ad_unlock_enabled": d.AdUnlockEnabled != nil && *d.AdUnlockEnabled,
+
 		"created_at": d.CreatedAt,
 		"audience":   d.Audience,
 

@@ -78,6 +78,8 @@ func Connect(cfg config.Config) (*gorm.DB, error) {
 		&model.DistributorDepositTransaction{},
 		&model.DistributorAbandonRequest{},
 		&model.AdminPermission{},
+		// 穿山甲激励视频 —— 看广告解锁
+		&model.AdUnlockTicket{},
 	); err != nil {
 		return nil, err
 	}

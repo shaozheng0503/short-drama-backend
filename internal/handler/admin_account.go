@@ -17,14 +17,23 @@ import (
 // ============================================================
 
 // GET /v1/admin/admins — 管理员列表（分页，含权限）
+// 2026-08-25 加：role / region 筛选——超管按省市查看地区管理员。
 func (s *Server) adminListAdmins(c *gin.Context) {
 	page, pageSize := paginate(c)
 
+	q := s.db.Model(&model.Admin{})
+	if v := strings.TrimSpace(c.Query("role")); v != "" {
+		q = q.Where("role = ?", v)
+	}
+	// region：模糊匹配（可只传省，如「广东省」，也可传省+市）。
+	if v := strings.TrimSpace(c.Query("region")); v != "" {
+		q = q.Where("region ILIKE ?", "%"+v+"%")
+	}
 	var total int64
-	s.db.Model(&model.Admin{}).Count(&total)
+	q.Count(&total)
 
 	var admins []model.Admin
-	s.db.Order("id ASC").
+	q.Order("id ASC").
 		Offset((page - 1) * pageSize).
 		Limit(pageSize).
 		Find(&admins)
@@ -56,10 +65,14 @@ func (s *Server) adminListAdmins(c *gin.Context) {
 }
 
 // POST /v1/admin/admins — 创建管理员账号
+// 2026-08-25 加：支持创建地区管理员（role=region_admin，必填 region 精确到市，可填 remark）。
 func (s *Server) adminCreateAdminAccount(c *gin.Context) {
 	var req struct {
 		Username    string   `json:"username" binding:"required"`
 		Password    string   `json:"password" binding:"required"`
+		Role        string   `json:"role"`
+		Region      string   `json:"region"`
+		Remark      string   `json:"remark"`
 		Permissions []string `json:"permissions"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -73,6 +86,32 @@ func (s *Server) adminCreateAdminAccount(c *gin.Context) {
 	}
 	if len(req.Password) < 6 {
 		response.InvalidParam(c, "密码长度至少 6 位")
+		return
+	}
+
+	// 地区管理员：region 必填（精确到市，如「广东省深圳市」）；普通管理员不接收 region/remark。
+	req.Region = strings.TrimSpace(req.Region)
+	req.Remark = strings.TrimSpace(req.Remark)
+	if req.Role == model.AdminRoleRegionAdmin {
+		if req.Region == "" {
+			response.InvalidParam(c, "地区管理员必须填写负责地区（region，精确到市）")
+			return
+		}
+		if runeLen(req.Region) > adminRegionMaxRune {
+			response.InvalidParam(c, "region 过长（最长 64 个字符）")
+			return
+		}
+		// 地区管理员不带任何权限项：权限完全由 role 围栏收口（只读本地区）。
+		if len(req.Permissions) > 0 {
+			response.InvalidParam(c, "地区管理员不支持配置权限项（角色已内置只读权限）")
+			return
+		}
+	} else if req.Role != "" && req.Role != model.AdminRoleAdmin {
+		response.InvalidParam(c, "role 只能是 admin / region_admin（留空为普通权限项管理员）")
+		return
+	}
+	if runeLen(req.Remark) > adminRemarkMaxRune {
+		response.InvalidParam(c, "remark 过长（最长 255 个字符）")
 		return
 	}
 	if !validPermissions(req.Permissions) {
@@ -97,8 +136,13 @@ func (s *Server) adminCreateAdminAccount(c *gin.Context) {
 	admin := model.Admin{
 		Username:     req.Username,
 		PasswordHash: string(hash),
-		Role:         "", // 新建账号不绑定角色，纯权限项制
+		Role:         "", // 新建账号默认不绑定角色，纯权限项制；region_admin 例外（下方覆盖）
 		Status:       model.StatusActive,
+	}
+	if req.Role == model.AdminRoleRegionAdmin {
+		admin.Role = model.AdminRoleRegionAdmin
+		admin.Region = req.Region
+		admin.Remark = req.Remark
 	}
 
 	err = s.db.Transaction(func(tx *gorm.DB) error {
@@ -146,7 +190,8 @@ func (s *Server) adminGetAdminAccount(c *gin.Context) {
 	response.OK(c, adminDetailView(admin, perms))
 }
 
-// PUT /v1/admin/admins/:id — 更新管理员（用户名/状态）
+// PUT /v1/admin/admins/:id — 更新管理员（用户名/状态/region/remark）
+// 2026-08-25 加：支持更新地区管理员的 region（负责地区）与 remark（备注）。
 func (s *Server) adminUpdateAdminAccount(c *gin.Context) {
 	id, ok := parseUintParam(c, "id")
 	if !ok {
@@ -155,6 +200,8 @@ func (s *Server) adminUpdateAdminAccount(c *gin.Context) {
 	var req struct {
 		Username *string `json:"username"`
 		Status   *string `json:"status"`
+		Region   *string `json:"region"`
+		Remark   *string `json:"remark"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.InvalidParam(c, "参数格式错误")
@@ -200,6 +247,27 @@ func (s *Server) adminUpdateAdminAccount(c *gin.Context) {
 			return
 		}
 		updates["status"] = *req.Status
+	}
+	// region / remark：仅地区管理员账号可改（超管自己创建时怎么填，后续也只对 region_admin 生效）。
+	if req.Region != nil {
+		region := strings.TrimSpace(*req.Region)
+		if region == "" {
+			response.InvalidParam(c, "region 不可清空（如需取消地区管理员请调整账号）")
+			return
+		}
+		if runeLen(region) > adminRegionMaxRune {
+			response.InvalidParam(c, "region 过长（最长 64 个字符）")
+			return
+		}
+		updates["region"] = region
+	}
+	if req.Remark != nil {
+		remark := strings.TrimSpace(*req.Remark)
+		if runeLen(remark) > adminRemarkMaxRune {
+			response.InvalidParam(c, "remark 过长（最长 255 个字符）")
+			return
+		}
+		updates["remark"] = remark
 	}
 
 	if len(updates) > 0 {
@@ -450,17 +518,25 @@ func validPermissions(perms []string) bool {
 }
 
 // adminDetailView 构造管理员详情视图
+// 2026-08-25 加：region / remark（地区管理员专属字段）。
 func adminDetailView(admin model.Admin, perms []string) gin.H {
 	return gin.H{
 		"id":          admin.ID,
 		"username":    admin.Username,
 		"role":        admin.Role,
+		"region":      admin.Region,
+		"remark":      admin.Remark,
 		"status":      admin.Status,
 		"permissions": perms,
 		"created_at":  admin.CreatedAt,
 		"updated_at":  admin.UpdatedAt,
 	}
 }
+
+const (
+	adminRegionMaxRune = 64  // 地区（省+市）最长字符数，与 creators.region 同口径
+	adminRemarkMaxRune = 255 // 备注最长字符数
+)
 
 // parseUintParam 解析路径参数为 uint64
 func parseUintParam(c *gin.Context, key string) (uint64, bool) {

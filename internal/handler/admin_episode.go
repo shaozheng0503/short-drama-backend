@@ -18,7 +18,17 @@ func (s *Server) adminListEpisodes(c *gin.Context) {
 		response.InvalidParam(c, "drama_id 不合法")
 		return
 	}
-	if !s.dramaExists(dramaID) {
+	var drama model.Drama
+	if err := s.db.Select("id", "creator_id").First(&drama, dramaID).Error; err != nil {
+		if isNotFound(err) {
+			response.NotFound(c, "短剧不存在")
+			return
+		}
+		response.ServerError(c, "查询剧集失败")
+		return
+	}
+	// 2026-08-25 加：地区管理员只能看本地区创作者的剧集列表（越权返回 404，不暴露存在性）。
+	if drama.CreatorID != nil && !s.regionAdminCanSeeCreator(c, *drama.CreatorID) {
 		response.NotFound(c, "短剧不存在")
 		return
 	}
@@ -29,7 +39,7 @@ func (s *Server) adminListEpisodes(c *gin.Context) {
 	}
 	views := make([]gin.H, 0, len(episodes))
 	for _, ep := range episodes {
-		views = append(views, episodeAdminView(ep))
+		views = append(views, episodeAdminViewFor(c, ep))
 		// v0.13.1：列表加载时给 uploading 状态的剧集加一次懒同步（VOD 回调漏了的兜底）
 		s.lazySyncEpisodeVOD(&ep)
 	}

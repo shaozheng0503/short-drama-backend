@@ -74,6 +74,11 @@ func (s *Server) adminListDramas(c *gin.Context) {
 			q = q.Where("creator_id = ?", id)
 		}
 	}
+	// 2026-08-25 加：地区管理员只能看本地区创作者的短剧（按 creators.region 收口）。
+	if scope := regionScope(c); scope != "" {
+		q = q.Where("creator_id IN (?)",
+			s.db.Model(&model.Creator{}).Select("id").Where("region = ?", scope))
+	}
 
 	var total int64
 	q.Count(&total)
@@ -252,12 +257,17 @@ func (s *Server) adminGetDrama(c *gin.Context) {
 		response.ServerError(c, "查询短剧失败")
 		return
 	}
+	// 2026-08-25 加：地区管理员只能看本地区创作者的短剧（越权返回 404，不暴露存在性）。
+	if drama.CreatorID != nil && !s.regionAdminCanSeeCreator(c, *drama.CreatorID) {
+		response.NotFound(c, "短剧不存在")
+		return
+	}
 
 	var episodes []model.Episode
 	s.db.Where("drama_id = ?", drama.ID).Order("episode_no asc").Find(&episodes)
 	epViews := make([]gin.H, 0, len(episodes))
 	for _, ep := range episodes {
-		epViews = append(epViews, episodeAdminView(ep))
+		epViews = append(epViews, episodeAdminViewFor(c, ep))
 	}
 
 	view := dramaAdminView(drama, s.nameOfCategory(drama.CategoryID), s.nameOfCreator(drama.CreatorID))
@@ -370,6 +380,12 @@ func (s *Server) adminPublishDrama(c *gin.Context) {
 			return
 		}
 		response.ServerError(c, "查询短剧失败")
+		return
+	}
+
+	// 2026-08-24 加：上架材料门槛——角色至少 2 位、权属文件至少 4 张（与提审/创作者上架同口径）。
+	if msg := s.checkDramaMaterialGate(&drama); msg != "" {
+		response.InvalidParam(c, msg)
 		return
 	}
 

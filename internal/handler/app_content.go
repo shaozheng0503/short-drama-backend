@@ -310,22 +310,23 @@ func (s *Server) appDramaDetail(c *gin.Context) {
 	}
 
 	resp := gin.H{
-		"id":             drama.ID,
-		"title":          drama.Title,
-		"description":    drama.Description,
-		"cover_url":      drama.CoverURL,
-		"category":       categoryView,
-		"total_episodes": drama.TotalEpisodes,
-		"free_episodes":  s.effectiveFreeEpisodes(drama),
-		"price_cents":    drama.PriceCents,
-		"language_id":    drama.LanguageID,
-		"play_count":     drama.PlayCount,
-		"like_count":     drama.LikeCount,
-		"favorite_count": drama.FavoriteCount,
-		"share_count":    drama.ShareCount,
-		"is_liked":       false,
-		"is_favorited":   false,
-		"last_watch":     nil,
+		"id":               drama.ID,
+		"title":            drama.Title,
+		"description":      drama.Description,
+		"cover_url":        drama.CoverURL,
+		"category":         categoryView,
+		"total_episodes":   drama.TotalEpisodes,
+		"free_episodes":    s.effectiveFreeEpisodes(drama),
+		"price_cents":      drama.PriceCents,
+		"ad_unlock_enabled": drama.AdUnlockEnabled != nil && *drama.AdUnlockEnabled, // 看广告解锁开关（admin 逐剧开启，默认关）
+		"language_id":      drama.LanguageID,
+		"play_count":       drama.PlayCount,
+		"like_count":       drama.LikeCount,
+		"favorite_count":   drama.FavoriteCount,
+		"share_count":      drama.ShareCount,
+		"is_liked":         false,
+		"is_favorited":     false,
+		"last_watch":       nil,
 	}
 
 	// 登录后扩展 like/favorite/last_watch；APP 详情页面 spec 允许匿名

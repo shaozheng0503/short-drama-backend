@@ -194,19 +194,94 @@ func (s *Server) creatorListSettlements(c *gin.Context) {
 	q.Order("period desc, id desc").
 		Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows)
 
+	// 批量查提现状态（通过 settlement_id 关联）
+	settlementIDs := make([]uint64, 0, len(rows))
+	for _, r := range rows {
+		settlementIDs = append(settlementIDs, r.ID)
+	}
+	type wdInfo struct {
+		SettlementID uint64
+		Status       string
+	}
+	wdMap := make(map[uint64]string, len(rows))
+	if len(settlementIDs) > 0 {
+		var wds []wdInfo
+		s.db.Table("withdrawals").
+			Select("settlement_id, status").
+			Where("settlement_id IN ? AND status IN ?", settlementIDs, []string{"pending", "approved", "paid", "rejected"}).
+			Order("created_at DESC").
+			Scan(&wds)
+		for _, w := range wds {
+			if _, ok := wdMap[w.SettlementID]; !ok {
+				wdMap[w.SettlementID] = w.Status
+			}
+		}
+	}
+
 	list := make([]gin.H, 0, len(rows))
 	for _, r := range rows {
-		list = append(list, gin.H{
-			"id":            r.ID,
-			"settlement_no": r.SettlementNo,
-			"cycle_key":     r.CycleKey,
-			"status":        r.Status,
-			"status_label":  settlementStatusLabel(r.Status),
-			"gross_cents":   r.GrossCents,
-			"net_cents":     r.NetCents,
-		})
+		wdStatus := wdMap[r.ID]
+		displayStatus, displayLabel := settlementDisplayStatus(r.Status, wdStatus)
+		item := gin.H{
+			"id":                    r.ID,
+			"settlement_no":         r.SettlementNo,
+			"cycle_key":             r.CycleKey,
+			"status":                r.Status,
+			"status_label":          settlementStatusLabel(r.Status),
+			"display_status":        displayStatus,
+			"display_status_label":  displayLabel,
+			"gross_cents":           r.GrossCents,     // 总流水（渠道总收入）
+			"platform_cents":        r.PlatformCents,  // 平台抽成
+			"net_cents":             r.NetCents,       // 创作者分成（税前）
+		}
+		if wdStatus != "" {
+			item["withdrawal_status"] = wdStatus
+			item["withdrawal_status_label"] = wdStatusLabel(wdStatus)
+		}
+		list = append(list, item)
 	}
 	response.OK(c, pageResp(list, page, pageSize, total))
+}
+
+// withdrawalStatusLabel 提现状态中文标签
+func wdStatusLabel(status string) string {
+	switch status {
+	case model.WithdrawalStatusPending:
+		return "提现审核中"
+	case model.WithdrawalStatusApproved:
+		return "审核通过待打款"
+	case model.WithdrawalStatusRejected:
+		return "提现已驳回"
+	case model.WithdrawalStatusPaid:
+		return "已打款"
+	default:
+		return status
+	}
+}
+
+// settlementDisplayStatus 根据结算单状态 + 提现状态，返回前端展示用的综合状态
+func settlementDisplayStatus(settlementStatus, withdrawalStatus string) (string, string) {
+	switch settlementStatus {
+	case model.SettlementStatusOpen:
+		return "open", "待开票"
+	case model.SettlementStatusInvoiced:
+		switch withdrawalStatus {
+		case model.WithdrawalStatusPending:
+			return "withdraw_pending", "提现审核中"
+		case model.WithdrawalStatusApproved:
+			return "withdraw_approved", "审核通过待打款"
+		case model.WithdrawalStatusRejected:
+			return "withdraw_rejected", "提现已驳回，可重新提现"
+		default:
+			return "invoiced", "已开票"
+		}
+	case model.SettlementStatusPaid:
+		return "paid", "已付款"
+	case model.SettlementStatusVoid:
+		return "void", "已作废"
+	default:
+		return settlementStatus, settlementStatusLabel(settlementStatus)
+	}
 }
 
 // settlementContracts —— 查结算单关联的合同列表
@@ -365,11 +440,10 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		return
 	}
 	// 0.14.0 发票跟提现绑定，结算单不再返回发票
-	// 0.14.0 返回该结算单关联的提现记录（通过 invoice.settlement_id 关联）
+	// 0.18.2 改：通过 settlement_id 直接关联提现记录（不依赖 invoice）
 	var withdrawals []model.Withdrawal
-	s.db.Joins("LEFT JOIN invoices ON invoices.id = withdrawals.invoice_id").
-		Where("invoices.settlement_id = ?", st.ID).
-		Order("withdrawals.created_at desc").
+	s.db.Where("settlement_id = ?", st.ID).
+		Order("created_at desc").
 		Find(&withdrawals)
 	wdViews := make([]gin.H, 0, len(withdrawals))
 	for _, w := range withdrawals {
@@ -406,20 +480,32 @@ func (s *Server) creatorGetSettlement(c *gin.Context) {
 		creatorPartyName = creatorPartyName + "工作室"
 	}
 
+	// 计算展示状态（结合提现状态）
+	wdStatusForDisplay := ""
+	if len(withdrawals) > 0 {
+		wdStatusForDisplay = withdrawals[0].Status
+	}
+	displayStatus, displayLabel := settlementDisplayStatus(st.Status, wdStatusForDisplay)
+
 	response.OK(c, gin.H{
-		"id":             st.ID,
-		"settlement_no":  st.SettlementNo,
-		"creator_id":     st.CreatorID,
-		"drama_summary":  s.settlementDramaSummarySafe(st.ID),  // 剧集收益汇总
-		"withdrawals":    wdViews,                               // 提现记录列表
-		"period":         st.Period,
-		"cycle_key":      st.CycleKey,
-		"period_range":   st.PeriodRange,
-		"gross_cents":    st.GrossCents,
-		"net_cents":      st.NetCents,
-		"status":         st.Status,
-	"status_label":   settlementStatusLabel(st.Status),
-	"remark":         st.Remark,
+		"id":                    st.ID,
+		"settlement_no":         st.SettlementNo,
+		"creator_id":            st.CreatorID,
+		"drama_summary":         s.settlementDramaSummarySafe(st.ID),  // 剧集收益汇总
+		"withdrawals":           wdViews,                               // 提现记录列表
+		"period":                st.Period,
+		"cycle_key":             st.CycleKey,
+		"period_range":          st.PeriodRange,
+		"gross_cents":           st.GrossCents,     // 总流水（渠道总收入）
+		"platform_cents":        st.PlatformCents,  // 平台抽成
+		"net_cents":             st.NetCents,       // 创作者分成（税前）
+		"status":                st.Status,
+		"status_label":          settlementStatusLabel(st.Status),
+		"display_status":        displayStatus,
+		"display_status_label":  displayLabel,
+		"withdrawal_status":     wdStatusForDisplay,
+		"withdrawal_status_label": wdStatusLabel(wdStatusForDisplay),
+		"remark":                st.Remark,
 		"created_at":     st.CreatedAt,
 		"closed_at":      st.ClosedAt,
 		// 公司抬头（开票信息，源自 .env）
@@ -447,8 +533,9 @@ func (s *Server) buildCreatorParty(creator model.Creator, st model.Settlement) g
 		"bank_no_masked": creator.BankCardNoMasked,
 		"creator_type":   creator.CreatorType,                           // personal / organization
 		"income_type":    model.TransferTypeOf(creator.CreatorType),    // public / private 对公/对私
-		"gross_cents":    st.GrossCents,
-		"net_cents":      st.NetCents,
+		"gross_cents":    st.GrossCents,     // 总流水
+		"platform_cents": st.PlatformCents,  // 平台抽成
+		"net_cents":      st.NetCents,       // 创作者分成（税前）
 		"cycle_key":      st.CycleKey,
 		"creator_name":   creatorName,
 	}
@@ -506,7 +593,7 @@ func (s *Server) creatorDownloadSettlementExcel(c *gin.Context) {
 	f.SetCellValue(sheet, "B8", fmt.Sprintf("%.2f", float64(st.NetCents)/100))
 	f.SetCellValue(sheet, "A9", "订单总流水（元）")
 	f.SetCellValue(sheet, "B9", fmt.Sprintf("%.2f", float64(st.GrossCents)/100))
-	f.SetCellValue(sheet, "A10", "税率（元）")
+	f.SetCellValue(sheet, "A10", "平台抽成（元）")
 	f.SetCellValue(sheet, "B10", fmt.Sprintf("%.2f", float64(st.PlatformCents)/100))
 
 	// 订单明细表
@@ -828,6 +915,24 @@ func (s *Server) creatorPreviewSettlement(c *gin.Context) {
 		Order("income_cents DESC").
 		Scan(&aggs)
 
+	// 2.5) 查询渠道真实毛收入（channel_income_daily），按 drama_id 聚合
+	type dramaChannelAgg struct {
+		DramaID     uint64
+		GrossCents  int64
+		IncomeCents int64
+	}
+	var dramaChannelAggs []dramaChannelAgg
+	s.db.Table("channel_income_daily").
+		Select("drama_id, COALESCE(SUM(gross_cents),0) AS gross_cents, COALESCE(SUM(income_cents),0) AS income_cents").
+		Where("creator_id = ? AND stat_date >= ? AND stat_date < ?", creatorID, startStr, endStr).
+		Group("drama_id").Scan(&dramaChannelAggs)
+	dramaChannelGrossMap := map[uint64]int64{}  // drama_id → 渠道毛收入
+	dramaChannelIncomeMap := map[uint64]int64{} // drama_id → 渠道创作者收入
+	for _, dca := range dramaChannelAggs {
+		dramaChannelGrossMap[dca.DramaID] = dca.GrossCents
+		dramaChannelIncomeMap[dca.DramaID] = dca.IncomeCents
+	}
+
 	// 3) 按剧聚合已提现（pending+approved+paid）
 	type dramaWithdrawn struct {
 		DramaID       uint64
@@ -876,7 +981,15 @@ func (s *Server) creatorPreviewSettlement(c *gin.Context) {
 		if withdrawable < 0 {
 			withdrawable = 0
 		}
-		gross := int64(float64(a.IncomeCents) / creatorShareRate)
+		// gross = 渠道真实毛收入 + 平台自有收入反推
+		dramaChannelGross := dramaChannelGrossMap[a.DramaID]
+		dramaChannelIncome := dramaChannelIncomeMap[a.DramaID]
+		dramaPlatformIncome := a.IncomeCents - dramaChannelIncome
+		dramaPlatformGross := int64(0)
+		if dramaPlatformIncome > 0 {
+			dramaPlatformGross = int64(float64(dramaPlatformIncome) / creatorShareRate)
+		}
+		gross := dramaChannelGross + dramaPlatformGross
 		platformCents := gross - a.IncomeCents
 		totalIncome += a.IncomeCents
 		totalWithdrawable += withdrawable
@@ -884,9 +997,9 @@ func (s *Server) creatorPreviewSettlement(c *gin.Context) {
 		items = append(items, gin.H{
 			"drama_id":           a.DramaID,
 			"drama_title":        titleMap[a.DramaID],
-			"income_cents":       a.IncomeCents,    // 创作者实得（period 内）
-			"gross_cents":        gross,            // 总流水
-			"tax_cents":     platformCents,       // 税率
+			"income_cents":       a.IncomeCents,    // 创作者分成（税前，平台抽成后）
+			"gross_cents":        gross,            // 总流水（渠道总收入）
+			"platform_cents":     platformCents,    // 平台抽成 = gross - income
 			"withdrawable_cents": withdrawable,
 			"withdrawn_cents":    withdrawn,
 			"play_count":         a.PlayCount,

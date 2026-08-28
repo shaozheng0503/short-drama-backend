@@ -268,14 +268,25 @@ func (s *Server) adminGenerateSettlements(c *gin.Context) {
 
 	count, err := s.runSettlementForCycle(cycleKey, startStr, endStr)
 	if err != nil {
-		response.ServerError(c, fmt.Sprintf("生成结算单失败：%v", err))
+		response.ServerError(c, fmt.Sprintf("生成创作者结算单失败：%v", err))
 		return
 	}
+
+	// 同时生成发行商结算单（前端一个按钮同时触发两种结算单）
+	periodRange := startStr + " ~ " + endDate.Format("2006-01-02")
+	distCreated, distSkipped, distErr := s.runDistributorSettlementForCycle(cycleKey, startStr, endStr, periodRange)
+	if distErr != nil {
+		log.Printf("[settlement] distributor generation failed for %s: %v", cycleKey, distErr)
+	}
+
 	response.OK(c, gin.H{
-		"cycle_key":  cycleKey,
-		"period_range": startStr + " ~ " + endStr,
-		"created":    count,
-		"message":    fmt.Sprintf("成功生成 %d 笔结算单", count),
+		"cycle_key":            cycleKey,
+		"period_range":         startStr + " ~ " + endStr,
+		"created":              count,
+		"message":              fmt.Sprintf("成功生成 %d 笔创作者结算单", count),
+		"distributor_created":  distCreated,
+		"distributor_skipped":  distSkipped,
+		"distributor_message":  fmt.Sprintf("发行商结算单：生成 %d 笔，跳过 %d 笔", distCreated, distSkipped),
 	})
 }
 

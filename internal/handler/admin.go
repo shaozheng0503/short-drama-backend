@@ -105,6 +105,7 @@ func adminViewWithPerms(a model.Admin, perms []string) gin.H {
 		"id":          a.ID,
 		"username":    a.Username,
 		"role":        a.Role,
+		"region":      a.Region, // 2026-08-25 加：地区管理员非空，前端据此做只读裁剪
 		"status":      a.Status,
 		"permissions": perms,
 	}

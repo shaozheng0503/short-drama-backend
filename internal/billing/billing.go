@@ -39,6 +39,9 @@ func (s *Service) closeChannelOrders(refs []orderRef) {
 	}
 }
 
+// ChannelAppName APP 内购在 channel_income_daily 中的渠道标识。
+const ChannelAppName = "狼之短剧"
+
 var (
 	ErrEpisodeNotFound       = errors.New("剧集不存在")
 	ErrEpisodeNotReady       = errors.New("剧集尚未就绪，不能下单")
@@ -85,6 +88,24 @@ func (s *Service) effectiveFreeEpisodes(db *gorm.DB, _ model.Drama) int {
 		return 0
 	}
 	return n
+}
+
+// effectivePriceCents 返回当前生效的每集单价（分）。
+// 优先用 drama 自身 price_cents；若为 0 则回退到全局默认 pricing.price_cents。
+// 与 effectiveFreeEpisodes 口径一致：全局配置改一次即时对所有剧生效。
+func (s *Service) effectivePriceCents(db *gorm.DB, drama model.Drama) int64 {
+	if drama.PriceCents > 0 {
+		return drama.PriceCents
+	}
+	var gc model.GlobalConfig
+	if err := db.First(&gc, "key = ?", model.ConfigKeyPriceCents).Error; err != nil {
+		return 0
+	}
+	v, err := strconv.ParseInt(gc.Value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // CreateOrder 单集下单（仅当次支付，不保留 / 不复用待支付订单）：
@@ -173,7 +194,7 @@ func (s *Service) CreateOrder(userID uint64, dramaID, episodeID uint64, productI
 			}
 		}
 
-		amount := drama.PriceCents
+		amount := s.effectivePriceCents(tx, drama)
 		if productID != nil && *productID > 0 {
 			var prod model.Product
 			if err := tx.First(&prod, *productID).Error; err != nil {
@@ -295,7 +316,7 @@ func (s *Service) QuoteSingle(userID, dramaID, episodeID uint64, productID *uint
 		return nil, err
 	}
 
-	amount := drama.PriceCents
+	amount := s.effectivePriceCents(s.db, drama)
 	if productID != nil && *productID > 0 {
 		var prod model.Product
 		if err := s.db.First(&prod, *productID).Error; err != nil {
@@ -352,7 +373,7 @@ func (s *Service) quoteBatch(tx *gorm.DB, userID, dramaID uint64, episodeIDs []u
 	if drama.Status != model.DramaStatusPublished {
 		return nil, ErrDramaNotAvailable
 	}
-	if drama.PriceCents <= 0 {
+	if s.effectivePriceCents(tx, drama) <= 0 {
 		return nil, ErrAmountInvalid
 	}
 
@@ -400,8 +421,8 @@ func (s *Service) quoteBatch(tx *gorm.DB, userID, dramaID uint64, episodeIDs []u
 		DramaID:           dramaID,
 		BuyableEpisodeIDs: buyable,
 		AlreadyUnlocked:   unlockedIDs,
-		UnitPriceCents:    drama.PriceCents,
-		AmountCents:       int64(len(buyable)) * drama.PriceCents,
+		UnitPriceCents:    s.effectivePriceCents(tx, drama),
+		AmountCents:       int64(len(buyable)) * s.effectivePriceCents(tx, drama),
 	}, nil
 }
 
@@ -531,47 +552,73 @@ func (s *Service) MarkOrderPaid(orderNo, platformTradeNo, paymentMethod string, 
 			}
 		}
 
-		// 3. 分账（若短剧绑定了创作者）
+		// 3. 分账（若短剧绑定了创作者）+ 写入渠道收益
 		var drama model.Drama
 		if err := tx.First(&drama, order.DramaID).Error; err != nil {
 			return err
 		}
-		if drama.CreatorID == nil {
-			return nil
-		}
-		creatorAmount := int64(float64(order.AmountCents) * s.cfg.CreatorShareRate)
-		if creatorAmount <= 0 {
-			return nil
-		}
 
-		// 行锁 + 写余额
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			First(&model.Creator{}, *drama.CreatorID).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&model.Creator{}).
-			Where("id = ?", *drama.CreatorID).
-			Updates(map[string]interface{}{
-				"total_income_cents": gorm.Expr("total_income_cents + ?", creatorAmount),
-				"balance_cents":      gorm.Expr("balance_cents + ?", creatorAmount),
-			}).Error; err != nil {
-			return err
-		}
-
-		// 4. 当日聚合
 		statDate := paidAt.Format("2006-01-02")
-		stat := model.CreatorStatsDaily{
-			CreatorID:   *drama.CreatorID,
-			DramaID:     order.DramaID,
-			StatDate:    statDate,
-			IncomeCents: creatorAmount,
+		creatorAmount := int64(0)
+		shareRatioBP := 0
+		var creatorID uint64
+		if drama.CreatorID != nil {
+			creatorID = *drama.CreatorID
+			creatorAmount = int64(float64(order.AmountCents) * s.cfg.CreatorShareRate)
+			shareRatioBP = int(s.cfg.CreatorShareRate * 10000)
+
+			if creatorAmount > 0 {
+				// 行锁 + 写余额
+				if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+					First(&model.Creator{}, *drama.CreatorID).Error; err != nil {
+					return err
+				}
+				if err := tx.Model(&model.Creator{}).
+					Where("id = ?", *drama.CreatorID).
+					Updates(map[string]interface{}{
+						"total_income_cents": gorm.Expr("total_income_cents + ?", creatorAmount),
+						"balance_cents":      gorm.Expr("balance_cents + ?", creatorAmount),
+					}).Error; err != nil {
+					return err
+				}
+
+				// 4. 当日聚合
+				stat := model.CreatorStatsDaily{
+					CreatorID:   *drama.CreatorID,
+					DramaID:     order.DramaID,
+					StatDate:    statDate,
+					IncomeCents: creatorAmount,
+				}
+				if err := tx.Clauses(clause.OnConflict{
+					Columns: []clause.Column{{Name: "creator_id"}, {Name: "drama_id"}, {Name: "stat_date"}},
+					DoUpdates: clause.Assignments(map[string]interface{}{
+						"income_cents": gorm.Expr("creator_stats_daily.income_cents + ?", creatorAmount),
+					}),
+				}).Create(&stat).Error; err != nil {
+					return err
+				}
+			}
+		}
+
+		// 5. 写入 channel_income_daily（APP 内购自动记录，渠道=狼之短剧）
+		// 唯一键 (drama_id, channel, stat_date) 冲突时累加，与 Excel 导入口径一致
+		cid := model.ChannelIncomeDaily{
+			DramaID:      order.DramaID,
+			Channel:      ChannelAppName,
+			StatDate:     statDate,
+			CreatorID:    creatorID,
+			GrossCents:   order.AmountCents,
+			ShareRatioBP: shareRatioBP,
+			IncomeCents:  creatorAmount,
+			BatchNo:      "app_auto",
 		}
 		if err := tx.Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "creator_id"}, {Name: "drama_id"}, {Name: "stat_date"}},
+			Columns: []clause.Column{{Name: "drama_id"}, {Name: "channel"}, {Name: "stat_date"}},
 			DoUpdates: clause.Assignments(map[string]interface{}{
-				"income_cents": gorm.Expr("creator_stats_daily.income_cents + ?", creatorAmount),
+				"gross_cents":  gorm.Expr("channel_income_daily.gross_cents + EXCLUDED.gross_cents"),
+				"income_cents": gorm.Expr("channel_income_daily.income_cents + EXCLUDED.income_cents"),
 			}),
-		}).Create(&stat).Error; err != nil {
+		}).Create(&cid).Error; err != nil {
 			return err
 		}
 		return nil
@@ -810,6 +857,14 @@ func (s *Service) RefundOrder(orderNo, refundNo string, amountCents int64, reaso
 			return err
 		}
 		if drama.CreatorID == nil {
+			// 回退 channel_income_daily（APP 内购渠道收益）
+			refundStatDate := refundedAt.Format("2006-01-02")
+			tx.Model(&model.ChannelIncomeDaily{}).
+				Where("drama_id = ? AND channel = ? AND stat_date = ?",
+					order.DramaID, ChannelAppName, refundStatDate).
+				Updates(map[string]interface{}{
+					"gross_cents": gorm.Expr("GREATEST(gross_cents - ?, 0)", amountCents),
+				})
 			order.Status = newStatus
 			order.RefundAmountCents = newRefundTotal
 			order.RefundedAt = &refundedAt
@@ -843,6 +898,18 @@ func (s *Service) RefundOrder(orderNo, refundNo string, amountCents int64, reaso
 				Update("income_cents", gorm.Expr("GREATEST(income_cents - ?, 0)", clawback)).Error; err != nil {
 				return err
 			}
+		}
+
+		// 回退 channel_income_daily（APP 内购渠道收益）
+		refundStatDate := refundedAt.Format("2006-01-02")
+		if err := tx.Model(&model.ChannelIncomeDaily{}).
+			Where("drama_id = ? AND channel = ? AND stat_date = ?",
+				order.DramaID, ChannelAppName, refundStatDate).
+			Updates(map[string]interface{}{
+				"gross_cents":  gorm.Expr("GREATEST(gross_cents - ?, 0)", amountCents),
+				"income_cents": gorm.Expr("GREATEST(income_cents - ?, 0)", clawback),
+			}).Error; err != nil {
+			return err
 		}
 
 		order.Status = newStatus
@@ -916,6 +983,14 @@ func (s *Service) DevRefundOrder(orderNo, refundNo string, amountCents int64, re
 			return err
 		}
 		if drama.CreatorID == nil {
+			// 回退 channel_income_daily（APP 内购渠道收益）
+			refundStatDate := refundedAt.Format("2006-01-02")
+			tx.Model(&model.ChannelIncomeDaily{}).
+				Where("drama_id = ? AND channel = ? AND stat_date = ?",
+					order.DramaID, ChannelAppName, refundStatDate).
+				Updates(map[string]interface{}{
+					"gross_cents": gorm.Expr("GREATEST(gross_cents - ?, 0)", amountCents),
+				})
 			order.Status = newStatus
 			order.RefundAmountCents = newRefundTotal
 			order.RefundedAt = &refundedAt
@@ -945,6 +1020,18 @@ func (s *Service) DevRefundOrder(orderNo, refundNo string, amountCents int64, re
 				Update("income_cents", gorm.Expr("GREATEST(income_cents - ?, 0)", clawback)).Error; err != nil {
 				return err
 			}
+		}
+
+		// 回退 channel_income_daily（APP 内购渠道收益）
+		refundStatDate := refundedAt.Format("2006-01-02")
+		if err := tx.Model(&model.ChannelIncomeDaily{}).
+			Where("drama_id = ? AND channel = ? AND stat_date = ?",
+				order.DramaID, ChannelAppName, refundStatDate).
+			Updates(map[string]interface{}{
+				"gross_cents":  gorm.Expr("GREATEST(gross_cents - ?, 0)", amountCents),
+				"income_cents": gorm.Expr("GREATEST(income_cents - ?, 0)", clawback),
+			}).Error; err != nil {
+			return err
 		}
 
 		order.Status = newStatus

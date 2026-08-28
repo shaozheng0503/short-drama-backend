@@ -19,9 +19,11 @@ const (
 	dramaDescMaxRune  = 200
 	dramaMaxCovers       = 10
 	dramaMaxCopyrightURLs = 10 // 2026-07-03 加：版权/授权文件最多 10 张（与封面同上限）
+	minCopyrightFileURLs = 4  // 2026-08-24 加：提审/上架门槛，权属文件至少 4 张（产品要求）
 	aigcToolMaxRune   = 64
 	aigcToolsMax      = 10
 	maxCharacters     = 50          // 角色数量上限
+	minCharacters     = 2           // 2026-08-24 加：提审/上架门槛，角色至少 2 位（产品要求）
 	charNameMaxRune   = 64          // 角色姓名长度上限
 	charIntroMaxRune  = 500         // 角色简介长度上限
 	maxCategoryIDs    = 30          // 多选分类数量上限
@@ -109,7 +111,7 @@ type creatorDramaRequest struct {
 	PublishType         *string    `json:"publish_type"` // self/platform
 	ScheduledPublishAt  *time.Time `json:"scheduled_publish_at"`
 
-	// 角色：传了就整体替换（含空数组=清空）。MVP 从宽，不强制至少一位。
+	// 角色：传了就整体替换（含空数组=清空）。草稿保存从宽；提审/上架时校验至少 2 位（2026-08-24）。
 	Characters *[]characterInput `json:"characters"`
 }
 
@@ -193,6 +195,28 @@ func effectiveCovers(req *creatorDramaRequest) ([]string, bool) {
 		return []string{*req.CoverURL}, true
 	}
 	return nil, false
+}
+
+// checkDramaMaterialGate —— 提审/上架门槛校验（2026-08-24 产品要求）：
+// 角色至少 minCharacters 位、权属文件至少 minCopyrightFileURLs 张。
+// 草稿保存不做此校验（允许增量编辑）；在提交审核、上架（创作者/管理员）两个关口统一拦截。
+// 返回 "" 表示通过；否则返回给前端的具体原因。
+func (s *Server) checkDramaMaterialGate(d *model.Drama) string {
+	var charCount int64
+	if err := s.db.Model(&model.DramaCharacter{}).
+		Where("drama_id = ?", d.ID).
+		Count(&charCount).Error; err != nil {
+		// 统计失败按不通过处理，宁严勿漏
+		return "校验角色信息失败，请稍后重试"
+	}
+	if charCount < minCharacters {
+		return fmt.Sprintf("提交前请至少填写 %d 个角色（当前 %d 个）", minCharacters, charCount)
+	}
+	if len(d.CopyrightFileURLs) < minCopyrightFileURLs {
+		return fmt.Sprintf("提交前请至少上传 %d 张权属文件（当前 %d 张）",
+			minCopyrightFileURLs, len(d.CopyrightFileURLs))
+	}
+	return ""
 }
 
 // effectiveCategoryIDs 取最终分类列表：优先 category_ids，否则退回单分类 category_id。
@@ -670,6 +694,7 @@ func (s *Server) creatorDeleteDrama(c *gin.Context) {
 
 // creatorPublishDrama —— 创作者自助上架。
 // 校验：audit_status=approved + 至少 1 集 ready。
+// 2026-08-24 加：上架门槛——角色至少 2 位、权属文件至少 4 张（防下架后删减材料再重新上架绕过提审校验）。
 func (s *Server) creatorPublishDrama(c *gin.Context) {
 	id := parseUint(c.Param("id"))
 	if id == 0 {
@@ -693,6 +718,13 @@ func (s *Server) creatorPublishDrama(c *gin.Context) {
 	// / published(已上架，重复发) 都不应触发 publish。
 	if d.Status != model.DramaStatusAwaitingPublish && d.Status != model.DramaStatusOffline {
 		response.Conflict(c, "当前剧目状态不可上架：仅待发布或已下架状态可上架")
+		return
+	}
+
+	// 材料门槛：角色 ≥2、权属文件 ≥4。提审时已校验过，这里二次兜底
+	// （offline 剧编辑后可不走重新提审直接上架，需在同一关口拦截）。
+	if msg := s.checkDramaMaterialGate(d); msg != "" {
+		response.InvalidParam(c, msg)
 		return
 	}
 
@@ -779,7 +811,7 @@ func (s *Server) creatorUpdateDramaPublishConfig(c *gin.Context) {
 
 // creatorSubmitDrama —— 创作者提交审核。
 // 置 status=reviewing；并为该剧自动生成一份关联的 demo 合同（若尚无），合同名即剧名（视图按 drama_title 展示）。
-// MVP 从宽：不强制必须有剧集，先把"提交 → 审核 → 合同"流程跑通。
+// 2026-08-24 加：提审门槛——角色至少 2 位、权属文件至少 4 张，不达标拒绝提交。
 func (s *Server) creatorSubmitDrama(c *gin.Context) {
 	id := parseUint(c.Param("id"))
 	if id == 0 {
@@ -795,6 +827,11 @@ func (s *Server) creatorSubmitDrama(c *gin.Context) {
 	// 重新提审从 draft 进入即可——靠 audit_status 区分"首次提交" vs "驳回后再提"。
 	if d.Status != model.DramaStatusDraft && d.Status != model.DramaStatusOffline {
 		response.Conflict(c, "仅草稿 / 已下架状态可提交审核")
+		return
+	}
+	// 材料门槛：角色 ≥2、权属文件 ≥4（草稿保存从宽，提审关口统一拦截）。
+	if msg := s.checkDramaMaterialGate(d); msg != "" {
+		response.InvalidParam(c, msg)
 		return
 	}
 	if d.CreatorID == nil {
