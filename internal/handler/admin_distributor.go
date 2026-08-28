@@ -661,6 +661,119 @@ func (s *Server) distributorSettlementDetailView(st *model.DistributorSettlement
 	return v
 }
 
+
+// runDistributorSettlementForCycle —— 发行商结算单生成的核心逻辑（可被其他 handler 复用）
+func (s *Server) runDistributorSettlementForCycle(cycleKey, startStr, endStr, periodRange string) (int, int, error) {
+	type distAgg struct {
+		DistributorID uint64
+		GrossCents    int64
+		IncomeCents   int64
+	}
+	var aggs []distAgg
+	s.db.Table("distributor_income_daily").
+		Select("distributor_id, COALESCE(SUM(gross_cents),0) AS gross_cents, COALESCE(SUM(income_cents),0) AS income_cents").
+		Where("stat_date >= ? AND stat_date < ?", startStr, endStr).
+		Group("distributor_id").Scan(&aggs)
+
+	if len(aggs) == 0 {
+		return 0, 0, nil
+	}
+
+	created := 0
+	skipped := 0
+	now := time.Now()
+
+	for _, a := range aggs {
+		if a.GrossCents <= 0 {
+			skipped++
+			continue
+		}
+
+		// 查重
+		var existCount int64
+		s.db.Model(&model.DistributorSettlement{}).
+			Where("distributor_id = ? AND cycle_key = ?", a.DistributorID, cycleKey).Count(&existCount)
+		if existCount > 0 {
+			skipped++
+			continue
+		}
+
+		gross := a.GrossCents
+		platformCents := gross * 45 / 100
+		netCents := gross * 55 / 100
+
+		st := model.DistributorSettlement{
+			SettlementNo:  generateBusinessNo("ST-DIST"),
+			DistributorID: a.DistributorID,
+			Period:        cycleKey[:7],
+			CycleKey:      cycleKey,
+			PeriodRange:   periodRange,
+			GrossCents:    gross,
+			PlatformCents: platformCents,
+			NetCents:      netCents,
+			Status:        model.DistSettlementPendingPayment,
+			OpenedAt:      &now,
+		}
+
+		err := s.db.Transaction(func(tx *gorm.DB) error {
+			// 事务内重新查重
+			var existCount int64
+			tx.Model(&model.DistributorSettlement{}).
+				Where("distributor_id = ? AND cycle_key = ?", a.DistributorID, cycleKey).Count(&existCount)
+			if existCount > 0 {
+				return nil
+			}
+
+			if err := tx.Create(&st).Error; err != nil {
+				if isUniqueViolation(err) {
+					return nil
+				}
+				return err
+			}
+
+			// 押金抵扣：行锁内读取冻结余额
+			var dist model.Distributor
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, a.DistributorID).Error; err != nil {
+				return err
+			}
+			// 抵扣上限 = 发行商应付的平台分成（45%），多冻结的押金留给后续周期
+			deducted := int64(0)
+			if dist.DepositFrozenCents > 0 && platformCents > 0 {
+				deducted = dist.DepositFrozenCents
+				if deducted > platformCents {
+					deducted = platformCents
+				}
+			}
+			if deducted > 0 {
+				dist.DepositFrozenCents -= deducted
+				dist.DepositDeductedCents += deducted
+				if err := tx.Save(&dist).Error; err != nil {
+					return err
+				}
+				if err := s.recordDepositTx(tx, a.DistributorID, model.DepositTxDeduct, -deducted, dist.DepositAvailableCents, "settlement", st.SettlementNo, "收益抵扣押金", 0); err != nil {
+					return err
+				}
+			}
+
+			payable := platformCents - deducted
+			if payable < 0 {
+				payable = 0
+			}
+			return tx.Model(&st).Updates(map[string]interface{}{
+				"deducted_deposit_cents": deducted,
+				"withdrawable_cents":     payable,
+				"payable_cents":          payable,
+			}).Error
+		})
+		if err != nil {
+			continue
+		}
+		created++
+	}
+
+	return created, skipped, nil
+}
+
 // adminGenerateDistributorSettlements —— POST /v1/admin/distributor-settlements/generate
 // 2026-08-12 恢复：停 cron 后改为手动触发，与创作者结算单生成对称。
 // 请求体：
@@ -723,19 +836,12 @@ func (s *Server) adminGenerateDistributorSettlements(c *gin.Context) {
 	endStr := endDate.AddDate(0, 0, 1).Format("2006-01-02")
 	periodRange := startStr + " ~ " + endDate.Format("2006-01-02")
 
-	// 汇总各发行商收益
-	type distAgg struct {
-		DistributorID uint64
-		GrossCents    int64
-		IncomeCents   int64
+	created, skipped, err := s.runDistributorSettlementForCycle(cycleKey, startStr, endStr, periodRange)
+	if err != nil {
+		response.ServerError(c, fmt.Sprintf("生成发行商结算单失败：%v", err))
+		return
 	}
-	var aggs []distAgg
-	s.db.Table("distributor_income_daily").
-		Select("distributor_id, COALESCE(SUM(gross_cents),0) AS gross_cents, COALESCE(SUM(income_cents),0) AS income_cents").
-		Where("stat_date >= ? AND stat_date < ?", startStr, endStr).
-		Group("distributor_id").Scan(&aggs)
-
-	if len(aggs) == 0 {
+	if created == 0 && skipped == 0 {
 		response.OK(c, gin.H{
 			"cycle_key":    cycleKey,
 			"period_range": periodRange,
@@ -744,95 +850,6 @@ func (s *Server) adminGenerateDistributorSettlements(c *gin.Context) {
 		})
 		return
 	}
-
-	created := 0
-	skipped := 0
-	now := time.Now()
-
-	for _, a := range aggs {
-		if a.GrossCents <= 0 {
-			skipped++
-			continue
-		}
-
-		// 查重
-		var existCount int64
-		s.db.Model(&model.DistributorSettlement{}).
-			Where("distributor_id = ? AND cycle_key = ?", a.DistributorID, cycleKey).Count(&existCount)
-		if existCount > 0 {
-			skipped++
-			continue
-		}
-
-		gross := a.GrossCents
-		platformCents := gross * 45 / 100
-		netCents := gross * 55 / 100
-
-		st := model.DistributorSettlement{
-			SettlementNo:  generateBusinessNo("ST-DIST"),
-			DistributorID: a.DistributorID,
-			Period:        cycleKey[:7],
-			CycleKey:      cycleKey,
-			PeriodRange:   periodRange,
-			GrossCents:    gross,
-			PlatformCents: platformCents,
-			NetCents:      netCents,
-			Status:        model.DistSettlementPendingPayment,
-			OpenedAt:      &now,
-		}
-
-		err := s.db.Transaction(func(tx *gorm.DB) error {
-			// 事务内重新查重
-			var existCount int64
-			tx.Model(&model.DistributorSettlement{}).
-				Where("distributor_id = ? AND cycle_key = ?", a.DistributorID, cycleKey).Count(&existCount)
-			if existCount > 0 {
-				return nil
-			}
-
-			if err := tx.Create(&st).Error; err != nil {
-				if isUniqueViolation(err) {
-					return nil
-				}
-				return err
-			}
-
-			// 押金抵扣：行锁内读取冻结余额
-			var dist model.Distributor
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, a.DistributorID).Error; err != nil {
-				return err
-			}
-			deducted := int64(0)
-			if dist.DepositFrozenCents > 0 && gross > 0 {
-				deducted = dist.DepositFrozenCents
-				if deducted > gross {
-					deducted = gross
-				}
-			}
-			if deducted > 0 {
-				dist.DepositFrozenCents -= deducted
-				dist.DepositDeductedCents += deducted
-				if err := tx.Save(&dist).Error; err != nil {
-					return err
-				}
-				if err := s.recordDepositTx(tx, a.DistributorID, model.DepositTxDeduct, -deducted, dist.DepositAvailableCents, "settlement", st.SettlementNo, "收益抵扣押金", 0); err != nil {
-					return err
-				}
-			}
-
-			payable := gross - deducted
-			return tx.Model(&st).Updates(map[string]interface{}{
-				"deducted_deposit_cents": deducted,
-				"withdrawable_cents":     payable,
-				"payable_cents":          payable,
-			}).Error
-		})
-		if err != nil {
-			continue
-		}
-		created++
-	}
-
 	response.OK(c, gin.H{
 		"cycle_key":    cycleKey,
 		"period_range": periodRange,

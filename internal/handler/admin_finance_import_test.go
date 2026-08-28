@@ -120,3 +120,67 @@ func TestParseExcelDateCell_E2E(t *testing.T) {
 		t.Errorf("row3 E (serial) parseExcelDateCell = (%q, %v), want (2024-07-15, true)", got, ok)
 	}
 }
+
+// TestShareRatioBpLabel 验证基点比例转可读文案
+func TestShareRatioBpLabel(t *testing.T) {
+	cases := []struct {
+		bp   int64
+		want string
+	}{
+		{0, "0%"},
+		{5500, "55%"},
+		{5000, "50%"},
+		{10000, "100%"},
+		{3333, "33.33%"},
+	}
+	for _, c := range cases {
+		if got := shareRatioBpLabel(c.bp); got != c.want {
+			t.Errorf("shareRatioBpLabel(%d) = %q, want %q", c.bp, got, c.want)
+		}
+	}
+}
+
+// TestParseShareRatioBPZeroAndDefault 验证 E 列发行商比例的关键场景：
+// 填 0 / 0% / 0.0 都应解析为 0 基点且"已填"（发行商分成记 0）；空串为"未填"（回落 55%）
+func TestParseShareRatioBPZeroAndDefault(t *testing.T) {
+	cases := []struct {
+		in   string
+		bp   int
+		has  bool
+		err  string
+	}{
+		{"", 0, false, ""},
+		{"0", 0, true, ""},
+		{"0%", 0, true, ""},
+		{"0.0", 0, true, ""},
+		{"55", 5500, true, ""},
+		{"55%", 5500, true, ""},
+		{"0.55", 5500, true, ""},
+		{"100%", 10000, true, ""},
+		{"101%", 0, false, "分成比例须在 0~100% 之间"},
+		{"abc", 0, false, "分成比例不合法（支持 50 / 50% / 0.5）"},
+	}
+	for _, c := range cases {
+		bp, has, err := parseShareRatioBP(c.in)
+		if bp != c.bp || has != c.has || err != c.err {
+			t.Errorf("parseShareRatioBP(%q) = (%d, %v, %q), want (%d, %v, %q)", c.in, bp, has, err, c.bp, c.has, c.err)
+		}
+	}
+}
+
+// TestChannelToPlatformWechatVideo 视频号必须映射到 wechat_video 平台
+// （导入时靠该映射触发"平台自发、发行商分成记 0"特判；映射丢失会导致特判失效）
+func TestChannelToPlatformWechatVideo(t *testing.T) {
+	if got := channelToPlatform("视频号"); got != "wechat_video" {
+		t.Errorf("channelToPlatform(视频号) = %q, want wechat_video", got)
+	}
+	if got := channelToPlatform("微信视频号"); got != "wechat_video" {
+		t.Errorf("channelToPlatform(微信视频号) = %q, want wechat_video", got)
+	}
+	if got := channelToPlatform("抖音"); got != "douyin" {
+		t.Errorf("channelToPlatform(抖音) = %q, want douyin", got)
+	}
+	if got := channelToPlatform("腾讯"); got != "" {
+		t.Errorf("channelToPlatform(腾讯) = %q, want empty", got)
+	}
+}

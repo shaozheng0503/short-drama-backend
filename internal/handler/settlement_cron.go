@@ -94,6 +94,24 @@ func (s *Server) runSettlementForCycle(cycleKey, startStr, endStr string) (int, 
 		Where("stat_date >= ? AND stat_date < ?", startStr, endStr).
 		Group("creator_id").Scan(&aggs)
 
+	// 查询渠道真实毛收入（channel_income_daily），用于计算结算单 gross_cents
+	type channelGrossAgg struct {
+		CreatorID   uint64
+		GrossCents  int64
+		IncomeCents int64
+	}
+	var channelGrossAggs []channelGrossAgg
+	s.db.Table("channel_income_daily").
+		Select("creator_id, COALESCE(SUM(gross_cents),0) AS gross_cents, COALESCE(SUM(income_cents),0) AS income_cents").
+		Where("stat_date >= ? AND stat_date < ?", startStr, endStr).
+		Group("creator_id").Scan(&channelGrossAggs)
+	channelGrossMap := map[uint64]int64{}  // creator_id → 渠道毛收入
+	channelIncomeMap := map[uint64]int64{} // creator_id → 渠道创作者收入
+	for _, ca := range channelGrossAggs {
+		channelGrossMap[ca.CreatorID] = ca.GrossCents
+		channelIncomeMap[ca.CreatorID] = ca.IncomeCents
+	}
+
 	// 创作者合同映射：取最新一份
 	type cc struct {
 		CreatorID  uint64
@@ -122,7 +140,20 @@ func (s *Server) runSettlementForCycle(cycleKey, startStr, endStr string) (int, 
 	for _, a := range aggs {
 		contractNo := contractMap[a.CreatorID]
 		if contractNo == "" {
-			continue
+			// 创作者没有合同记录（短剧在自动创建合同逻辑上线前发布，或收入来自财务导入），
+			// 自动创建一份默认合同，避免结算单被静默跳过导致生成 0 笔。
+			contractNo = generateContractNo()
+			ct := model.Contract{
+				CreatorID:  a.CreatorID,
+				ContractNo: contractNo,
+				Status:     model.ContractStatusPending,
+			}
+			if err := s.db.Create(&ct).Error; err != nil {
+				log.Printf("[settlement] auto-create contract for creator=%d failed: %v, skipping", a.CreatorID, err)
+				continue
+			}
+			log.Printf("[settlement] auto-created contract %s for creator=%d (no existing contract)", contractNo, a.CreatorID)
+			contractMap[a.CreatorID] = contractNo
 		}
 		// 2026-07-06 改：去重键用 cycle_key 而非 period+contract_no
 		var existCount int64
@@ -131,7 +162,17 @@ func (s *Server) runSettlementForCycle(cycleKey, startStr, endStr string) (int, 
 		if existCount > 0 {
 			continue
 		}
-		grossCents := int64(float64(a.IncomeCents) / creatorShareRate)
+		// gross_cents = 渠道真实毛收入 + 平台自有收入反推
+		// 渠道毛收入直接取 channel_income_daily.gross_cents
+		// 平台自有收入（订单分账）仍按 income / creatorShareRate 反推
+		channelGross := channelGrossMap[a.CreatorID]
+		channelIncome := channelIncomeMap[a.CreatorID]
+		platformIncome := a.IncomeCents - channelIncome // 平台自有收入
+		platformGross := int64(0)
+		if platformIncome > 0 {
+			platformGross = int64(float64(platformIncome) / creatorShareRate)
+		}
+		grossCents := channelGross + platformGross
 		platformCents := grossCents - a.IncomeCents
 		bizNo := "ST" + now.Format("200601") + "-" + strconv.FormatUint(uint64(now.UnixNano()%10000), 10)
 		openedAt := now
@@ -262,6 +303,24 @@ func (s *Server) recalcOpenSettlementsForDateRange(tx *gorm.DB, statDates []stri
 			aggMap[a.CreatorID] = a
 		}
 
+		// 查询渠道真实毛收入（channel_income_daily）
+		type suppChannelAgg struct {
+			CreatorID   uint64
+			GrossCents  int64
+			IncomeCents int64
+		}
+		var suppChannelAggs []suppChannelAgg
+		tx.Table("channel_income_daily").
+			Select("creator_id, COALESCE(SUM(gross_cents),0) AS gross_cents, COALESCE(SUM(income_cents),0) AS income_cents").
+			Where("stat_date >= ? AND stat_date < ?", startStr, endStr).
+			Group("creator_id").Scan(&suppChannelAggs)
+		suppChannelGrossMap := map[uint64]int64{}
+		suppChannelIncomeMap := map[uint64]int64{}
+		for _, ca := range suppChannelAggs {
+			suppChannelGrossMap[ca.CreatorID] = ca.GrossCents
+			suppChannelIncomeMap[ca.CreatorID] = ca.IncomeCents
+		}
+
 		for _, st := range settlements {
 			if st.Status != model.SettlementStatusOpen {
 				blocked++
@@ -273,7 +332,15 @@ func (s *Server) recalcOpenSettlementsForDateRange(tx *gorm.DB, statDates []stri
 				continue // 该创作者在此周期暂无收益数据
 			}
 
-			newGrossCents := int64(float64(a.IncomeCents) / creatorShareRate)
+			// gross_cents = 渠道真实毛收入 + 平台自有收入反推
+			suppChannelGross := suppChannelGrossMap[a.CreatorID]
+			suppChannelIncome := suppChannelIncomeMap[a.CreatorID]
+			suppPlatformIncome := a.IncomeCents - suppChannelIncome
+			suppPlatformGross := int64(0)
+			if suppPlatformIncome > 0 {
+				suppPlatformGross = int64(float64(suppPlatformIncome) / creatorShareRate)
+			}
+			newGrossCents := suppChannelGross + suppPlatformGross
 			newPlatformCents := newGrossCents - a.IncomeCents
 			newNetCents := a.IncomeCents
 
@@ -382,8 +449,8 @@ func (s *Server) recalcOpenSettlementsForDateRange(tx *gorm.DB, statDates []stri
 				newRemark = newRemark + supplementTag
 			}
 
-			// 重新计算应付金额（payable = gross - deducted_deposit）
-			payable := newGrossCents - locked.DeductedDepositCents
+			// 重新计算应付金额（payable = 平台45%分成 - deducted_deposit，与首次生成口径一致）
+			payable := newPlatformCents - locked.DeductedDepositCents
 			if payable < 0 {
 				payable = 0
 			}

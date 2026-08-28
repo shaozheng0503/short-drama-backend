@@ -113,11 +113,117 @@ func (s *Server) adminListChannelIncomes(c *gin.Context) {
 	}
 	dramaTitles := s.attachDramaTitlesForIncomes(items)
 	creatorNames := s.attachCreatorNamesForIncomes(items)
+	distInfoMap := s.attachDistributorInfoForIncomes(items)
 	list := make([]gin.H, 0, len(items))
+	var totalGross, totalPlatform, totalCreatorIncome, totalDistIncome int64
 	for _, item := range items {
-		list = append(list, channelIncomeView(item, dramaTitles[item.DramaID], creatorNames[item.CreatorID]))
+		key := fmt.Sprintf("%d|%s|%s", item.DramaID, item.StatDate, channelToPlatform(item.Channel))
+		di := distInfoMap[key]
+		list = append(list, channelIncomeView(item, dramaTitles[item.DramaID], creatorNames[item.CreatorID], di))
+		totalGross += item.GrossCents
+		totalCreatorIncome += item.IncomeCents
+		if di != nil {
+			totalDistIncome += di.IncomeCents
+			totalPlatform += item.GrossCents - item.IncomeCents - di.IncomeCents
+		} else {
+			totalPlatform += item.GrossCents - item.IncomeCents
+		}
 	}
-	response.OK(c, pageResp(list, page, pageSize, total))
+	response.OK(c, gin.H{
+		"list":     list,
+		"page":     page,
+		"page_size": pageSize,
+		"total":    total,
+		"totals": gin.H{
+			"gross_cents":              totalGross,        // 总收益合计
+			"platform_cents":           totalPlatform,      // 平台真实收入合计
+			"creator_income_cents":     totalCreatorIncome, // 创作者分成合计
+			"distributor_income_cents": totalDistIncome,    // 发行商实得合计
+		},
+	})
+}
+
+// attachDistributorInfoForIncomes 批量查询渠道收入行对应的发行商收入数据。
+// 按 drama_id + stat_date + 渠道对应平台 关联 distributor_income_daily 表
+// （2026-08-28 修：此前只按 drama_id+stat_date 关联，视频号行会错挂同日抖音行的发行商分成）。
+func (s *Server) attachDistributorInfoForIncomes(items []model.ChannelIncomeDaily) map[string]*distributorInfo {
+	if len(items) == 0 {
+		return map[string]*distributorInfo{}
+	}
+	// 收集 drama_id + stat_date + platform 组合
+	type dramaDate struct {
+		DramaID  uint64
+		StatDate string
+		Platform string
+	}
+	keys := make([]dramaDate, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		platformKey := channelToPlatform(item.Channel)
+		if platformKey == "" {
+			continue // 该渠道无发行商平台体系，无发行商分成可挂
+		}
+		k := fmt.Sprintf("%d|%s|%s", item.DramaID, item.StatDate, platformKey)
+		if !seen[k] {
+			seen[k] = true
+			keys = append(keys, dramaDate{item.DramaID, item.StatDate, platformKey})
+		}
+	}
+	if len(keys) == 0 {
+		return map[string]*distributorInfo{}
+	}
+	// 查询 distributor_income_daily，按 drama_id + stat_date + platform 聚合
+	type distAgg struct {
+		DramaID       uint64
+		StatDate      string
+		Platform      string
+		IncomeCents   int64
+		DistributorID uint64
+		ShareRatioBP  int64
+	}
+	var aggs []distAgg
+	// 构建 OR 条件查询
+	for _, dd := range keys {
+		var agg distAgg
+		s.db.Table("distributor_income_daily").
+			Select("drama_id, stat_date, platform, COALESCE(SUM(income_cents),0) AS income_cents, MIN(distributor_id) AS distributor_id, MIN(share_ratio_bp) AS share_ratio_bp").
+			Where("drama_id = ? AND stat_date = ? AND platform = ?", dd.DramaID, dd.StatDate, dd.Platform).
+			Group("drama_id, stat_date, platform").
+			Scan(&agg)
+		if agg.DramaID > 0 {
+			aggs = append(aggs, agg)
+		}
+	}
+	// 查发行商名称
+	distIDs := make([]uint64, 0)
+	for _, a := range aggs {
+		if a.DistributorID > 0 {
+			distIDs = append(distIDs, a.DistributorID)
+		}
+	}
+	distNames := map[uint64]string{}
+	if len(distIDs) > 0 {
+		var distributors []model.Distributor
+		s.db.Select("id, name, org_name").Where("id IN ?", distIDs).Find(&distributors)
+		for _, d := range distributors {
+			name := d.Name
+			if d.OrgName != "" {
+				name = d.OrgName
+			}
+			distNames[d.ID] = name
+		}
+	}
+	// 构建 map：key = drama_id|stat_date|platform
+	result := map[string]*distributorInfo{}
+	for _, a := range aggs {
+		key := fmt.Sprintf("%d|%s|%s", a.DramaID, a.StatDate, a.Platform)
+		result[key] = &distributorInfo{
+			IncomeCents:  a.IncomeCents,
+			Name:         distNames[a.DistributorID],
+			ShareRatioBP: a.ShareRatioBP,
+		}
+	}
+	return result
 }
 
 func (s *Server) attachDramaTitlesForIncomes(items []model.ChannelIncomeDaily) map[uint64]string {
@@ -166,22 +272,46 @@ func (s *Server) attachCreatorNamesForIncomes(items []model.ChannelIncomeDaily) 
 	return names
 }
 
-func channelIncomeView(item model.ChannelIncomeDaily, dramaTitle, creatorName string) gin.H {
+// distributorInfo —— 渠道收入行关联的发行商收入信息
+type distributorInfo struct {
+	IncomeCents int64
+	Name        string
+	ShareRatioBP int64
+}
+
+func channelIncomeView(item model.ChannelIncomeDaily, dramaTitle, creatorName string, distInfo *distributorInfo) gin.H {
+	// 平台真实收入 = 总收益 - 创作者分成 - 发行商实得
+	distIncome := int64(0)
+	distShareBP := int64(0)
+	distName := ""
+	if distInfo != nil {
+		distIncome = distInfo.IncomeCents
+		distShareBP = distInfo.ShareRatioBP
+		distName = distInfo.Name
+	}
+	platformCents := item.GrossCents - item.IncomeCents - distIncome
+	if platformCents < 0 {
+		platformCents = 0
+	}
 	return gin.H{
-		"id":            item.ID,
-		"drama_id":      item.DramaID,
-		"drama_title":   dramaTitle,
-		"channel":       item.Channel,
-		"stat_date":     item.StatDate,
-		"creator_id":    item.CreatorID,
-		"creator_name":  creatorName,
-		"gross_cents":    item.GrossCents,
-		"share_ratio_bp": item.ShareRatioBP,
-		"income_cents":  item.IncomeCents,
-		"batch_no":      item.BatchNo,
-		"import_row_no": item.ImportRowNo,
-		"created_at":    item.CreatedAt,
-		"updated_at":    item.UpdatedAt,
+		"id":                      item.ID,
+		"drama_id":                item.DramaID,
+		"drama_title":             dramaTitle,
+		"channel":                 item.Channel,
+		"stat_date":               item.StatDate,
+		"creator_id":              item.CreatorID,
+		"creator_name":            creatorName,
+		"gross_cents":              item.GrossCents,     // 总收益
+		"platform_cents":           platformCents,       // 平台真实收入 = 总收益 - 创作者分成 - 发行商实得
+		"share_ratio_bp":           item.ShareRatioBP,   // 创作者分成比例
+		"income_cents":            item.IncomeCents,    // 创作者分成（税前）
+		"distributor_name":         distName,            // 发行商名称
+		"distributor_income_cents": distIncome,          // 发行商实得
+		"distributor_share_ratio_bp": distShareBP,       // 发行商分成比例
+		"batch_no":                item.BatchNo,
+		"import_row_no":           item.ImportRowNo,
+		"created_at":              item.CreatedAt,
+		"updated_at":              item.UpdatedAt,
 	}
 }
 
@@ -246,7 +376,9 @@ func (s *Server) adminUpdateChannelIncome(c *gin.Context) {
 	}
 	titles := s.attachDramaTitlesForIncomes([]model.ChannelIncomeDaily{updated})
 	creatorNames := s.attachCreatorNamesForIncomes([]model.ChannelIncomeDaily{updated})
-	response.OK(c, channelIncomeView(updated, titles[updated.DramaID], creatorNames[updated.CreatorID]))
+	distInfoMap := s.attachDistributorInfoForIncomes([]model.ChannelIncomeDaily{updated})
+	key := fmt.Sprintf("%d|%s|%s", updated.DramaID, updated.StatDate, channelToPlatform(updated.Channel))
+	response.OK(c, channelIncomeView(updated, titles[updated.DramaID], creatorNames[updated.CreatorID], distInfoMap[key]))
 }
 
 func (s *Server) adminDeleteChannelIncome(c *gin.Context) {

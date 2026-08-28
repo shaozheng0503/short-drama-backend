@@ -19,9 +19,10 @@ const (
 )
 
 const (
-	AdminRoleAdmin   = "admin" // 超管：全部权限
-	AdminRoleFinance = "finance"
-	AdminRoleAuditor = "auditor" // 审核：内容审核相关
+	AdminRoleAdmin       = "admin"        // 超管：全部权限
+	AdminRoleFinance     = "finance"
+	AdminRoleAuditor     = "auditor"      // 审核：内容审核相关
+	AdminRoleRegionAdmin = "region_admin" // 地区管理员：只读本地区创作者及其作品（不含视频），无审核权无其他权限
 )
 
 // 权限项 Key（独立权限配置模式，不透传角色概念）。
@@ -234,6 +235,8 @@ type Admin struct {
 	Username            string     `gorm:"column:username;size:64;uniqueIndex" json:"username"`
 	PasswordHash        string     `gorm:"column:password_hash;size:255" json:"-"`
 	Role                string     `gorm:"column:role;size:32;default:admin" json:"role"`
+	Region              string     `gorm:"column:region;size:64" json:"region"`     // 地区管理员负责的地区（省+市，如 广东省深圳市）；非地区管理员为空
+	Remark              string     `gorm:"column:remark;size:255" json:"remark"`     // 备注（超管填写）
 	Status              string     `gorm:"column:status;size:20;default:active" json:"status"`
 	FailedLoginAttempts int        `gorm:"column:failed_login_attempts;default:0" json:"-"`
 	LockedUntil         *time.Time `gorm:"column:locked_until" json:"-"`
@@ -262,6 +265,7 @@ type Creator struct {
 	Name               string `gorm:"column:name;size:64" json:"name"`
 	Nickname           string `gorm:"column:nickname;size:64" json:"nickname"`
 	AvatarURL          string `gorm:"column:avatar_url;size:512" json:"avatar_url"`
+	Region             string `gorm:"column:region;size:64" json:"region"` // 所在地区，精确到市（如 广东省深圳市）
 	AccountUID         string `gorm:"column:account_uid;size:64;index" json:"account_uid"`
 	CreatorType        string `gorm:"column:creator_type;size:20;default:personal" json:"creator_type"` // personal / organization
 	OrgName            string `gorm:"column:org_name;size:128" json:"org_name"`                         // 机构名称（机构类型时填）
@@ -415,9 +419,12 @@ type Drama struct {
 	SortOrder     int        `gorm:"column:sort_order;default:0" json:"sort_order"`
 	PublishedAt   *time.Time `gorm:"column:published_at" json:"published_at"`
 	// Distributable —— 是否开放发行商认领（admin 手动开关，默认 true：已上架剧自动开放发行）
-	Distributable *bool      `gorm:"column:distributable;default:true" json:"distributable"`
-	CreatedAt     time.Time  `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt     time.Time  `gorm:"column:updated_at" json:"updated_at"`
+	Distributable *bool `gorm:"column:distributable;default:true" json:"distributable"`
+	// AdUnlockEnabled —— 是否允许「看广告解锁」（admin 手动开关，默认 false：需管理员逐剧开启）
+	// 注意与 Distributable 相反：广告解锁默认关闭，避免所有剧默认可白嫖
+	AdUnlockEnabled *bool      `gorm:"column:ad_unlock_enabled;default:false" json:"ad_unlock_enabled"`
+	CreatedAt       time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt       time.Time  `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (Drama) TableName() string { return "dramas" }
@@ -433,7 +440,7 @@ type DramaCover struct {
 
 func (DramaCover) TableName() string { return "drama_covers" }
 
-// DramaCharacter —— 角色信息（至少 1 位）。姓名必填，照片/简介/性质选填。
+// DramaCharacter —— 角色信息（提审/上架门槛：至少 2 位，2026-08-24）。姓名必填，照片/简介/性质选填。
 type DramaCharacter struct {
 	ID        uint64    `gorm:"primaryKey;column:id" json:"id"`
 	DramaID   uint64    `gorm:"column:drama_id;index" json:"drama_id"`
@@ -616,6 +623,37 @@ type EpisodeUnlock struct {
 
 func (EpisodeUnlock) TableName() string { return "episode_unlocks" }
 
+// AdUnlockTicket —— 看广告解锁凭证（穿山甲激励视频）
+// 链路：App 创建 ticket → 播广告（ticket_id 透传穿山甲）→ 穿山甲 S2S 回调 → 验签落库解锁 → App 轮询结果
+// 状态机：pending(等待回调) → rewarded(已发奖) / expired(超时未回调) / used(已使用后作废)
+type AdUnlockTicket struct {
+	ID        uint64    `gorm:"primaryKey;column:id" json:"id"`
+	TicketID  string    `gorm:"column:ticket_id;size:64;uniqueIndex" json:"ticket_id"` // 业务侧凭证，透传穿山甲 user_id/extra
+	UserID    uint64    `gorm:"column:user_id;index:idx_ad_ticket_user" json:"user_id"`
+	DramaID   uint64    `gorm:"column:drama_id;index" json:"drama_id"`
+	EpisodeID uint64    `gorm:"column:episode_id;index" json:"episode_id"`
+	Status    string    `gorm:"column:status;size:20;default:pending;index" json:"status"`
+	// TransID —— 穿山甲回调流水号，幂等键：同一 trans_id 只发奖一次。
+	// 指针类型：pending 阶段为 NULL（Postgres 唯一索引允许多个 NULL，空字符串会互相冲突）。
+	TransID *string `gorm:"column:trans_id;size:128;uniqueIndex" json:"trans_id"`
+	// RewardedAt —— 穿山甲回调验证通过、解锁落库的时间
+	RewardedAt *time.Time `gorm:"column:rewarded_at" json:"rewarded_at"`
+	// ExpireAt —— 凭证过期时间（创建后 10 分钟），过期后 App 不可再用于发奖
+	ExpireAt  *time.Time `gorm:"column:expire_at" json:"expire_at"`
+	CreatedAt time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt time.Time  `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (AdUnlockTicket) TableName() string { return "ad_unlock_tickets" }
+
+// 看广告解锁 ticket 状态
+const (
+	AdTicketStatusPending   = "pending"   // 已创建，等待穿山甲回调
+	AdTicketStatusRewarded  = "rewarded"  // 回调验签通过，已解锁
+	AdTicketStatusExpired   = "expired"   // 超时未回调，作废
+	AdTicketStatusDuplicate = "duplicate" // 回调重复流水（幂等拒绝，仅记录）
+)
+
 // Contract —— 合同（MVP 数据库设计 3.14）
 type Contract struct {
 	ID          uint64    `gorm:"primaryKey;column:id" json:"id"`
@@ -654,6 +692,7 @@ type Withdrawal struct {
 	PaidAt              *time.Time `gorm:"column:paid_at" json:"paid_at"`
 	// 2026-07 加：提现必须先上传对应结算单的发票（已审核通过）。可选：一笔提现可能跨多张结算单时为空。
 	InvoiceID           *uint64    `gorm:"column:invoice_id;index" json:"invoice_id"`
+	SettlementID        uint64     `gorm:"column:settlement_id;index" json:"settlement_id"`
 	CreatedAt           time.Time  `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt           time.Time  `gorm:"column:updated_at" json:"updated_at"`
 }
@@ -832,7 +871,7 @@ type StateTransition struct {
 func (StateTransition) TableName() string { return "state_transitions" }
 
 // ChannelIncomeDaily —— 第三方渠道每日收益明细（财务 Excel 导入）。
-// 本平台自有付费收入走支付分账写 creator_stats_daily，不进此表。
+// APP 内购支付成功后自动写入此表（channel=狼之短剧），与 Excel 导入的外部渠道收益统一展示。
 // 唯一键 (drama_id, channel, stat_date)：同剧同渠道同日重复导入按覆盖处理。
 type ChannelIncomeDaily struct {
 	ID           uint64    `gorm:"primaryKey;column:id" json:"id"`
@@ -1198,7 +1237,7 @@ type DistributorSettlement struct {
 	NetCents             int64      `gorm:"column:net_cents" json:"net_cents"`                       // 机构 55%
 	DeductedDepositCents int64      `gorm:"column:deducted_deposit_cents;default:0" json:"deducted_deposit_cents"` // 抵扣的押金
 	WithdrawableCents    int64      `gorm:"column:withdrawable_cents;default:0" json:"withdrawable_cents"`         // 兼容旧字段
-	PayableCents         int64      `gorm:"column:payable_cents;default:0" json:"payable_cents"`                   // 发行商应付平台金额 = gross - deducted_deposit
+	PayableCents         int64      `gorm:"column:payable_cents;default:0" json:"payable_cents"`                   // 发行商应付平台金额 = 平台45%分成 - deducted_deposit
 	Status        string     `gorm:"column:status;size:20;default:pending_payment;index" json:"status"`
 	OpenedAt      *time.Time `gorm:"column:opened_at" json:"opened_at"`
 	ClosedAt      *time.Time `gorm:"column:closed_at" json:"closed_at"`
