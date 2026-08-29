@@ -3,8 +3,11 @@ package handler
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -27,10 +30,10 @@ type incomeImportRowReport struct {
 	Channel         string `json:"channel"`
 	StatDate        string `json:"stat_date"`
 	Category        string `json:"category,omitempty"` // 收入 / 押金
-	GrossCents      int64  `json:"gross_cents"`     // 总收益（押金行为押金金额）
-	ShareRatioBP    int    `json:"share_ratio_bp"`  // 实际采用的分成比例（基点）
-	IncomeCents     int64  `json:"income_cents"`    // 创作者实得 = 总收益×比例
-	Status          string `json:"status"`          // created / updated / unchanged / duplicate / failed
+	GrossCents      int64  `json:"gross_cents"`        // 总收益（押金行为押金金额）
+	ShareRatioBP    int    `json:"share_ratio_bp"`     // 实际采用的分成比例（基点）
+	IncomeCents     int64  `json:"income_cents"`       // 创作者实得 = 总收益×比例
+	Status          string `json:"status"`             // created / updated / unchanged / duplicate / failed
 	Message         string `json:"message"`
 	ExistingCents   *int64 `json:"existing_cents,omitempty"` // 旧的创作者实得
 	DeltaCents      int64  `json:"delta_cents"`
@@ -39,11 +42,11 @@ type incomeImportRowReport struct {
 	DuplicateOfRow  int    `json:"duplicate_of_row,omitempty"`
 	ChannelIncomeID uint64 `json:"channel_income_id,omitempty"`
 	// 发行商收益信息（自动生成）
-	DistributorID       uint64 `json:"distributor_id,omitempty"`
-	DistributorName      string `json:"distributor_name,omitempty"`
-	DistributorIncome   int64  `json:"distributor_income_cents,omitempty"`  // 发行商实得
-	DistributorStatus   string `json:"distributor_status,omitempty"`        // created / skipped / failed
-	DistributorMessage  string `json:"distributor_message,omitempty"`
+	DistributorID      uint64 `json:"distributor_id,omitempty"`
+	DistributorName    string `json:"distributor_name,omitempty"`
+	DistributorIncome  int64  `json:"distributor_income_cents,omitempty"` // 发行商实得
+	DistributorStatus  string `json:"distributor_status,omitempty"`       // created / skipped / failed
+	DistributorMessage string `json:"distributor_message,omitempty"`
 }
 
 // channelToPlatform 将中文渠道名映射为发行商系统平台 key。
@@ -64,11 +67,13 @@ func channelToPlatform(channel string) string {
 }
 
 // adminDownloadIncomeTemplate —— GET /v1/admin/finance/income/template.xlsx
-// 生成单 Sheet 收益导入模板，9 列：
-//   - 短剧名称 | 渠道 | 总收益 | 创作者分成比例 | 发行商分成比例 | 日期 | 短剧ID | 类目 | 发行商
+// 生成单 Sheet 收益导入模板，9 列（2026-08-29 会议确认：D/E 列改直接填金额，不再填比例）：
+//   - 短剧名称 | 渠道 | 总收益 | 创作者分成金额 | 发行商分成金额 | 日期 | 短剧ID | 类目 | 发行商
 //
-// 创作者分成比例(D 列)：支持 50 / 50% / 0.5 三种写法，均表示 50%；留空则按该渠道的全局配置比例。
-// 发行商分成比例(E 列)：支持 55 / 55% / 0.5 写法；填了（含 0%）按该值生成发行商分成，留空按 55%。
+// 创作者分成金额(D 列)：直接填元（如 37.04）；留空则按该渠道的全局配置比例折算。
+// 发行商分成金额(E 列)：直接填元（如 67.9）；留空按总收益×55% 折算；视频号固定不生成分成。
+// 口径参考：发行商实得 = 总收益×55%，发行商应付平台 = 总收益×45%（含创作者 30% + 平台 15%）。
+// 旧模板兼容：D/E 列表头含「比例」的旧文件仍按比例（50/50%/0.5）解析。
 // 类目(H 列)：收入（默认，留空=收入）/ 押金。类目=押金时只读 C 列金额 + I 列发行商，不进任何收入表。
 // 发行商(I 列)：类目=押金时必填（发行商名称或手机号，手机号唯一定位）。
 // 短剧ID(G 列)用于解决名称重复时的歧义；不填则按名称匹配，名称唯一才能定位。
@@ -80,8 +85,8 @@ func (s *Server) adminDownloadIncomeTemplate(c *gin.Context) {
 	xl.SetSheetName(xl.GetSheetName(0), sheet)
 	headers := []string{
 		"短剧名称", "渠道", "总收益",
-		"创作者分成比例(如50或50%或0.5,留空按配置)",
-		"发行商分成比例(如55或55%,留空按55%;视频号固定0)",
+		"创作者分成金额(元,直接填金额,留空按配置)",
+		"发行商分成金额(元,直接填金额,留空按55%;视频号固定0)",
 		"日期", "短剧ID(选填,名称重复时必填)",
 		"类目(收入/押金,留空=收入)", "发行商(类目=押金时必填:名称或手机号)",
 	}
@@ -89,10 +94,11 @@ func (s *Server) adminDownloadIncomeTemplate(c *gin.Context) {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		_ = xl.SetCellValue(sheet, cell, h)
 	}
+	// 金额示例：123.45×30%≈37.04（创作者），123.45×55%≈67.9（发行商）
 	samples := [][]interface{}{
-		{"总裁的逆袭新娘", "抖音", 123.45, "50%", "55%", "2026-05-26", "", "", ""},
-		{"总裁的逆袭新娘", "快手", 88.00, "", "55%", "2026-05-27", 42, "", ""},
-		{"总裁的逆袭新娘", "视频号", 66.00, "50%", "", "2026-05-28", "", "", ""},
+		{"总裁的逆袭新娘", "抖音", 123.45, 37.04, 67.9, "2026-05-26", "", "", ""},
+		{"总裁的逆袭新娘", "快手", 88.00, "", "", "2026-05-27", 42, "", ""},
+		{"总裁的逆袭新娘", "视频号", 66.00, 19.8, "", "2026-05-28", "", "", ""},
 		{"", "", 400.00, "", "", "", "", "押金", "泉州市连姑娘商贸有限责任公司"},
 	}
 	for r, row := range samples {
@@ -168,6 +174,20 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 	}
 	defer f.Close()
 
+	// 2026-08-29 幂等改造：计算上传文件内容 SHA-256，作为跨批次幂等键。
+	// 背景：batchNo 每次上传随机生成，同一份报表重传会拿到不同 batchNo，
+	// 押金类目行会重复入账。文件内容相同 → 同一 fileHash → 第二次上传押金行全部判 duplicate。
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, f); err != nil {
+		response.ServerError(c, "读取上传文件失败")
+		return
+	}
+	fileHash := hex.EncodeToString(hasher.Sum(nil))
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		response.ServerError(c, "读取上传文件失败")
+		return
+	}
+
 	xl, err := excelize.OpenReader(f)
 	if err != nil {
 		response.InvalidParam(c, "文件不是有效的 xlsx")
@@ -199,32 +219,38 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 	}
 
 	type parsedRow struct {
-		rowNo           int
-		title           string
-		channel         string
-		category        string // 收入 / 押金（默认收入）
-		distHint        string // 类目=押金时的发行商定位串（名称或手机号）
-		grossCents      int64
-		ratioBP         int  // 行内填的比例；rowHasRatio=false 时无效，待回落配置
-		rowHasRatio     bool // D 列是否填了比例
-		distRatioBP     int  // E 列发行商比例；hasDistRatio=false 时按 5500 默认
-		hasDistRatio    bool // E 列是否填了比例
-		statDate        string
-		explicitDramaID uint64 // 短剧ID 列填了才非 0
+		rowNo             int
+		title             string
+		channel           string
+		category          string // 收入 / 押金（默认收入）
+		distHint          string // 类目=押金时的发行商定位串（名称或手机号）
+		grossCents        int64
+		ratioBP           int   // 实际采用的创作者分成比例（基点）；行内填金额时由金额反推
+		rowHasRatio       bool  // D 列是否填了值（金额或比例）
+		dColIsAmount      bool  // D 列填的是金额（新模板）还是比例（旧模板）
+		incomeAmountCents int64 // D 列填的金额（分）；dColIsAmount=true 时有效
+		distRatioBP       int   // E 列发行商比例（基点）；hasDistRatio=false 时按 5500 默认
+		hasDistRatio      bool  // E 列是否填了值
+		statDate          string
+		explicitDramaID   uint64 // 短剧ID 列填了才非 0
 	}
 	var parsed []parsedRow
 	rowReports := make([]incomeImportRowReport, 0)
 	seenRows := map[string]int{}
 
 	// 检测模板格式：
-	//   9 列（H=类目，I=发行商，2026-08-28 版） / 7 列（E=发行商分成比例） / 6 列旧模板（E=日期）
+	//   9 列（H=类目，I=发行商，2026-08-28 版） / 7 列（E=发行商分成） / 6 列旧模板（E=日期）
 	// dateCol/idCol：日期列与短剧ID列的位置；catCol/distCol：类目列与发行商列，-1 表示无该列
-	// hasDistRatioCol：E 列是否为发行商分成比例列（决定是否读取行内发行商比例）
+	// hasDistCol：E 列是否为发行商分成列（金额或比例，决定是否读取行内值）
+	// distColIsAmount：E 列是金额（2026-08-29 新模板）还是比例（旧模板）
 	dateCol, idCol := 4, 5 // 默认旧模板
-	hasDistRatioCol := false
+	hasDistCol := false
+	distColIsAmount := false
 	if len(rows) > 0 && len(rows[0]) >= 5 && strings.Contains(rows[0][4], "发行商") {
 		dateCol, idCol = 5, 6 // 7 列模板
-		hasDistRatioCol = true
+		hasDistCol = true
+		// 2026-08-29 会议确认：表头含「金额」→ 新模板直接填元；含「比例」→ 旧模板按比例解析
+		distColIsAmount = strings.Contains(rows[0][4], "金额")
 	}
 	catCol, distCol := -1, -1
 	if len(rows) > 0 && len(rows[0]) >= 8 && strings.Contains(rows[0][7], "类目") {
@@ -308,19 +334,65 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 			rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Category: category, Status: "failed", Message: "渠道字段过长（最多 32 个字符）"})
 			continue
 		}
-		ratioBP, rowHasRatio, ratioErr := parseShareRatioBP(strings.TrimSpace(row[3]))
-		if ratioErr != "" {
-			rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Category: category, Status: "failed", Message: ratioErr})
-			continue
+		// D 列：新模板（表头含「金额」）直接填创作者分成金额（元）；旧模板按比例解析。
+		// 表头格式检测：首个非空数据行的 E 列已判定模板版本；D/E 列同版本。
+		dColIsAmount := hasDistCol && distColIsAmount
+		ratioBP, rowHasRatio := 0, false
+		incomeAmountCents := int64(0)
+		dCell := ""
+		if len(row) > 3 {
+			dCell = strings.TrimSpace(row[3])
 		}
-		// E 列发行商分成比例：填了（含 0%）按该值；留空按 55%。仅 7/9 列模板有此列。
-		distRatioBP, hasDistRatio := 5500, false
-		if hasDistRatioCol && len(row) > 4 {
-			if bp, has, e := parseShareRatioBP(strings.TrimSpace(row[4])); e != "" {
-				rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Category: category, Status: "failed", Message: e})
+		if dColIsAmount {
+			// 金额模式：允许留空（回落渠道配置）；填了必须是合法金额
+			if dCell != "" {
+				v, e := strconv.ParseFloat(strings.ReplaceAll(dCell, ",", ""), 64)
+				if e != nil || v < 0 {
+					rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Category: category, Status: "failed", Message: "创作者分成金额不合法（填元，如 37.04；留空按配置）"})
+					continue
+				}
+				incomeAmountCents = int64(math.Round(v * 100))
+				rowHasRatio = true
+			}
+		} else {
+			var ratioErr string
+			ratioBP, rowHasRatio, ratioErr = parseShareRatioBP(dCell)
+			if ratioErr != "" {
+				rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Category: category, Status: "failed", Message: ratioErr})
 				continue
-			} else if has {
-				distRatioBP, hasDistRatio = bp, true
+			}
+		}
+		// E 列发行商分成：新模板填金额（元）→ 反推 BP；旧模板填比例；留空按 55%。仅 7/9 列模板有此列。
+		distRatioBP, hasDistRatio := 5500, false
+		if hasDistCol && len(row) > 4 {
+			eCell := strings.TrimSpace(row[4])
+			if distColIsAmount {
+				if eCell != "" {
+					v, e := strconv.ParseFloat(strings.ReplaceAll(eCell, ",", ""), 64)
+					if e != nil || v < 0 {
+						rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Category: category, Status: "failed", Message: "发行商分成金额不合法（填元，如 67.9；留空按 55%）"})
+						continue
+					}
+					amountCts := int64(math.Round(v * 100))
+					// 金额反推 BP（向上取整保底）：bp = round(amount/gross*10000)；
+					// gross=0 或异常时直接 failed，避免除零
+					if grossCents <= 0 {
+						rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Category: category, Status: "failed", Message: "总收益为 0，无法按发行商分成金额折算比例"})
+						continue
+					}
+					distRatioBP = int(math.Round(float64(amountCts) / float64(grossCents) * float64(model.ShareRatioBPFull)))
+					if distRatioBP > model.ShareRatioBPFull {
+						distRatioBP = model.ShareRatioBPFull
+					}
+					hasDistRatio = true
+				}
+			} else {
+				if bp, has, e := parseShareRatioBP(eCell); e != "" {
+					rowReports = append(rowReports, incomeImportRowReport{RowNo: lineNo, Title: title, Channel: channel, Category: category, Status: "failed", Message: e})
+					continue
+				} else if has {
+					distRatioBP, hasDistRatio = bp, true
+				}
 			}
 		}
 		// 2026-07-06 改：先按 Excel 序列号解析（RawCellValue 模式下日期类型是 float 字符串），
@@ -366,21 +438,51 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 		}
 		seenRows[key] = lineNo
 		parsed = append(parsed, parsedRow{
-			rowNo:           lineNo,
-			title:           title,
-			channel:         channel,
-			category:        category,
-			grossCents:      grossCents,
-			ratioBP:         ratioBP,
-			rowHasRatio:     rowHasRatio,
-			distRatioBP:     distRatioBP,
-			hasDistRatio:    hasDistRatio,
-			statDate:        statDate,
-			explicitDramaID: explicitDramaID,
+			rowNo:             lineNo,
+			title:             title,
+			channel:           channel,
+			category:          category,
+			grossCents:        grossCents,
+			ratioBP:           ratioBP,
+			rowHasRatio:       rowHasRatio,
+			dColIsAmount:      dColIsAmount,
+			incomeAmountCents: incomeAmountCents,
+			distRatioBP:       distRatioBP,
+			hasDistRatio:      hasDistRatio,
+			statDate:          statDate,
+			explicitDramaID:   explicitDramaID,
 		})
 	}
 
 	batchNo := generateIncomeImportBatchNo()
+
+	// 2026-08-29 幂等护栏：同一文件（内容哈希相同）之前成功导入过 → 整批拒绝，防止财务误重传
+	// 导致收入/押金重复入账。dry_run 试算不受限。极端情况两份内容完全相同的报表确需再导时，
+	// 管理员改动文件（如调整日期列）即可绕开，不会卡死正常业务。
+	if !dryRun {
+		var prev model.ChannelIncomeImportBatch
+		if err := s.db.Where("file_hash = ?", fileHash).Order("id DESC").First(&prev).Error; err == nil {
+			var prevReports []incomeImportRowReport
+			_ = json.Unmarshal([]byte(prev.RowReportsJSON), &prevReports)
+			response.OK(c, gin.H{
+				"batch_no":           prev.BatchNo,
+				"duplicate_of_batch": prev.BatchNo,
+				"note":               fmt.Sprintf("该文件已于 %s 导入过（批次 %s），本次拒绝重复导入，结果为上批数据；如确需重新导入请修改文件内容后上传", prev.CreatedAt.Format("2006-01-02 15:04"), prev.BatchNo),
+				"processed_rows":     prev.ProcessedRows,
+				"created_rows":       prev.CreatedRows,
+				"updated_rows":       prev.UpdatedRows,
+				"unchanged_rows":     prev.UnchangedRows,
+				"duplicate_rows":     prev.DuplicateRows,
+				"failed_rows":        prev.FailedRows,
+				"deposit_rows":       prev.DepositRows,
+				"deposit_cents":      prev.DepositCents,
+				"income_delta_cents": prev.IncomeDeltaCents,
+				"row_reports":        prevReports,
+			})
+			return
+		}
+	}
+
 	createdRows := 0
 	updatedRows := 0
 	unchangedRows := 0
@@ -394,7 +496,7 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 		for _, pr := range parsed {
 			// ---- 押金行：给发行商可用押金充值，不进任何收入表 ----
 			if pr.category == "押金" {
-				distID, amountCents, status, msg := s.importDepositRow(tx, pr.distHint, pr.grossCents, batchNo, pr.rowNo, dryRun)
+				distID, amountCents, status, msg := s.importDepositRow(tx, pr.distHint, pr.grossCents, fileHash, batchNo, pr.rowNo, dryRun)
 				report := incomeImportRowReport{
 					RowNo: pr.rowNo, Category: "押金", GrossCents: pr.grossCents,
 					Status: status, Message: msg,
@@ -413,18 +515,44 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 				continue
 			}
 
-			// 解析比例：行内优先；行内留空则查渠道配置；都没有回落 100% 并 warning。
+			// 解析创作者分成：金额模式（新模板）直接用 D 列金额、BP 由金额/gross 反推（仅供报表展示）；
+			// 比例模式（旧模板）：行内优先；行内留空则查渠道配置；都没有回落 100% 并 warning。
 			ratioBP := pr.ratioBP
+			incomeCents := int64(0)
 			var ratioWarn string
-			if !pr.rowHasRatio {
-				if cfgBP, ok := s.channelShareRatioBP(pr.channel); ok {
-					ratioBP = cfgBP
+			if pr.dColIsAmount {
+				if pr.rowHasRatio {
+					incomeCents = pr.incomeAmountCents
+					if pr.grossCents > 0 {
+						// 反推 BP 仅用于报表展示，clamp 到 100%（金额>总收益时不虚标比例）
+						ratioBP = int(math.Round(float64(pr.incomeAmountCents) / float64(pr.grossCents) * float64(model.ShareRatioBPFull)))
+						if ratioBP > model.ShareRatioBPFull {
+							ratioBP = model.ShareRatioBPFull
+						}
+					}
 				} else {
-					ratioBP = model.ShareRatioBPFull
-					ratioWarn = "未填比例且渠道未配置分成比例，按 100% 入账"
+					// D 列留空：回落渠道配置
+					if cfgBP, ok := s.channelShareRatioBP(pr.channel); ok {
+						ratioBP = cfgBP
+						incomeCents = pr.grossCents * int64(ratioBP) / int64(model.ShareRatioBPFull)
+					} else {
+						ratioBP = model.ShareRatioBPFull
+						incomeCents = pr.grossCents
+						ratioWarn = "未填金额且渠道未配置分成比例，按 100% 入账"
+					}
 				}
+			} else {
+				if !pr.rowHasRatio {
+					if cfgBP, ok := s.channelShareRatioBP(pr.channel); ok {
+						ratioBP = cfgBP
+					} else {
+						ratioBP = model.ShareRatioBPFull
+						ratioWarn = "未填比例且渠道未配置分成比例，按 100% 入账"
+					}
+				}
+				// 2026-08-29 修复（中-1）：统一走整数 BP 运算（与 model.IncomeFromGrossBP 同式）
+				incomeCents = pr.grossCents * int64(ratioBP) / int64(model.ShareRatioBPFull)
 			}
-			incomeCents := int64(math.Round(float64(pr.grossCents) * float64(ratioBP) / float64(model.ShareRatioBPFull)))
 			report := incomeImportRowReport{
 				RowNo:        pr.rowNo,
 				Title:        pr.title,
@@ -634,22 +762,22 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 	}
 
 	result := gin.H{
-		"batch_no":                   batchNo,
-		"dry_run":                    dryRun,
-		"processed_rows":             len(rowReports),
-		"imported_rows":              createdRows + updatedRows,
-		"created_rows":               createdRows,
-		"updated_rows":               updatedRows,
-		"unchanged_rows":             unchangedRows,
-		"duplicate_rows":             duplicateRows,
-		"failed_rows":                failedRows,
-		"deposit_rows":                depositRows,
-		"deposit_cents":               depositCents,
-		"income_delta_cents":         totalDelta,
-		"row_reports":                rowReports,
-		"errors":                     incomeImportErrors(rowReports),
-		"supplemented_settlements":   supplementedSettlements,
-		"blocked_settlements":        blockedSettlements,
+		"batch_no":                 batchNo,
+		"dry_run":                  dryRun,
+		"processed_rows":           len(rowReports),
+		"imported_rows":            createdRows + updatedRows,
+		"created_rows":             createdRows,
+		"updated_rows":             updatedRows,
+		"unchanged_rows":           unchangedRows,
+		"duplicate_rows":           duplicateRows,
+		"failed_rows":              failedRows,
+		"deposit_rows":             depositRows,
+		"deposit_cents":            depositCents,
+		"income_delta_cents":       totalDelta,
+		"row_reports":              rowReports,
+		"errors":                   incomeImportErrors(rowReports),
+		"supplemented_settlements": supplementedSettlements,
+		"blocked_settlements":      blockedSettlements,
 	}
 	// dry_run 只试算不落库，也不记录批次。
 	if dryRun {
@@ -658,7 +786,7 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 		response.OK(c, result)
 		return
 	}
-	if err := s.saveIncomeImportBatch(c, batchNo, fileHeader.Filename, result, rowReports); err != nil {
+	if err := s.saveIncomeImportBatch(c, batchNo, fileHash, fileHeader.Filename, result, rowReports); err != nil {
 		response.ServerError(c, "导入成功但批次记录保存失败")
 		return
 	}
@@ -826,8 +954,10 @@ func shareRatioBpLabel(bp int64) string {
 // importDepositRow 处理类目=押金 的导入行：给发行商「可用押金」充值并写押金流水。
 // 不进任何收入表、不进收益余额、不触发结算补录、不产生未结清。
 // distHint 支持发行商手机号（精确）或名称（name/nickname/org_name 精确匹配）。
+// 2026-08-29 幂等改造：RelatedBusinessNo 从随机 batchNo 改为 "IMPDEP:<fileHash>:<rowNo>"，
+// 同文件重传时行级幂等键命中 → 状态 duplicate 跳过；配合批次级 file_hash 拦截，双保险。
 // 返回 (发行商ID, 实际入账分, 状态, 消息)。
-func (s *Server) importDepositRow(tx *gorm.DB, distHint string, amountCents int64, batchNo string, rowNo int, dryRun bool) (uint64, int64, string, string) {
+func (s *Server) importDepositRow(tx *gorm.DB, distHint string, amountCents int64, fileHash, batchNo string, rowNo int, dryRun bool) (uint64, int64, string, string) {
 	var dists []model.Distributor
 	if err := tx.Where("phone = ? OR name = ? OR nickname = ?", distHint, distHint, distHint).Find(&dists).Error; err != nil {
 		return 0, 0, "failed", fmt.Sprintf("查询发行商失败: %v", err)
@@ -852,23 +982,32 @@ func (s *Server) importDepositRow(tx *gorm.DB, distHint string, amountCents int6
 		return dist.ID, amountCents, "created", fmt.Sprintf("试算：押金入账 %.2f 元（不进收入、不产生分成、不产生未结清）", float64(amountCents)/100)
 	}
 
+	// 行级幂等：同一文件的同一行号此前已入账过 → 判 duplicate 跳过（防同文件重传/并发双击）。
+	depositBizNo := fmt.Sprintf("IMPDEP:%s:%d", fileHash, rowNo)
+	var existedTx model.DistributorDepositTransaction
+	if err := tx.Where("related_type = ? AND related_business_no = ?", "import", depositBizNo).
+		First(&existedTx).Error; err == nil {
+		return dist.ID, 0, "duplicate", fmt.Sprintf("该押金行此前已入账（流水 #%d，%.2f 元），本次跳过", existedTx.ID, float64(existedTx.AmountCents)/100)
+	}
+
 	// 行锁发行商，计算变动后可用余额
 	var locked model.Distributor
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, dist.ID).Error; err != nil {
 		return dist.ID, 0, "failed", fmt.Sprintf("锁定发行商失败: %v", err)
 	}
+	balanceAfter := locked.DepositAvailableCents + amountCents
 	if err := tx.Model(&locked).
-		Update("deposit_available_cents", gorm.Expr("deposit_available_cents + ?", amountCents)).Error; err != nil {
+		Update("deposit_available_cents", balanceAfter).Error; err != nil {
 		return dist.ID, 0, "failed", fmt.Sprintf("更新可用押金失败: %v", err)
 	}
 	txn := model.DistributorDepositTransaction{
 		DistributorID:     dist.ID,
 		Type:              "recharge",
 		AmountCents:       amountCents,
-		BalanceAfterCents: locked.DepositAvailableCents + amountCents,
+		BalanceAfterCents: balanceAfter,
 		RelatedType:       "import",
-		RelatedBusinessNo: batchNo,
-		Remark:            fmt.Sprintf("收益导入-押金类目（第%d行）", rowNo),
+		RelatedBusinessNo: depositBizNo,
+		Remark:            fmt.Sprintf("收益导入-押金类目（第%d行，批次 %s）", rowNo, batchNo),
 	}
 	if err := tx.Create(&txn).Error; err != nil {
 		return dist.ID, 0, "failed", fmt.Sprintf("写入押金流水失败: %v", err)
@@ -876,15 +1015,18 @@ func (s *Server) importDepositRow(tx *gorm.DB, distHint string, amountCents int6
 	return dist.ID, amountCents, "created", fmt.Sprintf("押金入账 %.2f 元（不进收入、不产生分成、不产生未结清）", float64(amountCents)/100)
 }
 
+// fileHashOfBatchNo 已废弃并删除：幂等键统一走 fileHash 参数。
+
 // normalizeDate 把常见日期写法归一成 YYYY-MM-DD。
 // Excel 把日期格式化输出时会用本地短格式（如 2026/5/26 无前导零），全部兼容。
 // parseExcelDateCell 解析"日期类型"或"日期字符串"单元格
 // 2026-07-06 改：吴建棉反馈"收益报表上传，日期对不上"
 //
 // 背景：WPS 写日期按"Excel 算法"（假装 1900 闰年），
-//       excelize v2.10.1 的 ExcelDateToTime 按"真实日历"算（1899-12-30 + N 天），
-//       两者差几天。WPS 真实序列号映射：
-//         "2026/7/3" → sn=46204（Excel 算法）→ ExcelDateToTime 给 2026-07-01（差 2 天）
+//
+//	excelize v2.10.1 的 ExcelDateToTime 按"真实日历"算（1899-12-30 + N 天），
+//	两者差几天。WPS 真实序列号映射：
+//	  "2026/7/3" → sn=46204（Excel 算法）→ ExcelDateToTime 给 2026-07-01（差 2 天）
 //
 // 务实修法：完全不用 excelize.ExcelDateToTime，不用 RawCellValue。
 //   - excelize 默认 GetRows 把日期单元格按 cell.NumFmt 格式化成字符串

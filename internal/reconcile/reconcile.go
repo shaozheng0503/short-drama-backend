@@ -77,7 +77,8 @@ func Run(db *gorm.DB, cfg config.Config, now time.Time) (Report, error) {
 		if order.CreatorID == nil {
 			continue
 		}
-		creatorAmount := int64(float64(order.AmountCents) * cfg.CreatorShareRate)
+		// 2026-08-29 修复（中-3）：对账口径与入账口径统一为整数 BP
+		creatorAmount := model.IncomeFromGrossBP(order.AmountCents, model.ShareRateToBP(cfg.CreatorShareRate))
 		if creatorAmount <= 0 {
 			continue
 		}

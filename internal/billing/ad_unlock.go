@@ -307,8 +307,9 @@ func (s *Service) recordAdIncome(tx *gorm.DB, dramaID uint64, grossCents int64, 
 	var creatorID uint64
 	if drama.CreatorID != nil {
 		creatorID = *drama.CreatorID
-		creatorAmount = int64(float64(grossCents) * s.cfg.CreatorShareRate)
-		shareRatioBP = int(s.cfg.CreatorShareRate * 10000)
+		// 2026-08-29 修复（中-3）：分成改整数 BP 运算，与 MarkOrderPaid 口径一致
+		shareRatioBP = model.ShareRateToBP(s.cfg.CreatorShareRate)
+		creatorAmount = model.IncomeFromGrossBP(grossCents, shareRatioBP)
 
 		if creatorAmount > 0 {
 			// 行锁 + 写余额（与 MarkOrderPaid 相同模式）

@@ -423,13 +423,14 @@ func (s *Server) adminDeleteChannelIncome(c *gin.Context) {
 	response.OK(c, gin.H{"id": id, "deleted": true})
 }
 
-func (s *Server) saveIncomeImportBatch(c *gin.Context, batchNo, fileName string, result gin.H, reports []incomeImportRowReport) error {
+func (s *Server) saveIncomeImportBatch(c *gin.Context, batchNo, fileHash, fileName string, result gin.H, reports []incomeImportRowReport) error {
 	reportsJSON, err := json.Marshal(reports)
 	if err != nil {
 		return err
 	}
 	batch := model.ChannelIncomeImportBatch{
 		BatchNo:          batchNo,
+		FileHash:         fileHash,
 		AdminID:          middleware.CurrentID(c),
 		FileName:         fileName,
 		ProcessedRows:    intFromAny(result["processed_rows"]),
@@ -438,6 +439,8 @@ func (s *Server) saveIncomeImportBatch(c *gin.Context, batchNo, fileName string,
 		UnchangedRows:    intFromAny(result["unchanged_rows"]),
 		DuplicateRows:    intFromAny(result["duplicate_rows"]),
 		FailedRows:       intFromAny(result["failed_rows"]),
+		DepositRows:      intFromAny(result["deposit_rows"]),
+		DepositCents:     int64FromAny(result["deposit_cents"]),
 		IncomeDeltaCents: int64FromAny(result["income_delta_cents"]),
 		RowReportsJSON:   string(reportsJSON),
 	}

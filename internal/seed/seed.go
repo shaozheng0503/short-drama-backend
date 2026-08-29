@@ -780,7 +780,8 @@ func applySeedPaidOrderToCreator(db *gorm.DB, cfg config.Config, creatorID *uint
 	if creatorID == nil || paidAt == nil {
 		return nil
 	}
-	share := int64(float64(amountCents) * cfg.CreatorShareRate)
+	// 2026-08-29 修复（中-3）：与 billing.MarkOrderPaid 统一为整数 BP 口径
+	share := model.IncomeFromGrossBP(amountCents, model.ShareRateToBP(cfg.CreatorShareRate))
 	if share <= 0 {
 		return nil
 	}

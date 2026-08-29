@@ -698,9 +698,15 @@ func (s *Server) runDistributorSettlementForCycle(cycleKey, startStr, endStr, pe
 			continue
 		}
 
+		// 2026-08-29 修复（高-2）：去掉 45/55 硬编码，改为数据驱动口径：
+		// distributor_income_daily 每行的 income_cents 已按导入 E 列 BP 折算，
+		// 发行商实得 = Σ income_cents，平台分成 = gross - net（E 列留空行按默认 BP 入账）。
 		gross := a.GrossCents
-		platformCents := gross * 45 / 100
-		netCents := gross * 55 / 100
+		netCents := a.IncomeCents
+		platformCents := gross - netCents
+		if platformCents < 0 {
+			platformCents = 0
+		}
 
 		st := model.DistributorSettlement{
 			SettlementNo:  generateBusinessNo("ST-DIST"),
@@ -736,7 +742,7 @@ func (s *Server) runDistributorSettlementForCycle(cycleKey, startStr, endStr, pe
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dist, a.DistributorID).Error; err != nil {
 				return err
 			}
-			// 抵扣上限 = 发行商应付的平台分成（45%），多冻结的押金留给后续周期
+			// 抵扣上限 = 发行商应付的平台分成（platformCents），多冻结的押金留给后续周期
 			deducted := int64(0)
 			if dist.DepositFrozenCents > 0 && platformCents > 0 {
 				deducted = dist.DepositFrozenCents

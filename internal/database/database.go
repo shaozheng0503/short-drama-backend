@@ -200,6 +200,49 @@ func ensureIndexes(db *gorm.DB) error {
 		return err
 	}
 
+	// === 押金导入行级幂等（2026-08-29）===
+	// 收益导入「押金」类目行的业务号格式为 IMPDEP:<fileHash>:<rowNo>；唯一部分索引只约束
+	// related_type='import' 的 recharge 流水（freeze/deduct/manual 等其他 related_business_no
+	// 语义不同，不受约束）。并发双击导入时，即使事务内 SELECT 幂等检查同桶竞争，Create 也会被
+	// 数据库唯一约束兜底拒绝，杜绝同一文件同一行重复入账。
+	// 存量数据兼容：若曾用旧版本（随机 batchNo 业务号）重复导入过押金，先探活再降级告警，
+	// 避免唯一索引创建失败阻断服务启动。
+	var importDupCount int64
+	db.Raw(`SELECT COUNT(*) FROM (
+		SELECT related_business_no FROM distributor_deposit_transactions
+		WHERE related_type = 'import'
+		GROUP BY related_business_no HAVING COUNT(*) > 1
+	) dup`).Scan(&importDupCount)
+	if importDupCount > 0 {
+		log.Printf("[db] 警告：发现 %d 组历史重复押金导入流水（related_business_no 重复），行级幂等唯一索引已跳过创建，请人工核对后重建", importDupCount)
+	} else if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS uniq_deposit_tx_import_biz
+		ON distributor_deposit_transactions (related_type, related_business_no)
+		WHERE related_type = 'import'
+	`).Error; err != nil {
+		return err
+	}
+
+	// === 点赞聚合消息唯一性（2026-08-29）===
+	// comment_like 按 (recipient_id, comment_id) 聚合成一条，靠本部分唯一索引约束；
+	// comment_reply 是一回复一条，绝不能进唯一约束，故索引只收 type='comment_like'。
+	// 存量兼容：历史并发已插出重复聚合消息时先探活，降级告警跳过，避免启动被阻断。
+	var likeMsgDupCount int64
+	db.Raw(`SELECT COUNT(*) FROM (
+		SELECT recipient_id, comment_id FROM app_messages
+		WHERE type = 'comment_like'
+		GROUP BY recipient_id, comment_id HAVING COUNT(*) > 1
+	) dup`).Scan(&likeMsgDupCount)
+	if likeMsgDupCount > 0 {
+		log.Printf("[db] 警告：发现 %d 组历史重复点赞聚合消息（app_messages），唯一索引已跳过创建，请人工去重后重建", likeMsgDupCount)
+	} else if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS uniq_app_msg_like_recipient_comment
+		ON app_messages (recipient_id, comment_id)
+		WHERE type = 'comment_like'
+	`).Error; err != nil {
+		return err
+	}
+
 	// === 性能索引（2026-06-20 压测，20k 剧 / 30w 订单实测）===
 	// APP 列表/剧场默认按 published_at、热度按 play_count 排序，且都先过 status=published。
 	// 复合索引让查询走索引序、免对全表做 top-N Sort —— 实测列表 6.5ms→0.13ms（约 50×）。

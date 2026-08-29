@@ -1,8 +1,8 @@
 package handler
 
 import (
-	"errors"
 	"log"
+	"time"
 
 	"ai-drama-platform/internal/middleware"
 	"ai-drama-platform/internal/model"
@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // emitCommentReplyMessage 楼中楼回复 → 给被回复者发一条 comment_reply 消息（best-effort，失败只记日志不阻断发评论）。
@@ -32,33 +33,58 @@ func (s *Server) emitCommentReplyMessage(recipientID, actorID, repliedCommentID,
 
 // emitCommentLikeMessage 评论点赞 → 给评论作者发/更新一条 comment_like 聚合消息（best-effort）。
 // 同一 (收信人,评论) 只一条：已存在则更新最近触发者 + 置未读 + 顶上来（UpdatedAt 自动刷新），即「某时间段内多赞归一条」。
+// 2026-08-29 修复：原 check-then-create 在并发点赞下会插出多条聚合消息，
+// 改为依赖部分唯一索引（type='comment_like'）的 upsert，冲突即更新，天然幂等。
 func (s *Server) emitCommentLikeMessage(recipientID, actorID, commentID uint64) {
 	if recipientID == 0 || recipientID == actorID {
 		return
 	}
-	var existing model.AppMessage
-	err := s.db.Where("recipient_id = ? AND type = ? AND comment_id = ?",
-		recipientID, model.AppMessageTypeCommentLike, commentID).First(&existing).Error
-	switch {
-	case err == nil:
-		if e := s.db.Model(&existing).Updates(map[string]interface{}{
+	m := model.AppMessage{
+		RecipientID: recipientID,
+		Type:        model.AppMessageTypeCommentLike,
+		CommentID:   commentID,
+		ActorID:     actorID,
+	}
+	if err := s.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "recipient_id"}, {Name: "type"}, {Name: "comment_id"}},
+		// 部分唯一索引必须显式指定索引谓词，否则 PG 无法匹配 conflict target
+		TargetWhere: clause.Where{Exprs: []clause.Expression{
+			gorm.Expr("type = ?", model.AppMessageTypeCommentLike),
+		}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
 			"actor_id": actorID,
 			"is_read":  false,
-		}).Error; e != nil {
-			log.Printf("[app_message] like msg 更新失败 recipient=%d err=%v", recipientID, e)
+		}),
+	}).Create(&m).Error; err != nil {
+		log.Printf("[app_message] like msg upsert失败 recipient=%d err=%v", recipientID, err)
+	}
+}
+
+// cleanupAppMessages —— 2026-08-29 补：app_messages 此前只增不删，长期运行表会无限膨胀。
+// 策略：已读且 90 天未更新（点赞聚合消息顶上来会刷新 updated_at，天然保留活跃会话）的删除；
+// 未读保留（用户可能随时回来翻）。每批 1000 条，避免长事务锁表。
+func (s *Server) cleanupAppMessages(now time.Time) {
+	cutoff := now.AddDate(0, 0, -90)
+	total := int64(0)
+	for {
+		res := s.db.Exec(`
+			DELETE FROM app_messages WHERE id IN (
+				SELECT id FROM app_messages
+				WHERE is_read = true AND updated_at < ?
+				LIMIT 1000
+			)
+		`, cutoff)
+		if res.Error != nil {
+			log.Printf("[bg] cleanup app_messages err=%v", res.Error)
+			return
 		}
-	case errors.Is(err, gorm.ErrRecordNotFound):
-		m := model.AppMessage{
-			RecipientID: recipientID,
-			Type:        model.AppMessageTypeCommentLike,
-			CommentID:   commentID,
-			ActorID:     actorID,
+		total += res.RowsAffected
+		if res.RowsAffected < 1000 {
+			break
 		}
-		if e := s.db.Create(&m).Error; e != nil {
-			log.Printf("[app_message] like msg 创建失败 recipient=%d err=%v", recipientID, e)
-		}
-	default:
-		log.Printf("[app_message] like msg 查询失败 recipient=%d err=%v", recipientID, err)
+	}
+	if total > 0 {
+		log.Printf("[bg] cleanup app_messages: deleted %d read messages older than %s", total, cutoff.Format("2006-01-02"))
 	}
 }
 

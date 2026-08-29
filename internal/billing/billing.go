@@ -564,8 +564,9 @@ func (s *Service) MarkOrderPaid(orderNo, platformTradeNo, paymentMethod string, 
 		var creatorID uint64
 		if drama.CreatorID != nil {
 			creatorID = *drama.CreatorID
-			creatorAmount = int64(float64(order.AmountCents) * s.cfg.CreatorShareRate)
-			shareRatioBP = int(s.cfg.CreatorShareRate * 10000)
+			// 2026-08-29 修复（中-3）：分成改整数 BP 运算，float 截断（如 0.29→2899）不再发生
+			shareRatioBP = model.ShareRateToBP(s.cfg.CreatorShareRate)
+			creatorAmount = model.IncomeFromGrossBP(order.AmountCents, shareRatioBP)
 
 			if creatorAmount > 0 {
 				// 行锁 + 写余额
@@ -871,9 +872,10 @@ func (s *Service) RefundOrder(orderNo, refundNo string, amountCents int64, reaso
 			order.RefundReason = reason
 			order.RefundNo = refundNo
 			order.PlatformRefundNo = result.PlatformRefundNo
-			return nil
-		}
-		clawback := int64(float64(amountCents) * s.cfg.CreatorShareRate)
+		return nil
+	}
+	// 2026-08-29 修复（中-3）：退款追回也走整数 BP，与入账口径一致
+	clawback := model.IncomeFromGrossBP(amountCents, model.ShareRateToBP(s.cfg.CreatorShareRate))
 		if clawback > 0 {
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 				First(&model.Creator{}, *drama.CreatorID).Error; err != nil {
@@ -997,9 +999,10 @@ func (s *Service) DevRefundOrder(orderNo, refundNo string, amountCents int64, re
 			order.RefundReason = reason
 			order.RefundNo = refundNo
 			order.PlatformRefundNo = platformRefundNo
-			return nil
-		}
-		clawback := int64(float64(amountCents) * s.cfg.CreatorShareRate)
+		return nil
+	}
+	// 2026-08-29 修复（中-3）：退款追回也走整数 BP，与入账口径一致
+	clawback := model.IncomeFromGrossBP(amountCents, model.ShareRateToBP(s.cfg.CreatorShareRate))
 		if clawback > 0 {
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 				First(&model.Creator{}, *drama.CreatorID).Error; err != nil {

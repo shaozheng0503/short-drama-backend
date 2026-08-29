@@ -82,6 +82,8 @@ func (s *Server) StartBackground(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
+		// app_messages 清理：每小时跑一次（任务本身分批删除，开销可控）
+		var lastMsgCleanup time.Time
 		log.Printf("[bg] background tasks started")
 		for {
 			select {
@@ -91,6 +93,10 @@ func (s *Server) StartBackground(ctx context.Context) {
 			case now := <-ticker.C:
 				s.closeExpiredOrders(now)
 				s.closeExpiredRecharges(now)
+				if lastMsgCleanup.IsZero() || now.Sub(lastMsgCleanup) >= time.Hour {
+					s.cleanupAppMessages(now)
+					lastMsgCleanup = now
+				}
 			}
 		}
 	}()

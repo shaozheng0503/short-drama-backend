@@ -1,6 +1,7 @@
 package model
 
 import (
+	"math"
 	"time"
 
 	"gorm.io/gorm"
@@ -894,6 +895,7 @@ func (ChannelIncomeDaily) TableName() string { return "channel_income_daily" }
 type ChannelIncomeImportBatch struct {
 	ID               uint64    `gorm:"primaryKey;column:id" json:"id"`
 	BatchNo          string    `gorm:"column:batch_no;size:32;uniqueIndex" json:"batch_no"`
+	FileHash         string    `gorm:"column:file_hash;size:64;index" json:"file_hash"` // 2026-08-29 上传文件内容 SHA-256，跨批次幂等键
 	AdminID          uint64    `gorm:"column:admin_id;index" json:"admin_id"`
 	FileName         string    `gorm:"column:file_name;size:255" json:"file_name"`
 	ProcessedRows    int       `gorm:"column:processed_rows;default:0" json:"processed_rows"`
@@ -902,6 +904,8 @@ type ChannelIncomeImportBatch struct {
 	UnchangedRows    int       `gorm:"column:unchanged_rows;default:0" json:"unchanged_rows"`
 	DuplicateRows    int       `gorm:"column:duplicate_rows;default:0" json:"duplicate_rows"`
 	FailedRows       int       `gorm:"column:failed_rows;default:0" json:"failed_rows"`
+	DepositRows      int       `gorm:"column:deposit_rows;default:0" json:"deposit_rows"`   // 2026-08-29 押金入账行数
+	DepositCents     int64     `gorm:"column:deposit_cents;default:0" json:"deposit_cents"` // 2026-08-29 押金入账总金额（分）
 	IncomeDeltaCents int64     `gorm:"column:income_delta_cents;default:0" json:"income_delta_cents"`
 	RowReportsJSON   string    `gorm:"column:row_reports_json;type:text" json:"-"`
 	CreatedAt        time.Time `gorm:"column:created_at;index" json:"created_at"`
@@ -968,6 +972,27 @@ const (
 const (
 	ShareRatioBPFull = 10000 // 100%
 )
+
+// ShareRateToBP —— float 分成比例（0.5=50%）转基点，四舍五入。
+// 替代 int(rate*10000) 截断写法：0.29 截断成 2899，四舍五入才是 2900。
+func ShareRateToBP(rate float64) int {
+	if rate <= 0 {
+		return 0
+	}
+	return int(math.Round(rate * float64(ShareRatioBPFull)))
+}
+
+// IncomeFromGrossBP —— 按基点整数运算计算创作者分成（中-1/中-3 修复）。
+// income = gross * bp / 10000，纯整数除法，无 float 舍入/截断误差。
+func IncomeFromGrossBP(grossCents int64, bp int) int64 {
+	if grossCents <= 0 || bp <= 0 {
+		return 0
+	}
+	if bp > ShareRatioBPFull {
+		bp = ShareRatioBPFull
+	}
+	return grossCents * int64(bp) / int64(ShareRatioBPFull)
+}
 
 // ============================================================
 // 0.15.0 发行商（Distributor）模块

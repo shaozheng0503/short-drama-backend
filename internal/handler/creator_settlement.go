@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -965,7 +966,13 @@ func (s *Server) creatorPreviewSettlement(c *gin.Context) {
 	// 5) 平台抽成比例（与 cron 一致）
 	creatorShareRate := s.cfg.CreatorShareRate
 	if creatorShareRate <= 0 || creatorShareRate > 1 {
-		creatorShareRate = 0.7
+		// 2026-08-29 修复：兜底从 0.7 改为 0.5，与 config.go 默认值对齐
+		creatorShareRate = 0.5
+	}
+	// 2026-08-29 修复（中-2）：反推毛收入改用整数 BP，消除 float 除法舍入误差
+	creatorShareBP := int64(5000)
+	if creatorShareRate > 0 && creatorShareRate <= 1 {
+		creatorShareBP = int64(math.Round(creatorShareRate * float64(model.ShareRatioBPFull)))
 	}
 
 	// 6) 组装
@@ -981,13 +988,13 @@ func (s *Server) creatorPreviewSettlement(c *gin.Context) {
 		if withdrawable < 0 {
 			withdrawable = 0
 		}
-		// gross = 渠道真实毛收入 + 平台自有收入反推
+		// gross = 渠道真实毛收入 + 平台自有收入反推（整数 BP，与 cron 口径一致）
 		dramaChannelGross := dramaChannelGrossMap[a.DramaID]
 		dramaChannelIncome := dramaChannelIncomeMap[a.DramaID]
 		dramaPlatformIncome := a.IncomeCents - dramaChannelIncome
 		dramaPlatformGross := int64(0)
 		if dramaPlatformIncome > 0 {
-			dramaPlatformGross = int64(float64(dramaPlatformIncome) / creatorShareRate)
+			dramaPlatformGross = reverseGrossFromIncome(dramaPlatformIncome, creatorShareBP)
 		}
 		gross := dramaChannelGross + dramaPlatformGross
 		platformCents := gross - a.IncomeCents

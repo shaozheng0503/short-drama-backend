@@ -150,7 +150,8 @@ func (s *Server) sumCreatorRefundShare(cid uint64, startInclusive, endExclusive 
 		Joins("JOIN dramas d ON d.id = o.drama_id").
 		Where("d.creator_id = ? AND o.refunded_at >= ? AND o.refunded_at < ?", cid, startInclusive, endExclusive).
 		Select("COALESCE(SUM(o.refund_amount_cents),0)").Scan(&gross)
-	return int64(math.Round(float64(gross) * s.cfg.CreatorShareRate))
+	// 2026-08-29 修复（中-3）：预估分成与实盘入账统一为整数 BP 口径
+	return model.IncomeFromGrossBP(gross, model.ShareRateToBP(s.cfg.CreatorShareRate))
 }
 
 // withDelta 返回 {value, prev, delta_percent}。环比%=四舍五入到 1 位小数；prev=0 时 delta_percent=null（前端显示"--"）。

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -82,6 +83,21 @@ func (s *Server) maybeRunHalfMonthSettlement(now time.Time) {
 // runSettlementForCycle 跑一次半月结算——和原 runSettlementForPeriod 思路一致，
 // 但用 cycleKey 去重而非 period+contract_no。
 // 返回写入的 settlement 条数。
+
+// reverseGrossFromIncome —— 由创作者实得收入反推平台自有毛收入（整数 BP 运算，中-2 修复）。
+// 分账正向公式：income = gross * creatorShareBP / 10000，
+// 反推：gross = income * 10000 / creatorShareBP（整数除法，无 float 舍入误差）。
+// creatorShareBP 非法（<=0 或 >10000）时按 5000（50%）兜底。
+func reverseGrossFromIncome(incomeCents, creatorShareBP int64) int64 {
+	if incomeCents <= 0 {
+		return 0
+	}
+	if creatorShareBP <= 0 || creatorShareBP > int64(model.ShareRatioBPFull) {
+		creatorShareBP = int64(model.ShareRatioBPFull) / 2
+	}
+	return incomeCents * int64(model.ShareRatioBPFull) / creatorShareBP
+}
+
 func (s *Server) runSettlementForCycle(cycleKey, startStr, endStr string) (int, error) {
 	type creatorAgg struct {
 		CreatorID   uint64
@@ -129,7 +145,13 @@ func (s *Server) runSettlementForCycle(cycleKey, startStr, endStr string) (int, 
 
 	creatorShareRate := s.cfg.CreatorShareRate
 	if creatorShareRate <= 0 || creatorShareRate > 1 {
-		creatorShareRate = 0.7
+		// 2026-08-29 修复：兜底从 0.7 改为 0.5，与 config.go 默认值对齐，避免兜底口径与正常口径不一致
+		creatorShareRate = 0.5
+	}
+	// 2026-08-29 修复：反推毛收入改用整数 BP 运算（中-2）
+	creatorShareBP := int64(5000)
+	if creatorShareRate > 0 && creatorShareRate <= 1 {
+		creatorShareBP = int64(math.Round(creatorShareRate * float64(model.ShareRatioBPFull)))
 	}
 
 	now := time.Now()
@@ -164,13 +186,13 @@ func (s *Server) runSettlementForCycle(cycleKey, startStr, endStr string) (int, 
 		}
 		// gross_cents = 渠道真实毛收入 + 平台自有收入反推
 		// 渠道毛收入直接取 channel_income_daily.gross_cents
-		// 平台自有收入（订单分账）仍按 income / creatorShareRate 反推
+		// 平台自有收入（订单分账）按整数 BP 反推，消除 float 除法舍入误差
 		channelGross := channelGrossMap[a.CreatorID]
 		channelIncome := channelIncomeMap[a.CreatorID]
 		platformIncome := a.IncomeCents - channelIncome // 平台自有收入
 		platformGross := int64(0)
 		if platformIncome > 0 {
-			platformGross = int64(float64(platformIncome) / creatorShareRate)
+			platformGross = reverseGrossFromIncome(platformIncome, creatorShareBP)
 		}
 		grossCents := channelGross + platformGross
 		platformCents := grossCents - a.IncomeCents
@@ -271,7 +293,13 @@ func (s *Server) recalcOpenSettlementsForDateRange(tx *gorm.DB, statDates []stri
 
 	creatorShareRate := s.cfg.CreatorShareRate
 	if creatorShareRate <= 0 || creatorShareRate > 1 {
-		creatorShareRate = 0.7
+		// 2026-08-29 修复：兜底从 0.7 改为 0.5，与 config.go 默认值对齐
+		creatorShareRate = 0.5
+	}
+	// 2026-08-29 修复：反推毛收入改用整数 BP 运算（中-2）
+	creatorShareBP := int64(5000)
+	if creatorShareRate > 0 && creatorShareRate <= 1 {
+		creatorShareBP = int64(math.Round(creatorShareRate * float64(model.ShareRatioBPFull)))
 	}
 
 	for cycleKey := range cycleKeySet {
@@ -338,7 +366,7 @@ func (s *Server) recalcOpenSettlementsForDateRange(tx *gorm.DB, statDates []stri
 			suppPlatformIncome := a.IncomeCents - suppChannelIncome
 			suppPlatformGross := int64(0)
 			if suppPlatformIncome > 0 {
-				suppPlatformGross = int64(float64(suppPlatformIncome) / creatorShareRate)
+				suppPlatformGross = reverseGrossFromIncome(suppPlatformIncome, creatorShareBP)
 			}
 			newGrossCents := suppChannelGross + suppPlatformGross
 			newPlatformCents := newGrossCents - a.IncomeCents
@@ -423,9 +451,12 @@ func (s *Server) recalcOpenSettlementsForDateRange(tx *gorm.DB, statDates []stri
 				continue
 			}
 
+			// 2026-08-29 修复（高-2）：去掉 45/55 硬编码，改为数据驱动口径：
+			// 发行商实得 = Σ distributor_income_daily.income_cents（行级已按 E 列 BP 折算），
+			// 平台分成 = gross - net，与首次生成口径（runDistributorSettlementForCycle）完全一致。
 			newGrossCents := a.GrossCents
-			newPlatformCents := newGrossCents * 45 / 100
-			newNetCents := newGrossCents * 55 / 100
+			newNetCents := a.IncomeCents
+			newPlatformCents := newGrossCents - newNetCents
 
 			// 金额未变化则跳过
 			if dst.GrossCents == newGrossCents && dst.NetCents == newNetCents && dst.PlatformCents == newPlatformCents {
@@ -449,7 +480,7 @@ func (s *Server) recalcOpenSettlementsForDateRange(tx *gorm.DB, statDates []stri
 				newRemark = newRemark + supplementTag
 			}
 
-			// 重新计算应付金额（payable = 平台45%分成 - deducted_deposit，与首次生成口径一致）
+			// 重新计算应付金额（payable = 平台分成 newPlatformCents - deducted_deposit，与首次生成口径一致）
 			payable := newPlatformCents - locked.DeductedDepositCents
 			if payable < 0 {
 				payable = 0
