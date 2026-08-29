@@ -970,7 +970,9 @@ const (
 
 // 分成比例基点常量。
 const (
-	ShareRatioBPFull = 10000 // 100%
+	ShareRatioBPFull        = 10000 // 100%
+	DefaultCreatorShareBP   = 3000  // 30% —— 第三方渠道导入时创作者默认分成（2026-08-29 会议确认）
+	DefaultDistributorShareBP = 5500 // 55% —— 发行商默认分成（留空时 fallback）
 )
 
 // ShareRateToBP —— float 分成比例（0.5=50%）转基点，四舍五入。

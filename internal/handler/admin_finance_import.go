@@ -70,9 +70,9 @@ func channelToPlatform(channel string) string {
 // 生成单 Sheet 收益导入模板，9 列（2026-08-29 会议确认：D/E 列改直接填金额，不再填比例）：
 //   - 短剧名称 | 渠道 | 总收益 | 创作者分成金额 | 发行商分成金额 | 日期 | 短剧ID | 类目 | 发行商
 //
-// 创作者分成金额(D 列)：直接填元（如 37.04）；留空则按该渠道的全局配置比例折算。
+// 创作者分成金额(D 列)：直接填元（如 37.04）；留空则按该渠道的全局配置比例折算，都没有时按 30% 入账。
 // 发行商分成金额(E 列)：直接填元（如 67.9）；留空按总收益×55% 折算；视频号固定不生成分成。
-// 口径参考：发行商实得 = 总收益×55%，发行商应付平台 = 总收益×45%（含创作者 30% + 平台 15%）。
+// 口径参考（2026-08-29 会议确认）：发行商实得 = 总收益×55%，创作者 = 总收益×30%，平台 = 总收益×15%。
 // 旧模板兼容：D/E 列表头含「比例」的旧文件仍按比例（50/50%/0.5）解析。
 // 类目(H 列)：收入（默认，留空=收入）/ 押金。类目=押金时只读 C 列金额 + I 列发行商，不进任何收入表。
 // 发行商(I 列)：类目=押金时必填（发行商名称或手机号，手机号唯一定位）。
@@ -85,7 +85,7 @@ func (s *Server) adminDownloadIncomeTemplate(c *gin.Context) {
 	xl.SetSheetName(xl.GetSheetName(0), sheet)
 	headers := []string{
 		"短剧名称", "渠道", "总收益",
-		"创作者分成金额(元,直接填金额,留空按配置)",
+		"创作者分成金额(元,直接填金额,留空按30%)",
 		"发行商分成金额(元,直接填金额,留空按55%;视频号固定0)",
 		"日期", "短剧ID(选填,名称重复时必填)",
 		"类目(收入/押金,留空=收入)", "发行商(类目=押金时必填:名称或手机号)",
@@ -137,7 +137,7 @@ func (s *Server) adminDownloadIncomeTemplate(c *gin.Context) {
 // 表格列（第 1 行表头，从第 2 行起读）：
 //
 //	A 列：短剧名称   B 列：渠道(抖音/快手/腾讯/B站/视频号…)   C 列：总收益
-//	D 列：创作者分成比例(50 / 50% / 0.5，留空按渠道全局配置)
+//	D 列：创作者分成比例(50 / 50% / 0.5，留空按渠道全局配置，都没有时按30%)
 //	E 列：发行商分成比例(55 / 55% / 0.5，填了含0%按该值，留空按55%；视频号固定不生成分成)
 //	F 列日期  G 列短剧ID(选填)  H 列类目(收入/押金,留空=收入)  I 列发行商(类目=押金时必填)
 //	旧模板兼容：9列(H类目) / 7列(E发行商比例) / 6列(E日期) 均可读。
@@ -149,7 +149,7 @@ func (s *Server) adminDownloadIncomeTemplate(c *gin.Context) {
 // 分成计算：创作者实得 = round(总收益 × 比例)。比例优先取行内 D 列；D 列留空则取
 //
 //	该渠道的全局配置(income.share_ratio.<渠道> → income.share_ratio.default)；
-//	都没配置则回落 100% 并在该行给出 warning，避免漏配时金额归零。
+//	都没配置则回落 30% 并在该行给出 warning（2026-08-29 会议确认）。
 //
 // 剧目匹配：短剧ID 列优先 —— 填了就按 ID 直接定位（仍校验名称一致性，不一致只给 warning）；
 // 没填则按 A 列名称匹配，名称在库内不唯一时该行 fail 并提示填短剧ID。
@@ -363,7 +363,7 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 			}
 		}
 		// E 列发行商分成：新模板填金额（元）→ 反推 BP；旧模板填比例；留空按 55%。仅 7/9 列模板有此列。
-		distRatioBP, hasDistRatio := 5500, false
+	distRatioBP, hasDistRatio := model.DefaultDistributorShareBP, false
 		if hasDistCol && len(row) > 4 {
 			eCell := strings.TrimSpace(row[4])
 			if distColIsAmount {
@@ -531,14 +531,14 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 						}
 					}
 				} else {
-					// D 列留空：回落渠道配置
+					// D 列留空：回落渠道配置；都没有时按 30% 入账（2026-08-29 会议：创作者=总收益×30%）
 					if cfgBP, ok := s.channelShareRatioBP(pr.channel); ok {
 						ratioBP = cfgBP
 						incomeCents = pr.grossCents * int64(ratioBP) / int64(model.ShareRatioBPFull)
 					} else {
-						ratioBP = model.ShareRatioBPFull
-						incomeCents = pr.grossCents
-						ratioWarn = "未填金额且渠道未配置分成比例，按 100% 入账"
+						ratioBP = model.DefaultCreatorShareBP
+						incomeCents = pr.grossCents * int64(ratioBP) / int64(model.ShareRatioBPFull)
+						ratioWarn = "未填金额且渠道未配置分成比例，按 30% 入账"
 					}
 				}
 			} else {
@@ -546,8 +546,8 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 					if cfgBP, ok := s.channelShareRatioBP(pr.channel); ok {
 						ratioBP = cfgBP
 					} else {
-						ratioBP = model.ShareRatioBPFull
-						ratioWarn = "未填比例且渠道未配置分成比例，按 100% 入账"
+						ratioBP = model.DefaultCreatorShareBP
+						ratioWarn = "未填比例且渠道未配置分成比例，按 30% 入账"
 					}
 				}
 				// 2026-08-29 修复（中-1）：统一走整数 BP 运算（与 model.IncomeFromGrossBP 同式）
@@ -704,11 +704,11 @@ func (s *Server) adminImportDailyIncome(c *gin.Context) {
 				report.DistributorStatus = "skipped"
 				report.DistributorMessage = "视频号为平台自发渠道，发行商分成记为 0"
 			} else if platformKey != "" && report.Status != "failed" {
-				// E 列发行商分成比例：填了（含 0%）按该值；留空按默认 55%
-				distShareBP := 5500
-				if pr.hasDistRatio {
-					distShareBP = pr.distRatioBP
-				}
+				// E 列发行商分成比例：填了（含 0%）按该值；留空按默认 55%（2026-08-29 会议确认）
+			distShareBP := model.DefaultDistributorShareBP
+			if pr.hasDistRatio {
+				distShareBP = pr.distRatioBP
+			}
 				distID, distInc, distStatus, distMsg := s.generateDistributorIncome(tx, drama.ID, platformKey, pr.statDate, pr.grossCents, int64(distShareBP), batchNo, pr.rowNo, dryRun)
 				report.DistributorID = distID
 				report.DistributorIncome = distInc
